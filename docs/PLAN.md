@@ -202,8 +202,7 @@ Next:
       it"): `src/listlink.rs`, `listserver_secure` on by default,
       `tests/listserver_link.rs`, lab run in
       `docs/lab/listserver-link-2026-10-31.md`.
-- [ ] Switch `seihai-core` from rev 637ade3 to the tag `v0.0.5` once
-      Chiaki tags it (it has `seclogin::Channel::split`).
+- [x] `seihai-core` is on tag `v0.0.5`.
 - [ ] Listserver link, later: send the player's nickname and props
       (`PLYRADD` sends only the id and type now), `SVO_PING`, and the
       server-to-server messages (PMs, `SVI_FILESTART`) when stage 3 needs
