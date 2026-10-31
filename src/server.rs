@@ -40,6 +40,9 @@ pub struct Server {
     pub verbose: bool,
     /// The secure-login key (`SEI00001`); `None` when secure logins are off.
     pub identity: Option<seihai_core::protocol::seclogin::ServerIdentity>,
+    /// The listserver link (see `listlink`); `None` when `listserver` is
+    /// empty. Set by `run`.
+    pub listlink: Option<Arc<crate::listlink::ListLink>>,
 }
 
 #[derive(Default)]
@@ -101,6 +104,7 @@ impl Server {
             started_unix,
             verbose: false,
             identity: None,
+            listlink: None,
         }
     }
 
@@ -148,6 +152,9 @@ pub async fn serve(server: Arc<Server>, listener: TcpListener) -> io::Result<()>
             let result = conn.run().await;
             if let Some(id) = conn.player.take() {
                 s.npc.left(id);
+                if let Some(l) = &s.listlink {
+                    l.player_removed(id);
+                }
             }
             if let Some(name) = conn.account.take() {
                 s.online.lock().unwrap().by_account.remove(&name);
@@ -397,6 +404,9 @@ impl Conn {
                 },
             );
             self.server.npc.joined(id, &account.name, level, &props);
+            if let Some(l) = &self.server.listlink {
+                l.player_added(id);
+            }
         }
         self.server
             .log(&self.peer, &format!("{who} logged in as player {id}"));
@@ -484,17 +494,49 @@ impl Conn {
         let cfg = self.server.cfg.clone();
         let name = login.account.clone();
         let password = login.password.clone();
-        // PBKDF2 is slow on purpose: keep it off the network threads.
-        tokio::task::spawn_blocking(move || match store.load(&name)? {
-            Some(a) if a.check_password(&password) => Ok(Ok(a)),
-            Some(_) => Ok(Err("Account name or password is wrong.")),
-            None if cfg.create_accounts && !password.is_empty() => {
-                let mut a = Account::new(&name, &cfg.start_level, cfg.start_x, cfg.start_y);
-                a.set_password(&password);
-                store.save(&a)?;
-                Ok(Ok(a))
+        let link = self
+            .server
+            .listlink
+            .clone()
+            .filter(|_| cfg.listserver_accounts);
+        // PBKDF2 is slow on purpose, and the listserver answer blocks:
+        // keep both off the network threads.
+        tokio::task::spawn_blocking(move || {
+            if let Some(link) = link {
+                // The listserver owns the password; the local file keeps
+                // the player's state and is made on first login.
+                let verdict = link
+                    .verify(&name, &password)
+                    .recv_timeout(crate::listlink::VERIFY_TIMEOUT)
+                    .unwrap_or(crate::listlink::Verdict::Unreachable);
+                return match verdict {
+                    crate::listlink::Verdict::Ok => match store.load(&name)? {
+                        Some(a) => Ok(Ok(a)),
+                        None => {
+                            let a = Account::new(&name, &cfg.start_level, cfg.start_x, cfg.start_y);
+                            store.save(&a)?;
+                            Ok(Ok(a))
+                        }
+                    },
+                    crate::listlink::Verdict::Refused(_) => {
+                        Ok(Err("Account name or password is wrong."))
+                    }
+                    crate::listlink::Verdict::Unreachable => Ok(Err(
+                        "The account server cannot be reached; try again later.",
+                    )),
+                };
             }
-            None => Ok(Err("Account name or password is wrong.")),
+            match store.load(&name)? {
+                Some(a) if a.check_password(&password) => Ok(Ok(a)),
+                Some(_) => Ok(Err("Account name or password is wrong.")),
+                None if cfg.create_accounts && !password.is_empty() => {
+                    let mut a = Account::new(&name, &cfg.start_level, cfg.start_x, cfg.start_y);
+                    a.set_password(&password);
+                    store.save(&a)?;
+                    Ok(Ok(a))
+                }
+                None => Ok(Err("Account name or password is wrong.")),
+            }
         })
         .await
         .map_err(io::Error::other)?

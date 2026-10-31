@@ -82,6 +82,17 @@ pub fn load_secure_identity(server: &mut server::Server) -> std::io::Result<()> 
     Ok(())
 }
 
+/// Start the listserver link when `listserver` is set (see [`listlink`]).
+/// Call it once the port is final: the listing carries it.
+pub fn start_listlink(server: &mut server::Server) {
+    server.listlink = listlink::ListLink::start(&server.cfg);
+    if server.listlink.is_none() {
+        eprintln!("listserver link: off");
+    } else if server.cfg.listserver_accounts {
+        eprintln!("listserver link: accounts are checked by the listserver");
+    }
+}
+
 /// Bind and serve until the listener fails.
 pub async fn run(server: Arc<server::Server>) -> std::io::Result<()> {
     let addr = std::net::SocketAddr::new(server.cfg.bind, server.cfg.port);

@@ -69,6 +69,21 @@ pub struct Config {
     /// The `seihai-npcserver` binary for `auto`. Empty: the one next to
     /// this binary.
     pub npcserver_path: String,
+    /// The listserver to register with, `host:port` (its gserver port).
+    /// Empty (the default): the server registers nowhere.
+    pub listserver: String,
+    /// The text the server list shows under the name.
+    pub description: String,
+    /// Encrypt the listserver link (`SVLINK01`, Seihai's
+    /// `documentation/secure-login.md`). On by default; off only for a
+    /// listserver that does not know the handshake.
+    pub listserver_secure: bool,
+    /// The listserver's Ed25519 public key (base64). Empty: trust on first
+    /// use, kept in `config/listserver.pin`.
+    pub listserver_key: String,
+    /// Check account passwords with the listserver (`VERIACC2`) in place
+    /// of the local accounts' hashes. Off by default.
+    pub listserver_accounts: bool,
 }
 
 /// How the NPC-server link runs.
@@ -105,6 +120,11 @@ impl Config {
             npcserver_port: 14810,
             npcserver_token: String::new(),
             npcserver_path: String::new(),
+            listserver: String::new(),
+            description: String::new(),
+            listserver_secure: true,
+            listserver_key: String::new(),
+            listserver_accounts: false,
         }
     }
 
@@ -195,6 +215,11 @@ impl Config {
             "npcserver_port" => self.npcserver_port = num(v)?,
             "npcserver_token" => self.npcserver_token = v.to_string(),
             "npcserver_path" => self.npcserver_path = v.to_string(),
+            "listserver" => self.listserver = v.to_string(),
+            "description" => self.description = v.to_string(),
+            "listserver_secure" => self.listserver_secure = flag(v)?,
+            "listserver_key" => self.listserver_key = v.to_string(),
+            "listserver_accounts" => self.listserver_accounts = flag(v)?,
             _ => return Err(format!("unknown setting `{key}`")),
         }
         Ok(())
@@ -208,6 +233,11 @@ impl Config {
     pub fn secure_login_key_path(&self) -> Option<PathBuf> {
         (!self.secure_login_key.as_os_str().is_empty())
             .then(|| self.world.join(&self.secure_login_key))
+    }
+
+    /// Where the listserver's key is pinned on first use.
+    pub fn listserver_pin_path(&self) -> PathBuf {
+        self.world.join("config").join("listserver.pin")
     }
 
     pub fn levels_dir(&self) -> PathBuf {

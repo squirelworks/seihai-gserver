@@ -71,6 +71,7 @@ fn run_server(world: &std::path::Path, mut args: Vec<String>) -> Result<(), Stri
     if let Some(a) = args.first() {
         return Err(format!("unknown argument `{a}`\n{USAGE}"));
     }
+    seihai_gserver::start_listlink(&mut server);
     let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
     rt.block_on(async {
         let server = Arc::new(server);
