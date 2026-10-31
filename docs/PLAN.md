@@ -98,10 +98,11 @@ Next:
 
 - [ ] Switch `seihai-core` from the PR rev to the tag once seihai's
       secure-login PR is merged and tagged (`v0.0.4`; Chiaki tags).
-- [ ] When the listserver link lands (`listlink.rs`): `VERIACC2` sends the
-      player's password to the listserver in the clear. Either run the same
-      handshake on that link (the gserver pins the listserver's key) or keep
-      account checks local.
+- Seihai only: real clients cannot be changed, so their logins stay in the
+  clear (Squirrel, 2026-10-31).
+- [ ] Optional, only if Squirrel asks: when the listserver link lands,
+      `VERIACC2` carries the player's password to the listserver in the clear;
+      both ends are ours, so the same handshake could cover it.
 - [ ] RC logins (`rc.rs`, type 1/6): the same handshake once `seihai-rc`
       speaks it.
 - [ ] A `key-fingerprint` subcommand that prints the key without starting.
