@@ -9,8 +9,7 @@ publish = false
 
 [dependencies]
 # Protocol, framing, version profiles and scripting shared with the Seihai client.
-# TODO: switch to tag v0.0.5 once Chiaki tags it (it has seclogin::Channel::split).
-seihai-core = { git = "https://github.com/squirelworks/seihai", rev = "637ade305d525e7ff307ea95cfa2b42674bfd857", default-features = false }
+seihai-core = { git = "https://github.com/squirelworks/seihai", tag = "v0.0.5", default-features = false }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time", "macros", "sync", "signal", "process"] }
 # The NPC-server link's wire format (PROTOCOL.md), shared with the NPC-server
 # so both sides use one codec. Pinned by commit until seihai-npcserver is tagged.
