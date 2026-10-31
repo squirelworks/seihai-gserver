@@ -237,8 +237,17 @@ dependencies = [
  "getrandom",
  "pbkdf2",
  "seihai-core",
+ "seihai-npcserver",
  "sha2",
  "tokio",
+]
+
+[[package]]
+name = "seihai-npcserver"
+version = "0.0.1"
+source = "git+https://github.com/squirelworks/seihai-npcserver?rev=340bfa7e486688bbecbdaab34781264442ffd793#340bfa7e486688bbecbdaab34781264442ffd793"
+dependencies = [
+ "seihai-core",
 ]
 
 [[package]]

@@ -22,7 +22,12 @@ Stage 1 covers:
 * flat-file accounts (`accounts/<name>.txt`, PBKDF2 password hashes);
 * the login burst (props, warp, level name, a generated board, mod time and
   the rest, in the order each generation needs);
-* the idle session: file requests answered, the world time as a heartbeat.
+* the idle session: file requests answered, the world time as a heartbeat;
+* the NPC-server link (`PROTOCOL.md`): `seihai-npcserver` logs in on its own
+  loopback port and is told the level list and every player's props. With
+  `npcserver = auto` in `config/server.txt` the gserver starts
+  `seihai-npcserver` from next to its own binary with a fresh token, so there is
+  nothing else to set up. The NPC-server runs no scripts on players yet.
 
 Levels, other players, NPCs, RC and the listserver link are later stages.
 
