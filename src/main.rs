@@ -67,6 +67,7 @@ fn run_server(world: &std::path::Path, mut args: Vec<String>) -> Result<(), Stri
         server.cfg.create_accounts = true;
     }
     server.verbose = take_flag(&mut args, "--verbose");
+    seihai_gserver::load_secure_identity(&mut server).map_err(|e| e.to_string())?;
     if let Some(a) = args.first() {
         return Err(format!("unknown argument `{a}`\n{USAGE}"));
     }

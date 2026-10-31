@@ -47,6 +47,14 @@ pub struct Config {
     /// no level files yet).
     pub board_tile: u16,
     pub max_players: usize,
+    /// The Seihai secure login (`SEI00001`, Seihai's
+    /// `documentation/secure-login.md`): the file with this server's
+    /// Ed25519 key, relative to the world folder, made on first start.
+    /// Empty: secure logins are refused.
+    pub secure_login_key: PathBuf,
+    /// Refuse logins that send the password in the clear (every real Graal
+    /// client). Off by default.
+    pub require_secure_login: bool,
     /// The NPC-server link (`PROTOCOL.md`): `off`, `external` (someone
     /// starts `seihai-npcserver` by hand) or `auto` (the gserver starts it
     /// and hands it a fresh token).
@@ -90,6 +98,8 @@ impl Config {
             login_timeout: Duration::from_secs(10),
             board_tile: 0x1FF,
             max_players: 256,
+            secure_login_key: PathBuf::from("config/seihai-login.key"),
+            require_secure_login: false,
             npcserver: NpcMode::Off,
             npcserver_bind: IpAddr::from([127, 0, 0, 1]),
             npcserver_port: 14810,
@@ -167,6 +177,8 @@ impl Config {
             "login_timeout" => self.login_timeout = secs(v)?,
             "board_tile" => self.board_tile = num::<u16>(v)? & 0x0FFF,
             "max_players" => self.max_players = num(v)?,
+            "secure_login_key" => self.secure_login_key = PathBuf::from(v),
+            "require_secure_login" => self.require_secure_login = flag(v)?,
             "npcserver" => {
                 self.npcserver = match v.to_ascii_lowercase().as_str() {
                     "off" | "no" | "false" => NpcMode::Off,
@@ -190,6 +202,12 @@ impl Config {
 
     pub fn accounts_dir(&self) -> PathBuf {
         self.world.join("accounts")
+    }
+
+    /// The secure-login key file, or `None` when secure logins are off.
+    pub fn secure_login_key_path(&self) -> Option<PathBuf> {
+        (!self.secure_login_key.as_os_str().is_empty())
+            .then(|| self.world.join(&self.secure_login_key))
     }
 
     pub fn levels_dir(&self) -> PathBuf {
@@ -223,6 +241,14 @@ mod tests {
         assert!(!c.create_accounts);
         assert_eq!(c.npcserver, NpcMode::Off);
         assert!(c.npcserver_bind.is_loopback());
+        assert!(!c.require_secure_login);
+        assert_eq!(
+            c.secure_login_key_path(),
+            Some(PathBuf::from("w/config/seihai-login.key"))
+        );
+        let mut c = c;
+        c.apply("secure_login_key =\n");
+        assert_eq!(c.secure_login_key_path(), None);
     }
 
     #[test]

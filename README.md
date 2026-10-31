@@ -53,6 +53,24 @@ Then log in with Seihai (see its README) or a real client on loopback:
 seihai-mae --online 127.0.0.1:14802 --account test1 --password-env GRAAL_PW --version 2.05
 ```
 
+### Secure login (SEI00001)
+
+Seihai clients started with `--secure-login` send the version token
+`SEI00001`: the account and password go encrypted (X25519 key exchange,
+Ed25519-signed server hello pinned by the client, ChaCha20-Poly1305), and
+the session then runs as the `--version` build. Spec:
+[Seihai `documentation/secure-login.md`](https://github.com/squirelworks/seihai/blob/main/documentation/secure-login.md).
+
+On first start the server makes its key in `config/seihai-login.key` and
+prints the fingerprint: publish it so players can check it, keep the file
+private and back it up. `secure_login_key =` (empty) turns secure logins
+off; `require_secure_login = true` refuses classic logins (real clients then
+cannot log in). Classic logins are unchanged.
+
+```
+seihai-mae --online 127.0.0.1:14802 --account test1 --password-env GRAAL_PW --version 2.31 --secure-login
+```
+
 The settings are listed with their defaults in
 [`world/config/server.txt`](world/config/server.txt).
 

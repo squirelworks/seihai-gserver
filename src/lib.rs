@@ -17,6 +17,7 @@ pub mod listlink;
 pub mod login;
 pub mod npclink;
 pub mod rc;
+pub mod secure;
 pub mod server;
 pub mod wire;
 pub mod world;
@@ -53,6 +54,32 @@ pub fn load_world(world: &Path) -> std::io::Result<(server::Server, Vec<String>)
         );
     }
     Ok((server::Server::new(cfg, allow), warnings))
+}
+
+/// Load the secure-login key (`SEI00001`) named by `secure_login_key`,
+/// making it on first start, and print its fingerprint. Does nothing when
+/// the setting is empty. Kept out of [`load_world`] so that reading a world
+/// never writes to it.
+pub fn load_secure_identity(server: &mut server::Server) -> std::io::Result<()> {
+    use seihai_core::protocol::seclogin::{self, ServerIdentity};
+    let Some(path) = server.cfg.secure_login_key_path() else {
+        eprintln!("secure login (SEI00001): off");
+        return Ok(());
+    };
+    let (id, created) = ServerIdentity::load_or_create(&path).map_err(|e| {
+        std::io::Error::new(
+            e.kind(),
+            format!("secure login key {}: {e}", path.display()),
+        )
+    })?;
+    eprintln!(
+        "secure login (SEI00001): {} key {}, fingerprint {}",
+        if created { "made a new" } else { "loaded" },
+        seclogin::encode_key(&id.public_key()),
+        seclogin::fingerprint(&id.public_key())
+    );
+    server.identity = Some(id);
+    Ok(())
 }
 
 /// Bind and serve until the listener fails.

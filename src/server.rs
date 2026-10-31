@@ -10,6 +10,7 @@ use crate::burst::{self, Player};
 use crate::codec::{frame_header, Codec, MAX_IN_FRAME};
 use crate::config::{Config, NpcMode};
 use crate::login::{self, Login};
+use crate::secure;
 use crate::wire::{gint4, ids::*, msg};
 use seihai_core::protocol::{
     parse_player_props_with, zlib_decompress, ClientVersion, EncryptionGen,
@@ -37,6 +38,8 @@ pub struct Server {
     started: Instant,
     started_unix: u64,
     pub verbose: bool,
+    /// The secure-login key (`SEI00001`); `None` when secure logins are off.
+    pub identity: Option<seihai_core::protocol::seclogin::ServerIdentity>,
 }
 
 #[derive(Default)]
@@ -97,6 +100,7 @@ impl Server {
             started: Instant::now(),
             started_unix,
             verbose: false,
+            identity: None,
         }
     }
 
@@ -229,6 +233,71 @@ impl Conn {
             .map_or(body.len(), |i| i + 1);
         let (line, after) = body.split_at(nl);
 
+        // The Seihai secure login: C1 here, S1 back, then C2 stands in for
+        // the classic login frame. The rebuilt classic line goes through the
+        // same parse and checks as every other login.
+        let secure_at = secure::token_at(line);
+        let rebuilt;
+        let (line, after) = match secure_at {
+            None => (line, after),
+            Some(at) => {
+                let Some(identity) = self.server.identity.as_ref() else {
+                    self.server.log(
+                        &self.peer,
+                        "secure login refused: secure_login_key is empty",
+                    );
+                    let mut c = Codec::new(EncryptionGen::Gen2, 0, None);
+                    return self
+                        .refuse(&mut c, "Secure login is turned off on this server.")
+                        .await;
+                };
+                let reply = match secure::respond(line, at, identity) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        self.server
+                            .log(&self.peer, &format!("secure login dropped: {e}"));
+                        return Err(io::Error::new(io::ErrorKind::InvalidData, e.to_string()));
+                    }
+                };
+                self.stream
+                    .write_all(&secure::plain_frame(&reply.s1)?)
+                    .await?;
+                self.stream.flush().await?;
+                let c2 = tokio::time::timeout(cfg.login_timeout, async {
+                    loop {
+                        if let Some(f) = inbuf.take_frame()? {
+                            return Ok::<_, io::Error>(f);
+                        }
+                        read_more(&mut self.stream, &mut inbuf.buf).await?;
+                    }
+                })
+                .await
+                .map_err(|_| {
+                    io::Error::new(io::ErrorKind::TimedOut, "no sealed login in time")
+                })??;
+                rebuilt = match secure::open(
+                    &zlib_decompress(&c2)?,
+                    reply.opener,
+                    &reply.prefix,
+                    &reply.inner,
+                ) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        self.server
+                            .log(&self.peer, &format!("secure login dropped: {e}"));
+                        return Err(io::Error::new(io::ErrorKind::InvalidData, e.to_string()));
+                    }
+                };
+                let (l, a) = rebuilt.split_at(
+                    rebuilt
+                        .iter()
+                        .position(|&b| b == b'\n')
+                        .map_or(rebuilt.len(), |i| i + 1),
+                );
+                (l, a)
+            }
+        };
+
         let login = match login::parse(line, &self.server.extra_tokens) {
             Ok(l) => l,
             Err(e) => {
@@ -248,9 +317,29 @@ impl Conn {
             .is_some_and(|v| v.profile().protocol.gen5_long_frames);
         let label = login.version.map_or("unknown build", |v| v.label());
         let who = format!(
-            "{} [{} {}, {:?}]",
-            login.account, login.token, label, login.gen
+            "{} [{}{} {}, {:?}]",
+            login.account,
+            if secure_at.is_some() {
+                "SEI00001 inner "
+            } else {
+                ""
+            },
+            login.token,
+            label,
+            login.gen
         );
+        if secure_at.is_none() && cfg.require_secure_login {
+            self.server.log(
+                &self.peer,
+                &format!("{who}: password in the clear, refused (require_secure_login)"),
+            );
+            return self
+                .refuse(
+                    &mut codec,
+                    "This server needs the Seihai secure login (start Seihai with --secure-login).",
+                )
+                .await;
+        }
 
         if !self.server.allow.allows(&login.token) {
             self.server

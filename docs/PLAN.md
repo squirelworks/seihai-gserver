@@ -87,3 +87,22 @@ behaviour against, never a code source (see `00-rules.md`).
   `seihai-core` when it gets a server side.
 - **No world task yet.** Stage 1 shares only who is online. The 50 ms world tick
   arrives with stage 2.
+
+## Secure login (SEI00001), 2026-10-31
+
+Done: `src/secure.rs`, `secure_login_key` / `require_secure_login`,
+`tests/secure_login.rs` (every profile through the secure login), lab run in
+`docs/lab/secure-login-2026-10-31.md`.
+
+Next:
+
+- [ ] Switch `seihai-core` from the PR rev to the tag once seihai's
+      secure-login PR is merged and tagged (`v0.0.4`; Chiaki tags).
+- Seihai only: real clients cannot be changed, so their logins stay in the
+  clear (Squirrel, 2026-10-31).
+- [ ] Optional, only if Squirrel asks: when the listserver link lands,
+      `VERIACC2` carries the player's password to the listserver in the clear;
+      both ends are ours, so the same handshake could cover it.
+- [ ] RC logins (`rc.rs`, type 1/6): the same handshake once `seihai-rc`
+      speaks it.
+- [ ] A `key-fingerprint` subcommand that prints the key without starting.
