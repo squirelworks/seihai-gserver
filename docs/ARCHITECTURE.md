@@ -24,6 +24,7 @@ How the server is put together, and where each later stage plugs in. Read
 | `src/listlink.rs` | the listserver link: register, player count, account check (skeleton) | later |
 | `src/rc.rs` | RC and NC logins for `seihai-rc` (skeleton) | 4 |
 | `src/npclink.rs` | the link to `seihai-npcserver` (`PROTOCOL.md`): `Hub` (players for the link), `serve_link`, `supervise` for `npcserver = auto` | 5 (first half) |
+| `src/anticheat.rs` | violations, scores and the admin policy (planned; see `docs/PLAN.md`, stage 7) | 7 |
 
 The skeleton modules hold the plan for their stage as doc comments and the
 types the stage will fill in. They are compiled, so they stay in step with

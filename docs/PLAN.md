@@ -42,6 +42,10 @@ behaviour against, never a code source (see `00-rules.md`).
    NPC-server to gserver messages (drafted in `PROTOCOL.md`).
 6. 3.x to 6.x: the Login lobby and server warp, GS2 bytecode delivery, and later our
    own GS2 compiler (gs2-parser is GPL, so it cannot be used).
+7. Server-side anti-cheat (see "Milestone: server-side anti-cheat" below). Each
+   check lands with the feature it guards (movement and warps with stage 2,
+   items, hearts and gralats with stages 2 and 3), behind one policy layer that
+   admins configure. No client-side anti-debugging.
 
 ## Behaviour to match (from lab findings)
 
@@ -56,6 +60,100 @@ behaviour against, never a code source (see `00-rules.md`).
 - Real 2.22 sends `gr.x`/`gr.y` FLAGSETs in gmap coordinates every 50 ms; handle the
   load.
 - Public servers do not require the tamper check (39) at login. Do not require it.
+
+## Milestone: server-side anti-cheat
+
+The server is the authority on what a player has and where they may be. A
+client is only trusted for what it could really have done. Everything here
+runs on the server and works with unmodified clients of every build. We do not
+add client-side anti-debugging, packers or tamper checks: they break old builds
+and Wine, and they do not stop a modified client anyway. (Public servers do not
+require the tamper check (39) at login, and neither do we.)
+
+### What is checked
+
+- **Movement speed.** Track each player's last accepted position and time from
+  their props. Flag a step that is longer than the build's walk speed allows
+  over the elapsed time, with slack for lag bursts (clients batch steps after a
+  stall). Use the precise position where the profile has it
+  (`props.precise_pos`), and whole tiles otherwise. Gmaps count in gmap
+  coordinates, so a step across a level edge is not a jump.
+- **Teleporting.** A position change with no walking in between is accepted
+  only when the server caused it: a warp it sent, a link the player stood on,
+  a respawn, or an NPC or script warp from the NPC-server. Anything else is a
+  teleport and is put back.
+- **Warps and level changes.** `PLI_LEVELWARP` (0), `PLI_LEVELWARPMOD` (30) and
+  `PLI_ADJACENTLEVEL` (35) are accepted only for a link the player touches, a
+  gmap neighbour of the level they are in, or a warp the server or NPC-server
+  sent. Level names pass the same name check as files (no paths out of the
+  world folder).
+- **Items, gralats and hearts.** The server keeps the real count of gralats,
+  arrows, bombs, hearts and max hearts. A prop change that raises one is
+  accepted only for a source the server knows: an item it put on the ground
+  that this player picked up, a chest the player opened, a shop or script grant
+  from the NPC-server, or healing it allows. Item pickups are matched against
+  the level's item list and taken off it, so one item is not picked up twice.
+  A refused change is answered with the server's value.
+- **Damage and death.** Hurt from another player is checked against range and
+  weapon (stage 3). A client that sets its own hearts above the server's count
+  is put back.
+- **Packet rate.** Count messages per connection in a sliding window, by kind.
+  The limits must leave room for real traffic: 2.x walk props every 100 ms,
+  and real 2.22 sends `gr.x`/`gr.y` FLAGSETs every 50 ms. Over the soft limit,
+  messages are dropped and logged; over the hard limit the player is kicked.
+  Chat, PMs and file requests get their own lower limits.
+- **Malformed input.** Already in stage 1: unknown messages are counted, never
+  kicked for. Broken gen-3 ciphers and impossible lengths still end the
+  connection, with a `PLO_DISCMESSAGE` first.
+
+### Policy (admin settings)
+
+Each check reports a violation with a kind and a size (how far over). A policy
+layer, not the check, decides what happens:
+
+- per kind: `off`, `log`, `correct` (put the value or position back), `kick`,
+  or `ban`, with a threshold (for example 3 speed flags in 30 s before `kick`);
+- violation scores decay over time, so one lag spike never kicks anyone;
+- staff accounts can be exempt per kind;
+- bans by account (and later by machine field, where 5.00+ builds send one)
+  are stored in the world folder with a reason, the admin and an end time;
+- a log file in the world folder, one line per violation (time, account,
+  build, level, kind, values), and a summary for `seihai-rc` once stage 4
+  lands.
+
+Sketch for `config/server.txt` (names to settle when it is built):
+
+```
+anticheat = on
+anticheat_log = logs/anticheat.log
+anticheat.speed = correct, kick after 5 in 60
+anticheat.teleport = correct, kick after 3 in 60
+anticheat.items = correct, log
+anticheat.rate = kick at 200 per second
+```
+
+Defaults are `log` and `correct` only: no kicks or bans until an admin turns
+them on, so a check that is wrong for some build never locks real players out.
+
+### Where it lives
+
+- `src/anticheat.rs`: the `Violation` type, the per-player score, and the
+  policy from the settings. Checks call one function: `report(player, kind,
+  size)`, which returns the action.
+- Movement, warp and item checks live in the world task (`world.rs`,
+  `levels.rs`), since only it knows positions, links and item lists.
+- The packet-rate counter lives in the connection task (`server.rs`), before
+  the message reaches the world.
+
+### Tests and lab runs
+
+- Unit tests per check with recorded real walking (every build in the matrix
+  must produce zero flags in normal play, including gmap edges and lag).
+- A cheating test client built on `seihai-core` in `tests/`: speed walking,
+  teleports, warps to unlinked levels, gralat and heart raises, and floods.
+  Each must be caught and get the configured action.
+- A lab run with real 1.39, 2.05, 2.17, 2.22 and 2.31 under Wine walking,
+  warping and picking up items with every check on `kick`: no false kicks.
 
 ## Stage 1 as built
 
