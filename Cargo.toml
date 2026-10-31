@@ -1,0 +1,12 @@
+[package]
+name = "seihai-gserver"
+version = "0.0.1"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "A new Graal game server written in Rust on Seihai's core, for classic clients (1.33 to 2.31 first) and Seihai."
+repository = "https://github.com/squirelworks/seihai-gserver"
+publish = false
+
+[dependencies]
+# Protocol, framing, version profiles and scripting shared with the Seihai client.
+seihai-core = { git = "https://github.com/squirelworks/seihai", tag = "v0.0.3", default-features = false }

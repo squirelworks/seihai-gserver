@@ -1,0 +1,6 @@
+---
+description: Seihai server stack rules
+alwaysApply: true
+---
+
+Follow AGENTS.md in the repo root on every change.
