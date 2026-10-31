@@ -22,33 +22,7 @@ fn every_profile_logs_in_through_the_secure_login() {
         .as_ref()
         .expect("key made at load")
         .public_key();
-    let handles: Vec<_> = ClientVersion::all_versions()
-        .iter()
-        .enumerate()
-        .map(|(i, &v)| {
-            let (addr, server) = (addr.clone(), server.clone());
-            std::thread::spawn(move || {
-                let secure = SecureLogin::pinned(key);
-                let r = run_one(
-                    &addr,
-                    &server,
-                    v,
-                    &format!("sec{i}"),
-                    Duration::from_secs(1),
-                    Some(&secure),
-                );
-                (v, r)
-            })
-        })
-        .collect();
-    let mut failed = Vec::new();
-    for h in handles {
-        let (v, r) = h.join().unwrap();
-        if let Err(e) = r {
-            eprintln!("FAIL {:<14} {e}", v.label());
-            failed.push(v.label());
-        }
-    }
+    let failed = run_all(&addr, &server, "sec", Duration::from_secs(1), Some(key));
     // A wrong pinned key: the client stops before the password goes.
     let wrong = SecureLogin::pinned([7; 32]);
     let e = login_gserver_secure(

@@ -22,30 +22,7 @@ fn every_profile_logs_in_and_stays() {
     );
     let w = world("matrix", "*\n");
     let (addr, server) = start(&w);
-    let handles: Vec<_> = ClientVersion::all_versions()
-        .iter()
-        .enumerate()
-        .map(|(i, &v)| {
-            let (addr, server) = (addr.clone(), server.clone());
-            std::thread::spawn(move || {
-                (
-                    v,
-                    run_one(&addr, &server, v, &format!("lab{i}"), stay, None),
-                )
-            })
-        })
-        .collect();
-    let mut failed = Vec::new();
-    for h in handles {
-        let (v, r) = h.join().unwrap();
-        match r {
-            Ok(()) => eprintln!("ok   {:<14} {} {:?}", v.label(), v.token(), v.encryption()),
-            Err(e) => {
-                eprintln!("FAIL {:<14} {e}", v.label());
-                failed.push(v.label());
-            }
-        }
-    }
+    let failed = run_all(&addr, &server, "lab", stay, None);
     let _ = std::fs::remove_dir_all(&w);
     assert!(failed.is_empty(), "failed: {failed:?}");
 }
