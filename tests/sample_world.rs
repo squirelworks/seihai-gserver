@@ -10,5 +10,8 @@ fn sample_world_loads_clean() {
     assert!(server.cfg.bind.is_loopback());
     assert!(!server.cfg.create_accounts);
     assert_eq!(server.cfg.board_tile, d.board_tile);
-    assert_eq!(server.allow.len(), seihai_gserver::allow::AllowList::all_known().len());
+    assert_eq!(
+        server.allow.len(),
+        seihai_gserver::allow::AllowList::all_known().len()
+    );
 }
