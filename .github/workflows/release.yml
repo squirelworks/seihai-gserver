@@ -37,12 +37,14 @@ jobs:
         run: |
           mkdir -p dist/${{ matrix.name }}
           cp target/${{ matrix.target }}/release/seihai-gserver README.md LICENSE-MIT LICENSE-APACHE dist/${{ matrix.name }}/
+          cp -R world dist/${{ matrix.name }}/
           tar czf ${{ matrix.name }}.tar.gz -C dist ${{ matrix.name }}
       - name: Package (windows)
         if: matrix.os == 'windows-latest'
         run: |
           New-Item -ItemType Directory -Force dist/${{ matrix.name }}
           Copy-Item target/${{ matrix.target }}/release/seihai-gserver.exe,README.md,LICENSE-MIT,LICENSE-APACHE dist/${{ matrix.name }}/
+          Copy-Item -Recurse world dist/${{ matrix.name }}/
           Compress-Archive -Path dist/${{ matrix.name }} -DestinationPath ${{ matrix.name }}.zip
       - uses: actions/upload-artifact@v4
         with:

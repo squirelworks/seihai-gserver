@@ -1,0 +1,30 @@
+# seihai-gserver settings: key = value, `#` starts a comment.
+# Every line is optional; these are the defaults unless noted.
+
+name = Seihai Lab
+# Listen on loopback only. Set 0.0.0.0 to let other machines in.
+bind = 127.0.0.1
+port = 14802
+
+# Where a new account starts, in tiles.
+start_level = onlinestartlocal.nw
+start_x = 30
+start_y = 30.5
+
+# Sent at login. An empty start_message sends none.
+status_list = Online,Away,DND
+start_message =
+
+# Make an account on its first login with the password it gave.
+# Handy in a lab; leave it off anywhere else.
+create_accounts = false
+
+# Seconds between world-time messages (keeps idle links busy; 0 = off).
+heartbeat = 5
+# Close a connection silent for this many seconds (0 = never).
+idle_timeout = 0
+login_timeout = 10
+max_players = 256
+
+# Stage 1 has no level files: the start board is one tile everywhere.
+board_tile = 511

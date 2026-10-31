@@ -1,0 +1,9 @@
+# Client builds allowed to log in. One entry per line:
+#   *                  every build seihai-core has a profile for
+#   2.05               a build by its seihai-core label
+#   1.33..1.39         a range of labels, oldest to newest
+#   GNW03081           a version token
+#   GNW24011:GNW28015  a range of tokens
+# A GServer-v2-style file (`newmain = A:B` under `[generation-range]`)
+# also reads: every range in it is allowed.
+*
