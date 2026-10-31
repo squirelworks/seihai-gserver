@@ -428,7 +428,7 @@ dependencies = [
 [[package]]
 name = "seihai-core"
 version = "0.0.3"
-source = "git+https://github.com/squirelworks/seihai?tag=v0.0.4#66fe208904a7d633ba8cda1e2d05de2f1625eefe"
+source = "git+https://github.com/squirelworks/seihai?rev=637ade305d525e7ff307ea95cfa2b42674bfd857#637ade305d525e7ff307ea95cfa2b42674bfd857"
 dependencies = [
  "base64",
  "bzip2",
@@ -447,7 +447,7 @@ version = "0.0.1"
 dependencies = [
  "getrandom",
  "pbkdf2",
- "seihai-core 0.0.3 (git+https://github.com/squirelworks/seihai?tag=v0.0.4)",
+ "seihai-core 0.0.3 (git+https://github.com/squirelworks/seihai?rev=637ade305d525e7ff307ea95cfa2b42674bfd857)",
  "seihai-npcserver",
  "sha2",
  "tokio",

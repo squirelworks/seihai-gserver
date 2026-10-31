@@ -29,7 +29,15 @@ Stage 1 covers:
   `seihai-npcserver` from next to its own binary with a fresh token, so there is
   nothing else to set up. The NPC-server runs no scripts on players yet.
 
-Levels, other players, NPCs, RC and the listserver link are later stages.
+* the listserver link (`listserver = host:port`): registers the server, keeps
+  its player count, and with `listserver_accounts = true` checks passwords
+  with the listserver (`VERIACC2`). The link is encrypted by default
+  (`SVLINK01` in Seihai's `documentation/secure-login.md`), so the password
+  of every player, real Graal clients included, crosses it sealed. The
+  listserver's key is pinned in `config/listserver.pin` on first contact, or
+  given as `listserver_key`.
+
+Levels, other players, NPCs and RC are later stages.
 
 ## Build and run
 

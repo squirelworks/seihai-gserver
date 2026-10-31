@@ -198,9 +198,17 @@ Next:
       secure-login PR is merged and tagged (`v0.0.4`; Chiaki tags).
 - Seihai only: real clients cannot be changed, so their logins stay in the
   clear (Squirrel, 2026-10-31).
-- [ ] Optional, only if Squirrel asks: when the listserver link lands,
-      `VERIACC2` carries the player's password to the listserver in the clear;
-      both ends are ours, so the same handshake could cover it.
+- [x] The listserver link is encrypted (Squirrel, 2026-10-31: "encrypt
+      it"): `src/listlink.rs`, `listserver_secure` on by default,
+      `tests/listserver_link.rs`, lab run in
+      `docs/lab/listserver-link-2026-10-31.md`.
+- [ ] Switch `seihai-core` from rev 637ade3 to the tag `v0.0.5` once
+      Chiaki tags it (it has `seclogin::Channel::split`).
+- [ ] Listserver link, later: send the player's nickname and props
+      (`PLYRADD` sends only the id and type now), `SVO_PING`, and the
+      server-to-server messages (PMs, `SVI_FILESTART`) when stage 3 needs
+      them. `VERIACC2`'s "type" is always 0 (a player); RC logins will
+      send their own once `rc.rs` lands.
 - [ ] RC logins (`rc.rs`, type 1/6): the same handshake once `seihai-rc`
       speaks it.
 - [ ] A `key-fingerprint` subcommand that prints the key without starting.

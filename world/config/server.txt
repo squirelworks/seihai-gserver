@@ -49,3 +49,21 @@ npcserver_bind = 127.0.0.1
 npcserver_port = 14810
 # npcserver_token =          (external only; 16 to 256 characters)
 # npcserver_path =           (auto only; empty = next to seihai-gserver)
+
+# The listserver link. Empty listserver (the default): register nowhere.
+# Set it to the listserver's gserver port, e.g. 127.0.0.1:14900 for a lab.
+listserver =
+# The text under the name in the server list.
+description =
+# Encrypt the link (Seihai's documentation/secure-login.md, "Gserver to
+# listserver link"). Account checks carry every player's password, whatever
+# client they use, so leave this on; off only for a listserver that does not
+# know the handshake (GServer-v2's list servers).
+listserver_secure = true
+# The listserver's public key (base64), as it prints at start. Empty: trust
+# it on the first connection and pin it in config/listserver.pin.
+listserver_key =
+# Check passwords with the listserver (VERIACC2) instead of the local
+# accounts' hashes. The local account file still keeps the player's state
+# and is made, with no password, on the first login.
+listserver_accounts = false
