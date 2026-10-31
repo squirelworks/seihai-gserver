@@ -14,6 +14,7 @@ How the server is put together, and where each later stage plugs in. Read
 | `src/allow.rs` | `config/allowedversions.txt` | 1 |
 | `src/accounts.rs` | `accounts/<name>.txt`, PBKDF2 passwords | 1 |
 | `src/login.rs` | the login line: type, key, token, account, password, tail | 1 |
+| `src/secure.rs` | the Seihai secure login (`SEI00001`): spots C1, answers S1, opens C2 and rebuilds the classic login frame | 1 |
 | `src/codec.rs` | frames per generation (gen 2 zlib, gen 3 LCG byte, gen 5 XOR) | 1 |
 | `src/wire.rs` | server-to-client message writers and the ids we use | 1 |
 | `src/burst.rs` | the login burst per generation, own player props | 1 |
@@ -33,7 +34,8 @@ the rest; nothing calls them yet.
 
 ```
 TcpListener ──accept──▶ Conn task (server.rs)
-   first frame: plain zlib ─▶ login::parse ─▶ allow-list ─▶ accounts (spawn_blocking: PBKDF2)
+   first frame: plain zlib ─▶ [SEI00001? secure.rs: S1 out, C2 in, rebuilt classic frame]
+                           ─▶ login::parse ─▶ allow-list ─▶ accounts (spawn_blocking: PBKDF2)
                                  │
                                  ▼
                         Codec::new(gen, key, version)          codec.rs
@@ -96,7 +98,22 @@ Conn task ◀──Outbox (mpsc of message bodies)──────────
 
 - Unit tests next to the code; every writer against `seihai-core`'s reader.
 - `tests/login_matrix.rs`: every profile logs in through `seihai_core::net`.
+- `tests/secure_login.rs`: the same matrix through the secure login, plus
+  a wrong pinned key and `require_secure_login`. Helpers are in
+  `tests/common/`; each test file is its own binary so the matrices do not
+  compete for the CPU (they time out when run side by side on 4 cores).
   Add a matrix test per stage (stage 2: walk to a link and get the next level).
 - `tools/lab-matrix.sh`: the real `seihai-mae` binary for every profile.
 - `tools/lab-wine.md`: real Windows clients under Wine in a loopback-only
   namespace. Record each run in `docs/lab/`.
+
+## Secure login (SEI00001)
+
+Spec: Seihai `documentation/secure-login.md`. The crypto and the message
+formats live in `seihai_core::protocol::seclogin` so the client and every
+server share one definition; `secure.rs` only fits them to `Conn::run`.
+After C2 the rebuilt classic frame goes through `login::parse`, the
+allow-list (checked on the inner token) and the account store as any other
+login, so nothing after the login knows the difference. The server key is
+loaded by `load_secure_identity` (not `load_world`, so reading a world never
+writes a file) from `secure_login_key` (default `config/seihai-login.key`).

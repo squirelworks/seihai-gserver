@@ -28,3 +28,13 @@ max_players = 256
 
 # Stage 1 has no level files: the start board is one tile everywhere.
 board_tile = 511
+
+# The Seihai secure login (version token SEI00001): Seihai clients started
+# with --secure-login send the account and password encrypted. This file
+# holds the server's own key, relative to the world folder; it is made on
+# first start and its fingerprint is printed so players can check it. Keep
+# it private and back it up. Empty: secure logins are refused.
+secure_login_key = config/seihai-login.key
+# Refuse logins that send the password in the clear. Real Graal clients
+# cannot log in when this is on.
+require_secure_login = false
