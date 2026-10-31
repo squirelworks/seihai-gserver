@@ -110,7 +110,7 @@ fn account_command(world: &std::path::Path, args: &[String]) -> ExitCode {
         let made = a.is_none();
         let mut a =
             a.unwrap_or_else(|| Account::new(&name, &cfg.start_level, cfg.start_x, cfg.start_y));
-        a.set_password(password.as_bytes());
+        a.set_password(password.as_bytes(), cfg.password_rounds);
         store.save(&a).map(|()| made)
     });
     match result {

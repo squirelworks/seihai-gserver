@@ -16,6 +16,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const PASSWORD: &str = "labpw";
+/// How long a login gets to answer. Generous: parallel tests share the CPU.
+const LOGIN_WAIT: Duration = Duration::from_secs(30);
 
 fn world(tag: &str, allowed: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("seihai-gserver-{tag}-{}", std::process::id()));
@@ -23,7 +25,9 @@ fn world(tag: &str, allowed: &str) -> PathBuf {
     std::fs::create_dir_all(dir.join("config")).unwrap();
     std::fs::write(
         dir.join("config/server.txt"),
-        "create_accounts = true\nheartbeat = 1\n",
+        // Few PBKDF2 rounds: the matrix makes 46 accounts at once, and at
+        // the default count that starves a small CI runner's CPU.
+        "create_accounts = true\nheartbeat = 1\npassword_rounds = 1000\n",
     )
     .unwrap();
     std::fs::write(dir.join("config/allowedversions.txt"), allowed).unwrap();
@@ -86,7 +90,7 @@ fn run_one(
     let rx = sess.conn.spawn_reader().map_err(|e| e.to_string())?;
     let mut st = SessionState::for_version(v);
     st.file_has_modtime = v.file_has_modtime();
-    read_until(&rx, &mut st, Duration::from_secs(10), |s| {
+    read_until(&rx, &mut st, LOGIN_WAIT, |s| {
         s.board.is_some() && s.current_level_name().is_some()
     })?;
     if st.current_level_name().as_deref() != Some("onlinestartlocal.nw") {
@@ -196,9 +200,7 @@ fn refused(addr: &str, v: ClientVersion, account: &str, password: &str) -> Optio
     let mut sess = login_gserver(addr, v, random_key(), account, password, false).ok()?;
     let rx = sess.conn.spawn_reader().ok()?;
     let mut st = SessionState::for_version(v);
-    let _ = read_until(&rx, &mut st, Duration::from_secs(10), |s| {
-        s.disconnect_message.is_some()
-    });
+    let _ = read_until(&rx, &mut st, LOGIN_WAIT, |s| s.disconnect_message.is_some());
     st.disconnect_message
 }
 
@@ -218,7 +220,7 @@ fn wrong_password_version_and_double_login_are_refused() {
     .unwrap();
     let rx = first.conn.spawn_reader().unwrap();
     let mut st = SessionState::for_version(ClientVersion::V205);
-    read_until(&rx, &mut st, Duration::from_secs(10), |s| s.board.is_some()).unwrap();
+    read_until(&rx, &mut st, LOGIN_WAIT, |s| s.board.is_some()).unwrap();
 
     let m = refused(&addr, ClientVersion::V222, "dup", PASSWORD).unwrap();
     assert!(m.contains("already in use"), "{m}");

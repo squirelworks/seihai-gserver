@@ -356,7 +356,7 @@ impl Conn {
             Some(_) => Ok(Err("Account name or password is wrong.")),
             None if cfg.create_accounts && !password.is_empty() => {
                 let mut a = Account::new(&name, &cfg.start_level, cfg.start_x, cfg.start_y);
-                a.set_password(&password);
+                a.set_password(&password, cfg.password_rounds);
                 store.save(&a)?;
                 Ok(Ok(a))
             }

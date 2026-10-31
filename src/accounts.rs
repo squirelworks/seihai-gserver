@@ -32,7 +32,13 @@ use sha2::Sha256;
 use std::io;
 use std::path::{Path, PathBuf};
 
+/// The default PBKDF2 rounds for new hashes (`password_rounds` in
+/// `server.txt`). Stored hashes carry their own count, so changing it
+/// never locks anyone out.
 pub const PBKDF2_ROUNDS: u32 = 100_000;
+/// Fewest rounds `password_rounds` takes; the most `verify_password` reads.
+pub const MIN_ROUNDS: u32 = 1_000;
+pub const MAX_ROUNDS: u32 = 10_000_000;
 const STATUS_HIDDEN: u8 = 0x02;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -160,8 +166,8 @@ impl Account {
         s
     }
 
-    pub fn set_password(&mut self, password: &[u8]) {
-        self.password = hash_password(password);
+    pub fn set_password(&mut self, password: &[u8], rounds: u32) {
+        self.password = hash_password(password, rounds);
     }
 
     pub fn check_password(&self, password: &[u8]) -> bool {
@@ -175,15 +181,13 @@ fn power_and_image(v: &str) -> (u8, String) {
 }
 
 /// `pbkdf2-sha256:<rounds>:<salt hex>:<hash hex>` with a fresh 16-byte salt.
-pub fn hash_password(password: &[u8]) -> String {
+/// `rounds` is clamped to `MIN_ROUNDS..=MAX_ROUNDS`.
+pub fn hash_password(password: &[u8], rounds: u32) -> String {
+    let rounds = rounds.clamp(MIN_ROUNDS, MAX_ROUNDS);
     let mut salt = [0u8; 16];
     getrandom::getrandom(&mut salt).expect("the system random source works");
-    let hash = pbkdf2::pbkdf2_hmac_array::<Sha256, 32>(password, &salt, PBKDF2_ROUNDS);
-    format!(
-        "pbkdf2-sha256:{PBKDF2_ROUNDS}:{}:{}",
-        hex(&salt),
-        hex(&hash)
-    )
+    let hash = pbkdf2::pbkdf2_hmac_array::<Sha256, 32>(password, &salt, rounds);
+    format!("pbkdf2-sha256:{rounds}:{}:{}", hex(&salt), hex(&hash))
 }
 
 /// Check `password` against a stored hash. An empty or unreadable stored
@@ -197,7 +201,7 @@ pub fn verify_password(stored: &str, password: &[u8]) -> bool {
     else {
         return false;
     };
-    if rounds == 0 || rounds > 10_000_000 || want.len() != 32 {
+    if rounds == 0 || rounds > MAX_ROUNDS || want.len() != 32 {
         return false;
     }
     let got = pbkdf2::pbkdf2_hmac_array::<Sha256, 32>(password, &salt, rounds);
@@ -267,12 +271,16 @@ mod tests {
 
     #[test]
     fn passwords() {
-        let h = hash_password(b"labpw");
+        let h = hash_password(b"labpw", PBKDF2_ROUNDS);
         assert!(verify_password(&h, b"labpw"));
         assert!(!verify_password(&h, b"labpx"));
         assert!(!verify_password("", b""));
         assert!(!verify_password("plain:labpw", b"labpw"));
-        assert_ne!(hash_password(b"labpw"), h, "fresh salt each time");
+        assert_ne!(
+            hash_password(b"labpw", PBKDF2_ROUNDS),
+            h,
+            "fresh salt each time"
+        );
     }
 
     #[test]
@@ -293,7 +301,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("seihai-gserver-acc-{}", std::process::id()));
         let s = Store::new(&dir);
         let mut a = Account::new("Bob", "start.nw", 1.0, 2.0);
-        a.set_password(b"pw");
+        a.set_password(b"pw", MIN_ROUNDS);
         s.save(&a).unwrap();
         let b = s.load("BOB").unwrap().unwrap();
         assert!(b.check_password(b"pw"));

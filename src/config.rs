@@ -47,6 +47,10 @@ pub struct Config {
     /// no level files yet).
     pub board_tile: u16,
     pub max_players: usize,
+    /// PBKDF2 rounds for passwords hashed from now on (new accounts and
+    /// `seihai-gserver account`). At least 1000; hashes already stored
+    /// keep the count they were made with.
+    pub password_rounds: u32,
 }
 
 impl Config {
@@ -68,6 +72,7 @@ impl Config {
             login_timeout: Duration::from_secs(10),
             board_tile: 0x1FF,
             max_players: 256,
+            password_rounds: crate::accounts::PBKDF2_ROUNDS,
         }
     }
 
@@ -140,6 +145,16 @@ impl Config {
             "login_timeout" => self.login_timeout = secs(v)?,
             "board_tile" => self.board_tile = num::<u16>(v)? & 0x0FFF,
             "max_players" => self.max_players = num(v)?,
+            "password_rounds" => {
+                use crate::accounts::{MAX_ROUNDS, MIN_ROUNDS};
+                let n: u32 = num(v)?;
+                if !(MIN_ROUNDS..=MAX_ROUNDS).contains(&n) {
+                    return Err(format!(
+                        "password_rounds must be {MIN_ROUNDS} to {MAX_ROUNDS}"
+                    ));
+                }
+                self.password_rounds = n
+            }
             _ => return Err(format!("unknown setting `{key}`")),
         }
         Ok(())
@@ -174,5 +189,16 @@ mod tests {
         let c = Config::defaults(Path::new("w"));
         assert!(c.bind.is_loopback());
         assert!(!c.create_accounts);
+        assert_eq!(c.password_rounds, crate::accounts::PBKDF2_ROUNDS);
+    }
+
+    #[test]
+    fn password_rounds_has_a_floor() {
+        let mut c = Config::defaults(Path::new("w"));
+        assert!(c.set("password_rounds", "1000").is_ok());
+        assert_eq!(c.password_rounds, 1000);
+        assert!(c.set("password_rounds", "10").is_err());
+        assert!(c.set("password_rounds", "20000000").is_err());
+        assert_eq!(c.password_rounds, 1000);
     }
 }

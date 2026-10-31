@@ -26,5 +26,9 @@ idle_timeout = 0
 login_timeout = 10
 max_players = 256
 
+# PBKDF2 rounds for new password hashes (at least 1000). Stored hashes
+# keep their own count.
+password_rounds = 100000
+
 # Stage 1 has no level files: the start board is one tile everywhere.
 board_tile = 511
