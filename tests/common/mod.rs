@@ -180,3 +180,65 @@ pub fn refused(addr: &str, v: ClientVersion, account: &str, password: &str) -> O
     });
     st.disconnect_message
 }
+
+/// Run every profile `run_one`, at most `SEIHAI_TEST_PARALLEL` (default 6)
+/// at once. Each new account hashes its password with PBKDF2 in a debug
+/// build; fifty of those at once on a two-core CI runner (Windows, macOS)
+/// starve the logins past their 10 s limit. Returns the labels that
+/// failed, after printing each result.
+pub fn run_all(
+    addr: &str,
+    server: &Arc<Server>,
+    prefix: &str,
+    stay: Duration,
+    secure_key: Option<[u8; 32]>,
+) -> Vec<&'static str> {
+    let parallel = std::env::var("SEIHAI_TEST_PARALLEL")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(6);
+    let work: Vec<(usize, ClientVersion)> = ClientVersion::all_versions()
+        .iter()
+        .copied()
+        .enumerate()
+        .collect();
+    let queue = Arc::new(std::sync::Mutex::new(work.into_iter()));
+    let (tx, results) = std::sync::mpsc::channel();
+    let workers: Vec<_> = (0..parallel)
+        .map(|_| {
+            let (queue, tx) = (queue.clone(), tx.clone());
+            let (addr, server, prefix) = (addr.to_string(), server.clone(), prefix.to_string());
+            std::thread::spawn(move || loop {
+                let Some((i, v)) = queue.lock().unwrap().next() else {
+                    return;
+                };
+                let secure = secure_key.map(SecureLogin::pinned);
+                let r = run_one(
+                    &addr,
+                    &server,
+                    v,
+                    &format!("{prefix}{i}"),
+                    stay,
+                    secure.as_ref(),
+                );
+                let _ = tx.send((v, r));
+            })
+        })
+        .collect();
+    drop(tx);
+    let mut failed = Vec::new();
+    for (v, r) in results {
+        match r {
+            Ok(()) => eprintln!("ok   {:<14} {} {:?}", v.label(), v.token(), v.encryption()),
+            Err(e) => {
+                eprintln!("FAIL {:<14} {e}", v.label());
+                failed.push(v.label());
+            }
+        }
+    }
+    for w in workers {
+        w.join().unwrap();
+    }
+    failed
+}
