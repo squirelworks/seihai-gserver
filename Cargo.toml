@@ -9,10 +9,7 @@ publish = false
 
 [dependencies]
 # Protocol, framing, version profiles and scripting shared with the Seihai client.
-# TODO(tag): rev of squirelworks/seihai PR "secure-login-sei00001" (the
-# SEI00001 secure login). Once that PR is merged and tagged (v0.0.4),
-# switch back to `tag = "v0.0.4"`.
-seihai-core = { git = "https://github.com/squirelworks/seihai", rev = "fe25c9fc8372773770fb3fbe22fc0326597ee9eb", default-features = false }
+seihai-core = { git = "https://github.com/squirelworks/seihai", tag = "v0.0.4", default-features = false }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time", "macros", "sync", "signal", "process"] }
 # The NPC-server link's wire format (PROTOCOL.md), shared with the NPC-server
 # so both sides use one codec. Pinned by commit until seihai-npcserver is tagged.
