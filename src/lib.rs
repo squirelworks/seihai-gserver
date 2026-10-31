@@ -3,16 +3,23 @@
 //! Stage 1 (see `docs/PLAN.md`): listen, log in every protocol generation,
 //! check the version allow-list and the flat-file accounts, send the login
 //! burst, then keep the idle session alive. Levels, other players and
-//! everything else come in later stages.
+//! everything else come in later stages; their modules are skeletons with
+//! the plan in their doc comments. See `docs/ARCHITECTURE.md`.
 
 pub mod accounts;
 pub mod allow;
 pub mod burst;
 pub mod codec;
 pub mod config;
+pub mod files;
+pub mod levels;
+pub mod listlink;
 pub mod login;
+pub mod npclink;
+pub mod rc;
 pub mod server;
 pub mod wire;
+pub mod world;
 
 use std::path::Path;
 use std::sync::Arc;
