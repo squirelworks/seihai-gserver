@@ -47,6 +47,28 @@ pub struct Config {
     /// no level files yet).
     pub board_tile: u16,
     pub max_players: usize,
+    /// The NPC-server link (`PROTOCOL.md`): `off`, `external` (someone
+    /// starts `seihai-npcserver` by hand) or `auto` (the gserver starts it
+    /// and hands it a fresh token).
+    pub npcserver: NpcMode,
+    /// Address and port the link listens on. Loopback by default: the link
+    /// is not encrypted.
+    pub npcserver_bind: IpAddr,
+    pub npcserver_port: u16,
+    /// The shared token for `npcserver = external` (16 to 256 bytes).
+    /// `auto` makes its own and ignores this.
+    pub npcserver_token: String,
+    /// The `seihai-npcserver` binary for `auto`. Empty: the one next to
+    /// this binary.
+    pub npcserver_path: String,
+}
+
+/// How the NPC-server link runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NpcMode {
+    Off,
+    External,
+    Auto,
 }
 
 impl Config {
@@ -68,6 +90,11 @@ impl Config {
             login_timeout: Duration::from_secs(10),
             board_tile: 0x1FF,
             max_players: 256,
+            npcserver: NpcMode::Off,
+            npcserver_bind: IpAddr::from([127, 0, 0, 1]),
+            npcserver_port: 14810,
+            npcserver_token: String::new(),
+            npcserver_path: String::new(),
         }
     }
 
@@ -140,6 +167,22 @@ impl Config {
             "login_timeout" => self.login_timeout = secs(v)?,
             "board_tile" => self.board_tile = num::<u16>(v)? & 0x0FFF,
             "max_players" => self.max_players = num(v)?,
+            "npcserver" => {
+                self.npcserver = match v.to_ascii_lowercase().as_str() {
+                    "off" | "no" | "false" => NpcMode::Off,
+                    "external" => NpcMode::External,
+                    "auto" => NpcMode::Auto,
+                    _ => return Err(format!("`{v}` is not off, external or auto")),
+                }
+            }
+            "npcserver_bind" => {
+                self.npcserver_bind = v
+                    .parse()
+                    .map_err(|_| format!("`{v}` is not an IP address"))?
+            }
+            "npcserver_port" => self.npcserver_port = num(v)?,
+            "npcserver_token" => self.npcserver_token = v.to_string(),
+            "npcserver_path" => self.npcserver_path = v.to_string(),
             _ => return Err(format!("unknown setting `{key}`")),
         }
         Ok(())
@@ -147,6 +190,10 @@ impl Config {
 
     pub fn accounts_dir(&self) -> PathBuf {
         self.world.join("accounts")
+    }
+
+    pub fn levels_dir(&self) -> PathBuf {
+        self.world.join("levels")
     }
 
     pub fn allowed_versions_path(&self) -> PathBuf {
@@ -174,5 +221,17 @@ mod tests {
         let c = Config::defaults(Path::new("w"));
         assert!(c.bind.is_loopback());
         assert!(!c.create_accounts);
+        assert_eq!(c.npcserver, NpcMode::Off);
+        assert!(c.npcserver_bind.is_loopback());
+    }
+
+    #[test]
+    fn npcserver_settings() {
+        let mut c = Config::defaults(Path::new("w"));
+        let w = c.apply("npcserver = auto\nnpcserver_port = 14811\nnpcserver_token = abc\nnpcserver = sometimes\n");
+        assert_eq!(c.npcserver, NpcMode::Auto);
+        assert_eq!(c.npcserver_port, 14811);
+        assert_eq!(c.npcserver_token, "abc");
+        assert_eq!(w.len(), 1, "{w:?}");
     }
 }

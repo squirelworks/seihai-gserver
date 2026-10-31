@@ -23,7 +23,7 @@ How the server is put together, and where each later stage plugs in. Read
 | `src/files.rs` | `WANTFILE`/`UPDATEFILE` file serving from the world folder (skeleton) | 2 |
 | `src/listlink.rs` | the listserver link: register, player count, account check (skeleton) | later |
 | `src/rc.rs` | RC and NC logins for `seihai-rc` (skeleton) | 4 |
-| `src/npclink.rs` | the link to `seihai-npcserver`, `npcserver = auto` (skeleton) | 5 |
+| `src/npclink.rs` | the link to `seihai-npcserver` (`PROTOCOL.md`): `Hub` (players for the link), `serve_link`, `supervise` for `npcserver = auto` | 5 (first half) |
 
 The skeleton modules hold the plan for their stage as doc comments and the
 types the stage will fill in. They are compiled, so they stay in step with
@@ -92,11 +92,36 @@ Conn task ◀──Outbox (mpsc of message bodies)──────────
   the board from `levels.rs` instead of the generated one, and the other
   players in it.
 
+## The NPC-server link
+
+```
+Conn task ──Hub::joined / props / left──▶ Hub (Mutex: players + link sender)
+                                             │  only when an NPC-server is connected
+                                             ▼
+                     link task (serve_link) ──frames──▶ seihai-npcserver
+                                             ▲
+         supervise (npcserver = auto): starts seihai-npcserver with
+         --gserver 127.0.0.1:<link port> --world <world> --once and the token in
+         SEIHAI_NPCSERVER_TOKEN; restarts it with backoff; kills it on exit
+```
+
+- The wire format is `seihai_npcserver::link` (a git dependency pinned by
+  commit), so both programs share one codec. `PROTOCOL.md` is a copy of the
+  NPC-server repo's; change both together.
+- Props on the link are in the 2.22 encoding: the login uses
+  `burst::own_props(V222, ...)`, and client prop updates are re-emitted with
+  the old bow slot (prop 10 before 2.1) dropped.
+- When the world task arrives (stage 2), the `Hub` calls move into it, and it
+  adds `PLAYER_LEVEL` on warps and relays the NPC-server's NPC props to the
+  players in each level.
+
 ## Testing
 
 - Unit tests next to the code; every writer against `seihai-core`'s reader.
 - `tests/login_matrix.rs`: every profile logs in through `seihai_core::net`.
   Add a matrix test per stage (stage 2: walk to a link and get the next level).
+- `tests/npc_link.rs`: this gserver, the real NPC-server session code and real
+  client logins (2.22, 2.05) on loopback.
 - `tools/lab-matrix.sh`: the real `seihai-mae` binary for every profile.
 - `tools/lab-wine.md`: real Windows clients under Wine in a loopback-only
   namespace. Record each run in `docs/lab/`.
