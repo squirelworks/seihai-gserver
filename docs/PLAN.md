@@ -34,7 +34,12 @@ behaviour against, never a code source (see `00-rules.md`).
 3. Client-side NPCs: NPC prop sync between players in a level (`npc-props-lab.md`),
    baddies (`baddies.md`), bombs, arrows, hurt and death.
 4. RC and NC endpoints for `seihai-rc`.
-5. NPC-server link for `seihai-npcserver`.
+5. NPC-server link for `seihai-npcserver`. **Gserver to NPC-server half done,
+   ahead of stage 2** (`src/npclink.rs`, `PROTOCOL.md`, `tests/npc_link.rs`,
+   `docs/lab/npclink-2026-10-31.md`): `npcserver = off | external | auto`, the
+   token handshake, level list, player join/props/leave, keep-alive. Left:
+   `PLAYER_LEVEL` and `LEVEL_RELOADED` once the world task exists, and the
+   NPC-server to gserver messages (drafted in `PROTOCOL.md`).
 6. 3.x to 6.x: the Login lobby and server warp, GS2 bytecode delivery, and later our
    own GS2 compiler (gs2-parser is GPL, so it cannot be used).
 

@@ -13,7 +13,10 @@ publish = false
 # SEI00001 secure login). Once that PR is merged and tagged (v0.0.4),
 # switch back to `tag = "v0.0.4"`.
 seihai-core = { git = "https://github.com/squirelworks/seihai", rev = "fe25c9fc8372773770fb3fbe22fc0326597ee9eb", default-features = false }
-tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time", "macros", "sync", "signal"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time", "macros", "sync", "signal", "process"] }
+# The NPC-server link's wire format (PROTOCOL.md), shared with the NPC-server
+# so both sides use one codec. Pinned by commit until seihai-npcserver is tagged.
+seihai-npcserver = { git = "https://github.com/squirelworks/seihai-npcserver", rev = "340bfa7e486688bbecbdaab34781264442ffd793" }
 sha2 = "0.10"
 getrandom = "0.2"
 pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }

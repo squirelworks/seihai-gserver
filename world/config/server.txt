@@ -38,3 +38,14 @@ secure_login_key = config/seihai-login.key
 # Refuse logins that send the password in the clear. Real Graal clients
 # cannot log in when this is on.
 require_secure_login = false
+
+# The NPC-server link (see PROTOCOL.md in seihai-npcserver).
+#   off       no NPC-server (the default)
+#   auto      start seihai-npcserver from next to this binary, with a fresh
+#             token each time; nothing else to set up
+#   external  wait for an NPC-server started by hand with npcserver_token
+npcserver = off
+npcserver_bind = 127.0.0.1
+npcserver_port = 14810
+# npcserver_token =          (external only; 16 to 256 characters)
+# npcserver_path =           (auto only; empty = next to seihai-gserver)

@@ -8,7 +8,7 @@ use crate::accounts::{Account, Store};
 use crate::allow::AllowList;
 use crate::burst::{self, Player};
 use crate::codec::{frame_header, Codec, MAX_IN_FRAME};
-use crate::config::Config;
+use crate::config::{Config, NpcMode};
 use crate::login::{self, Login};
 use crate::secure;
 use crate::wire::{gint4, ids::*, msg};
@@ -33,6 +33,8 @@ pub struct Server {
     extra_tokens: Vec<String>,
     store: Store,
     online: Mutex<Online>,
+    /// The NPC-server link's shared state (see `npclink`).
+    pub npc: Arc<crate::npclink::Hub>,
     started: Instant,
     started_unix: u64,
     pub verbose: bool,
@@ -70,7 +72,26 @@ impl Server {
         let started_unix = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_secs());
+        let token = match cfg.npcserver {
+            NpcMode::Off => Vec::new(),
+            // A fresh token per start; `supervise` hands it to the child.
+            NpcMode::Auto => crate::npclink::fresh_token().unwrap_or_default(),
+            NpcMode::External => {
+                let t = cfg.npcserver_token.as_bytes();
+                if (16..=256).contains(&t.len()) {
+                    t.to_vec()
+                } else {
+                    Vec::new()
+                }
+            }
+        };
+        let npc = Arc::new(crate::npclink::Hub::new(
+            token,
+            &cfg.name,
+            &cfg.levels_dir(),
+        ));
         Server {
+            npc,
             cfg,
             allow,
             extra_tokens,
@@ -122,8 +143,12 @@ pub async fn serve(server: Arc<Server>, listener: TcpListener) -> io::Result<()>
                 stream,
                 peer,
                 account: None,
+                player: None,
             };
             let result = conn.run().await;
+            if let Some(id) = conn.player.take() {
+                s.npc.left(id);
+            }
             if let Some(name) = conn.account.take() {
                 s.online.lock().unwrap().by_account.remove(&name);
                 s.log(
@@ -151,6 +176,8 @@ struct Conn {
     peer: SocketAddr,
     /// Lower-case account name, once it is registered online.
     account: Option<String>,
+    /// Player id, once logged in.
+    player: Option<u16>,
 }
 
 /// Bytes read but not yet a whole frame.
@@ -354,6 +381,23 @@ impl Conn {
             Some(Some(id)) => id,
         };
         self.account = Some(key);
+        self.player = Some(id);
+        {
+            let level = if account.level.is_empty() {
+                cfg.start_level.as_str()
+            } else {
+                account.level.as_str()
+            };
+            // The link carries props in the 2.22 encoding.
+            let props = burst::own_props(
+                ClientVersion::V222,
+                &Player {
+                    id,
+                    account: &account,
+                },
+            );
+            self.server.npc.joined(id, &account.name, level, &props);
+        }
         self.server
             .log(&self.peer, &format!("{who} logged in as player {id}"));
 
@@ -375,6 +419,7 @@ impl Conn {
             self.send(&mut codec, &f).await?;
         }
         let mut session = Session {
+            id,
             version,
             stats: BTreeMap::new(),
             nickname: account.nick.clone(),
@@ -476,6 +521,7 @@ impl Conn {
 
 /// What one logged-in client has said, for the log.
 struct Session {
+    id: u16,
     version: ClientVersion,
     stats: BTreeMap<u8, usize>,
     nickname: String,
@@ -515,8 +561,9 @@ impl Session {
                     }
                 }
                 PLI_PLAYERPROPS => {
-                    let props =
-                        parse_player_props_with(payload, self.version.profile().props.bow_prop10);
+                    let bow = self.version.profile().props.bow_prop10;
+                    server.npc.props(self.id, payload, bow);
+                    let props = parse_player_props_with(payload, bow);
                     if let Some(nick) = props.iter().find(|p| p.id == 0) {
                         let nick = nick
                             .raw

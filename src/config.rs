@@ -55,6 +55,28 @@ pub struct Config {
     /// Refuse logins that send the password in the clear (every real Graal
     /// client). Off by default.
     pub require_secure_login: bool,
+    /// The NPC-server link (`PROTOCOL.md`): `off`, `external` (someone
+    /// starts `seihai-npcserver` by hand) or `auto` (the gserver starts it
+    /// and hands it a fresh token).
+    pub npcserver: NpcMode,
+    /// Address and port the link listens on. Loopback by default: the link
+    /// is not encrypted.
+    pub npcserver_bind: IpAddr,
+    pub npcserver_port: u16,
+    /// The shared token for `npcserver = external` (16 to 256 bytes).
+    /// `auto` makes its own and ignores this.
+    pub npcserver_token: String,
+    /// The `seihai-npcserver` binary for `auto`. Empty: the one next to
+    /// this binary.
+    pub npcserver_path: String,
+}
+
+/// How the NPC-server link runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NpcMode {
+    Off,
+    External,
+    Auto,
 }
 
 impl Config {
@@ -78,6 +100,11 @@ impl Config {
             max_players: 256,
             secure_login_key: PathBuf::from("config/seihai-login.key"),
             require_secure_login: false,
+            npcserver: NpcMode::Off,
+            npcserver_bind: IpAddr::from([127, 0, 0, 1]),
+            npcserver_port: 14810,
+            npcserver_token: String::new(),
+            npcserver_path: String::new(),
         }
     }
 
@@ -152,6 +179,22 @@ impl Config {
             "max_players" => self.max_players = num(v)?,
             "secure_login_key" => self.secure_login_key = PathBuf::from(v),
             "require_secure_login" => self.require_secure_login = flag(v)?,
+            "npcserver" => {
+                self.npcserver = match v.to_ascii_lowercase().as_str() {
+                    "off" | "no" | "false" => NpcMode::Off,
+                    "external" => NpcMode::External,
+                    "auto" => NpcMode::Auto,
+                    _ => return Err(format!("`{v}` is not off, external or auto")),
+                }
+            }
+            "npcserver_bind" => {
+                self.npcserver_bind = v
+                    .parse()
+                    .map_err(|_| format!("`{v}` is not an IP address"))?
+            }
+            "npcserver_port" => self.npcserver_port = num(v)?,
+            "npcserver_token" => self.npcserver_token = v.to_string(),
+            "npcserver_path" => self.npcserver_path = v.to_string(),
             _ => return Err(format!("unknown setting `{key}`")),
         }
         Ok(())
@@ -165,6 +208,10 @@ impl Config {
     pub fn secure_login_key_path(&self) -> Option<PathBuf> {
         (!self.secure_login_key.as_os_str().is_empty())
             .then(|| self.world.join(&self.secure_login_key))
+    }
+
+    pub fn levels_dir(&self) -> PathBuf {
+        self.world.join("levels")
     }
 
     pub fn allowed_versions_path(&self) -> PathBuf {
@@ -192,6 +239,8 @@ mod tests {
         let c = Config::defaults(Path::new("w"));
         assert!(c.bind.is_loopback());
         assert!(!c.create_accounts);
+        assert_eq!(c.npcserver, NpcMode::Off);
+        assert!(c.npcserver_bind.is_loopback());
         assert!(!c.require_secure_login);
         assert_eq!(
             c.secure_login_key_path(),
@@ -200,5 +249,15 @@ mod tests {
         let mut c = c;
         c.apply("secure_login_key =\n");
         assert_eq!(c.secure_login_key_path(), None);
+    }
+
+    #[test]
+    fn npcserver_settings() {
+        let mut c = Config::defaults(Path::new("w"));
+        let w = c.apply("npcserver = auto\nnpcserver_port = 14811\nnpcserver_token = abc\nnpcserver = sometimes\n");
+        assert_eq!(c.npcserver, NpcMode::Auto);
+        assert_eq!(c.npcserver_port, 14811);
+        assert_eq!(c.npcserver_token, "abc");
+        assert_eq!(w.len(), 1, "{w:?}");
     }
 }

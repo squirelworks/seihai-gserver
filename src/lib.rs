@@ -46,6 +46,13 @@ pub fn load_world(world: &Path) -> std::io::Result<(server::Server, Vec<String>)
         }
         Err(e) => return Err(e),
     };
+    if cfg.npcserver == config::NpcMode::External
+        && !(16..=256).contains(&cfg.npcserver_token.len())
+    {
+        warnings.push(
+            "npcserver = external needs npcserver_token of 16 to 256 characters; no NPC-server can log in".into(),
+        );
+    }
     Ok((server::Server::new(cfg, allow), warnings))
 }
 
@@ -84,5 +91,30 @@ pub async fn run(server: Arc<server::Server>) -> std::io::Result<()> {
         server.cfg.name,
         listener.local_addr()?
     );
+    if server.cfg.npcserver != config::NpcMode::Off {
+        let link_addr =
+            std::net::SocketAddr::new(server.cfg.npcserver_bind, server.cfg.npcserver_port);
+        let link = tokio::net::TcpListener::bind(link_addr).await?;
+        let link_addr = link.local_addr()?;
+        eprintln!(
+            "NPC-server link ({:?}) listening on {link_addr}",
+            server.cfg.npcserver
+        );
+        tokio::spawn(npclink::serve_link(server.npc.clone(), link));
+        if server.cfg.npcserver == config::NpcMode::Auto {
+            let binary = npclink::npcserver_binary(&server.cfg.npcserver_path);
+            // The child runs here: an all-addresses bind is reached on loopback.
+            let mut link_addr = link_addr;
+            if link_addr.ip().is_unspecified() {
+                link_addr.set_ip(std::net::IpAddr::from([127, 0, 0, 1]));
+            }
+            tokio::spawn(npclink::supervise(
+                binary,
+                link_addr,
+                server.cfg.world.clone(),
+                server.npc.token().to_vec(),
+            ));
+        }
+    }
     server::serve(server, listener).await
 }
