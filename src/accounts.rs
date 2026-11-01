@@ -20,13 +20,16 @@
 //! BODY body.png
 //! COLORS 2,0,10,4,18
 //! STATUS 20
+//! ALIGN 0
 //! ```
 //!
 //! The format is this project's own. Unknown keys are kept and written
 //! back, so later stages can add fields without losing old ones. The
 //! password is stored as a PBKDF2-SHA256 hash; `seihai-gserver account`
 //! sets it. Status bit 2 (hidden) is cleared on load: a player is never
-//! logged in hidden.
+//! logged in hidden. `ALIGN` is alignment points (player prop 32), 0 to
+//! 100. Nothing else in this server sets it yet; the list link sends the
+//! stored value on `PLYRADD`.
 
 use sha2::Sha256;
 use std::io;
@@ -57,6 +60,8 @@ pub struct Account {
     pub body: String,
     pub colors: [u8; 5],
     pub status: u8,
+    /// Alignment points (player prop 32), 0 to 100. Default 0.
+    pub alignment: u8,
     /// Lines with keys this version does not use, kept as they were.
     pub other: Vec<String>,
 }
@@ -84,6 +89,7 @@ impl Account {
             body: "body.png".into(),
             colors: [2, 0, 10, 4, 18],
             status: 20,
+            alignment: 0,
             other: Vec::new(),
         }
     }
@@ -120,6 +126,7 @@ impl Account {
                     }
                 }
                 "STATUS" => a.status = v.parse().unwrap_or(0),
+                "ALIGN" => a.alignment = v.parse::<u8>().unwrap_or(0).min(100),
                 _ => a.other.push(line.to_string()),
             }
         }
@@ -153,6 +160,7 @@ impl Account {
         kv("BODY", self.body.clone());
         kv("COLORS", self.colors.map(|c| c.to_string()).join(","));
         kv("STATUS", self.status.to_string());
+        kv("ALIGN", self.alignment.to_string());
         for line in &self.other {
             s.push_str(line);
             s.push('\n');
@@ -279,10 +287,14 @@ mod tests {
     fn round_trip_keeps_unknown_keys_and_drops_hidden() {
         let mut a = Account::new("Bob", "start.nw", 30.0, 30.5);
         a.status = 20 | STATUS_HIDDEN;
+        a.alignment = 40;
         a.other.push("FUTUREKEY 1 2 3".into());
         let b = Account::parse("Bob", &a.to_text());
         assert_eq!(b.status, 20);
+        assert_eq!(b.alignment, 40);
         assert_eq!(b.other, vec!["FUTUREKEY 1 2 3".to_string()]);
+        assert_eq!(Account::parse("Bob", "NICK Bob\n").alignment, 0);
+        assert_eq!(Account::parse("Bob", "ALIGN 250\n").alignment, 100);
         assert_eq!(b.sword, (1, "sword1.png".to_string()));
         assert_eq!(b.colors, [2, 0, 10, 4, 18]);
         assert_eq!((b.x, b.y), (30.0, 30.5));
