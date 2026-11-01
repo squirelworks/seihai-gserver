@@ -256,8 +256,12 @@ fn encrypted_link_registers_lists_players_and_checks_accounts() {
     .unwrap();
     let check = next_msg(&seen, 17);
     assert!(contains(&check, b"viaList") && contains(&check, PASSWORD.as_bytes()));
-    next_msg(&seen, 14); // PLYRADD
-                         // The account file was made for the player's state, with no password.
+    let add = next_msg(&seen, 14); // PLYRADD: id, type, then nickname and props
+    assert!(
+        contains(&add, b"viaList"),
+        "PLYRADD carries the account and nickname: {add:?}"
+    );
+    // The account file was made for the player's state, with no password.
     let file = std::fs::read_to_string(w.join("accounts/viaList.txt"))
         .or_else(|_| std::fs::read_to_string(w.join("accounts/vialist.txt")))
         .unwrap();
@@ -368,4 +372,105 @@ fn listserver_ping_is_answered_with_an_empty_pong_and_not_before() {
         echoed.is_empty(),
         "the ping body is not a nonce to copy: {echoed:?}"
     );
+}
+
+fn gshort_bytes(v: u16) -> [u8; 2] {
+    [((v >> 7) & 0x7f) as u8 + 32, (v & 0x7f) as u8 + 32]
+}
+
+fn gint5_bytes(v: u64) -> [u8; 5] {
+    let mut out = [0u8; 5];
+    for (i, slot) in out.iter_mut().enumerate() {
+        *slot = ((v >> (7 * (4 - i))) & 0x7f) as u8 + 32;
+    }
+    out
+}
+
+/// Nickname and props on `PLYRADD`, a private message both ways, and a
+/// file that starts with `SVI_FILESTART` (2).
+#[test]
+fn list_link_props_private_message_and_file_start() {
+    let w = world("listlink-stage3", "*\n");
+    let FakeList {
+        addr: ls,
+        seen,
+        tap: _tap,
+        inject,
+    } = fake_listserver(ServerIdentity::generate());
+    let (addr, server) = start_with_link(
+        &w,
+        &format!(
+            "listserver = {ls}\nlistserver_accounts = true\ncreate_accounts = false\nname = Lab Link\n"
+        ),
+    );
+    wait_connected(&server);
+    let v = ClientVersion::V231;
+    let mut sess = seihai_core::net::login_gserver(
+        &addr,
+        v,
+        seihai_core::net::random_key(),
+        "viaStage",
+        PASSWORD,
+        true,
+    )
+    .unwrap();
+    let rx = sess.conn.spawn_reader().unwrap();
+    let mut st = seihai_core::protocol::SessionState::for_version(v);
+    st.file_has_modtime = v.file_has_modtime();
+    read_until(&rx, &mut st, Duration::from_secs(10), |s| s.board.is_some()).unwrap();
+
+    let add = next_msg(&seen, 14);
+    assert!(contains(&add, b"viaStage"), "{add:?}");
+    let player = u16::from(add[0] - 32) << 7 | u16::from(add[1] - 32);
+
+    server
+        .listlink
+        .as_ref()
+        .unwrap()
+        .send_private(player, "Other", "bob", "out, \"x\"");
+    let sent = next_msg(&seen, 29);
+    assert!(contains(&sent, b"bob"), "{sent:?}");
+    assert!(contains(&sent, b"GraalEngine"), "{sent:?}");
+    assert!(contains(&sent, b"pmplayer"), "{sent:?}");
+    assert!(contains(&sent, b"viaStage"), "{sent:?}");
+    assert!(contains(&sent, b"out, \"\"x\"\""), "{sent:?}");
+
+    let packed = seihai_core::net::gtokenize(
+        "Far\nfar\nFarNick\nGraalEngine\npmplayer\nviaStage\nhello there",
+    );
+    let mut pm = vec![29 + 32];
+    pm.extend(packed.as_bytes());
+    pm.push(b'\n');
+    let mut start = vec![2 + 32, 32];
+    gstr(&mut start, b"labhead.png");
+    start.push(b'\n');
+    let mut data = vec![16 + 32, 32];
+    gstr(&mut data, b"labhead.png");
+    data.extend(b"HEAD");
+    data.push(b'\n');
+    let mut end = vec![17 + 32];
+    end.extend(gshort_bytes(player));
+    end.push(32); // head
+    end.push(32); // not compressed
+    end.extend(gint5_bytes(1_700_000_000));
+    end.extend(gint5_bytes(4));
+    end.extend(b"labhead.png\n");
+    let mut body = pm;
+    body.extend(start);
+    body.extend(data);
+    body.extend(end);
+    inject.send(zlib_frame(&body)).unwrap();
+
+    read_until(&rx, &mut st, Duration::from_secs(5), |s| {
+        s.own_head.as_deref() == Some("labhead.png")
+            && s.chat_log.iter().any(|c| {
+                c.kind == seihai_core::protocol::ChatKind::Private
+                    && c.from == "FarNick"
+                    && c.text == "hello there"
+            })
+    })
+    .unwrap();
+    assert_eq!(std::fs::read(w.join("heads/labhead.png")).unwrap(), b"HEAD");
+    let saved = std::fs::read_to_string(w.join("accounts/viastage.txt")).unwrap();
+    assert!(saved.contains("HEAD labhead.png"), "{saved}");
 }

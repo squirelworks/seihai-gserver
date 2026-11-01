@@ -9,9 +9,10 @@ use crate::allow::AllowList;
 use crate::burst::{self, Player};
 use crate::codec::{frame_header, Codec, MAX_IN_FRAME};
 use crate::config::{Config, NpcMode};
+use crate::listlink::{Delivery, ListedPlayer};
 use crate::login::{self, Login};
 use crate::secure;
-use crate::wire::{gint4, ids::*, msg};
+use crate::wire::{gchar, gint4, gshort, gstring, ids::*, latin1, msg};
 use seihai_core::protocol::{
     parse_player_props_with, zlib_decompress, ClientVersion, EncryptionGen,
 };
@@ -132,6 +133,23 @@ impl Server {
     /// Graal world time: one step every 5 s since the server started.
     fn world_time(&self) -> u32 {
         (self.started.elapsed().as_secs() / 5) as u32
+    }
+
+    /// Remember an image the listserver sent, so the next login has it.
+    fn remember_image(&self, account: &str, kind: u8, name: &str) {
+        let Ok(Some(mut a)) = self.store.load(account) else {
+            return;
+        };
+        match kind {
+            0 => a.head = name.to_string(),
+            1 => a.body = name.to_string(),
+            2 => a.sword.1 = name.to_string(),
+            3 => a.shield.1 = name.to_string(),
+            _ => return,
+        }
+        if let Err(e) = self.store.save(&a) {
+            eprintln!("listserver file: could not store the image for {account}: {e}");
+        }
     }
 }
 
@@ -405,7 +423,14 @@ impl Conn {
             );
             self.server.npc.joined(id, &account.name, level, &props);
             if let Some(l) = &self.server.listlink {
-                l.player_added(id);
+                l.player_added(ListedPlayer {
+                    id,
+                    account: account.name.clone(),
+                    nick: account.nick.clone(),
+                    level: level.to_string(),
+                    x: account.x,
+                    y: account.y,
+                });
             }
         }
         self.server
@@ -433,10 +458,18 @@ impl Conn {
             version,
             stats: BTreeMap::new(),
             nickname: account.nick.clone(),
+            account: account.name.clone(),
+            sword_power: account.sword.0,
+            shield_power: account.shield.0,
         };
         let reply = session.handle(&self.server, &self.peer, &early);
         if !reply.is_empty() {
             self.send(&mut codec, &reply).await?;
+        }
+        // A listserver message can arrive while the burst is going out.
+        let queued = session.link_out(&self.server);
+        if !queued.is_empty() {
+            self.send(&mut codec, &queued).await?;
         }
 
         // The idle session.
@@ -449,6 +482,7 @@ impl Conn {
             t
         });
         let sends_time = version.profile().protocol.plo.contains(PLO_NEWWORLDTIME);
+        let listlink = self.server.listlink.clone();
         let mut last_heard = Instant::now();
         loop {
             let idle_left = (!cfg.idle_timeout.is_zero())
@@ -481,6 +515,12 @@ impl Conn {
                 _ = sleep_opt(idle_left) => {
                     self.server.log(&self.peer, "idle timeout");
                     return self.refuse(&mut codec, "Disconnected for being idle.").await;
+                }
+                _ = list_ready(listlink.as_deref()) => {
+                    let reply = session.link_out(&self.server);
+                    if !reply.is_empty() {
+                        self.send(&mut codec, &reply).await?;
+                    }
                 }
             }
         }
@@ -567,6 +607,9 @@ struct Session {
     version: ClientVersion,
     stats: BTreeMap<u8, usize>,
     nickname: String,
+    account: String,
+    sword_power: u8,
+    shield_power: u8,
 }
 
 impl Session {
@@ -612,10 +655,15 @@ impl Session {
                             .get(1..)
                             .map(seihai_core::protocol::latin1)
                             .unwrap_or_default();
-                        if nick != self.nickname && server.verbose {
-                            server.log(peer, &format!("nickname {nick}"));
+                        if nick != self.nickname {
+                            if server.verbose {
+                                server.log(peer, &format!("nickname {nick}"));
+                            }
+                            self.nickname = nick.clone();
+                            if let Some(l) = &server.listlink {
+                                l.set_nickname(self.id, &nick);
+                            }
                         }
-                        self.nickname = nick;
                     }
                 }
                 // Read and not answered in stage 1: the language, the
@@ -634,6 +682,112 @@ impl Session {
             }
         }
         reply
+    }
+
+    /// Packets for a private message or a finished listserver file.
+    fn link_out(&mut self, server: &Server) -> Vec<u8> {
+        let Some(link) = &server.listlink else {
+            return Vec::new();
+        };
+        let prof = self.version.profile();
+        let plo = &prof.protocol.plo;
+        let mut out = Vec::new();
+        for delivery in link.take(self.id) {
+            match delivery {
+                Delivery::Private {
+                    from_id,
+                    nick,
+                    account,
+                    text,
+                } => {
+                    if plo.contains(PLO_OTHERPLPROPS) {
+                        let mut p = Vec::new();
+                        gshort(from_id, &mut p);
+                        if prof.props.other.contains(0) {
+                            p.push(gchar(0));
+                            gstring(&latin1(&nick), &mut p);
+                        }
+                        if prof.props.other.contains(34) {
+                            p.push(gchar(34));
+                            gstring(&latin1(&account), &mut p);
+                        }
+                        out.extend(msg(PLO_OTHERPLPROPS, &p));
+                    }
+                    if plo.contains(PLO_PRIVATEMESSAGE) {
+                        let mut p = Vec::new();
+                        gshort(from_id, &mut p);
+                        // One quoted field, so a newline in the text stays
+                        // one message. `""` is one quote.
+                        let body = format!(
+                            "{},{},{}",
+                            quoted(""),
+                            quoted("Private message:"),
+                            quoted(&text)
+                        );
+                        p.extend(body.into_bytes());
+                        out.extend(msg(PLO_PRIVATEMESSAGE, &p));
+                    }
+                }
+                Delivery::Image { kind, name } => {
+                    server.remember_image(&self.account, kind, &name);
+                    let Some((pid, val)) =
+                        image_value(kind, &name, self.sword_power, self.shield_power)
+                    else {
+                        continue;
+                    };
+                    if prof.props.own.contains(pid) {
+                        let mut p = vec![gchar(pid)];
+                        p.extend(val);
+                        out.extend(msg(PLO_PLAYERPROPS, &p));
+                    }
+                }
+            }
+        }
+        out
+    }
+}
+
+/// A quoted field: `"` doubled, nothing else escaped.
+fn quoted(s: &str) -> String {
+    format!("\"{}\"", s.replace('"', "\"\""))
+}
+
+/// The prop id and its value for an image the listserver just sent.
+fn image_value(kind: u8, name: &str, sword: u8, shield: u8) -> Option<(u8, Vec<u8>)> {
+    let raw = latin1(name);
+    let raw = &raw[..raw.len().min(123)];
+    match kind {
+        0 => {
+            let mut v = vec![gchar(100 + raw.len() as u8)];
+            v.extend_from_slice(raw);
+            Some((11, v))
+        }
+        1 => {
+            let mut v = Vec::new();
+            gstring(raw, &mut v);
+            Some((35, v))
+        }
+        2 => Some((8, power_image(sword, 30, raw))),
+        3 => Some((9, power_image(shield, 10, raw))),
+        _ => None,
+    }
+}
+
+fn power_image(power: u8, bias: u8, image: &[u8]) -> Vec<u8> {
+    if image.is_empty() {
+        return vec![gchar(power)];
+    }
+    let mut v = vec![gchar(power.saturating_add(bias).min(223))];
+    gstring(image, &mut v);
+    v
+}
+
+/// Wait until the list link has something for a player. Pending forever
+/// when there is no link, so the `select` ignores it.
+async fn list_ready(link: Option<&crate::listlink::ListLink>) {
+    match link {
+        Some(l) => l.notifier().notified().await,
+        None => std::future::pending().await,
     }
 }
 

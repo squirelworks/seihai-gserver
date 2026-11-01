@@ -81,6 +81,7 @@ pub fn latin1(s: &str) -> Vec<u8> {
 /// The message ids this server uses.
 pub mod ids {
     // Server to client.
+    pub const PLO_OTHERPLPROPS: u8 = 8;
     pub const PLO_PLAYERPROPS: u8 = 9;
     pub const PLO_LEVELNAME: u8 = 6;
     pub const PLO_ISLEADER: u8 = 10;
@@ -88,6 +89,7 @@ pub mod ids {
     pub const PLO_DISCMESSAGE: u8 = 16;
     pub const PLO_SIGNATURE: u8 = 25;
     pub const PLO_FILESENDFAILED: u8 = 30;
+    pub const PLO_PRIVATEMESSAGE: u8 = 37;
     pub const PLO_LEVELMODTIME: u8 = 39;
     pub const PLO_STARTMESSAGE: u8 = 41;
     pub const PLO_NEWWORLDTIME: u8 = 42;

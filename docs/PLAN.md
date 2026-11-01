@@ -207,11 +207,15 @@ Next:
       `SVO_PING` (16), and do not send 16 on its own. `src/listlink.rs`,
       `tests/listserver_link.rs`. No real client: the packet is only
       between this gserver and a listserver.
-- [ ] Listserver link, later: send the player's nickname and props
-      (`PLYRADD` sends only the id and type now), and the
-      server-to-server messages (PMs, `SVI_FILESTART`) when stage 3 needs
-      them. `VERIACC2`'s "type" is always 0 (a player); RC logins will
-      send their own once `rc.rs` lands.
+- [x] Listserver link: `PLYRADD` sends the nickname and props after
+      the id and type (account, nickname, level, x, y, alignment 0).
+      Private messages are `SVO_PMPLAYER` / `SVI_PMPLAYER` (29). File
+      start is `SVI_FILESTART` (2) and `SVI_FILESTART3` (15), then
+      `SVI_FILEDATA3` (16) and `SVI_FILEEND3` (17). `src/listlink.rs`,
+      `tests/listserver_link.rs`. No real client: these packets are only
+      between this gserver and a listserver. `VERIACC2`'s "type" is
+      still always 0 (a player); RC logins will send their own once
+      `rc.rs` lands.
 - [ ] RC logins (`rc.rs`, type 1/6): the same handshake once `seihai-rc`
       speaks it.
 - [ ] A `key-fingerprint` subcommand that prints the key without starting.
