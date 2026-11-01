@@ -47,6 +47,17 @@ behaviour against, never a code source (see `00-rules.md`).
    items, hearts and gralats with stages 2 and 3), behind one policy layer that
    admins configure. No client-side anti-debugging.
 
+## Out of band: Graal3D (February 2000)
+
+Not a stage of this binary. Graal3D (`GR3DV002`) is a separate protocol
+(3D floats, renumbered ids, peer UDP, inline `.x` level text, no board /
+NPC / WANTFILE game). Hosting it is **G3D-9** in Seihai's
+`documentation/plannedmilestones.md`: a sibling Rust host next to
+`seihai-g3d`, ported from Graal_analysis `graal3d/reference-server/`. Do not
+fold it into stages 1–7. Worlds are DirectX `.x` + local BMPs, not `.nw` /
+`.graal`. The Torque 3D path of 3.x–5.x clients is also separate (held as
+Ato Stage 4 until a capture exists).
+
 ## Behaviour to match (from lab findings)
 
 - 2.05 needs `SETACTIVELEVEL` (156) and the level name before the board, or it
