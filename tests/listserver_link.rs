@@ -13,7 +13,7 @@ use seihai_core::protocol::{zlib_compress, zlib_decompress, ClientVersion};
 use seihai_gserver::server::{serve, Server};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -56,14 +56,24 @@ fn gstr(out: &mut Vec<u8>, s: &[u8]) {
     out.extend_from_slice(s);
 }
 
-/// A fake listserver: one gserver, encrypted. Answers `VERIACC2` with
-/// `SUCCESS` for the password `labpw`.
-fn fake_listserver(identity: ServerIdentity) -> (String, Receiver<Seen>, Arc<Mutex<Vec<u8>>>) {
+/// One encrypted fake listserver. `inject` takes a raw zlib frame (length
+/// prefix plus body); the fake seals it. `VERIACC2` is answered `SUCCESS`
+/// for the password `labpw`.
+struct FakeList {
+    addr: String,
+    seen: Receiver<Seen>,
+    tap: Arc<Mutex<Vec<u8>>>,
+    inject: Sender<Vec<u8>>,
+}
+
+fn fake_listserver(identity: ServerIdentity) -> FakeList {
     let l = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = l.local_addr().unwrap().to_string();
     let (tx, rx) = mpsc::channel();
     let tap = Arc::new(Mutex::new(Vec::new()));
     let seen = tap.clone();
+    let (wire_tx, wire_rx) = mpsc::channel::<Vec<u8>>();
+    let inject = wire_tx.clone();
     std::thread::spawn(move || {
         let (s, _) = l.accept().unwrap();
         let mut r = BufReader::new(Tap {
@@ -81,6 +91,16 @@ fn fake_listserver(identity: ServerIdentity) -> (String, Receiver<Seen>, Arc<Mut
         s1.push(b'\n');
         w.write_all(&s1).unwrap();
         let (mut send, mut recv) = opener.into_channel().split();
+        std::thread::spawn(move || {
+            while let Ok(frame) = wire_rx.recv() {
+                if w.write_all(&send.seal(&frame)).is_err() {
+                    return;
+                }
+                if w.flush().is_err() {
+                    return;
+                }
+            }
+        });
         let mut buf = Vec::new();
         let mut first = true;
         loop {
@@ -127,14 +147,22 @@ fn fake_listserver(identity: ServerIdentity) -> (String, Receiver<Seen>, Arc<Mut
                         out.push(b'\n');
                         let z = zlib_compress(&out).unwrap();
                         let frame = [&(z.len() as u16).to_be_bytes()[..], &z].concat();
-                        w.write_all(&send.seal(&frame)).unwrap();
+                        if wire_tx.send(frame).is_err() {
+                            let _ = tx.send(closed(&seen));
+                            return;
+                        }
                     }
                     let _ = tx.send(Seen::Msg(id, payload));
                 }
             }
         }
     });
-    (addr, rx, tap)
+    FakeList {
+        addr,
+        seen: rx,
+        tap,
+        inject,
+    }
 }
 
 fn start_with_link(world: &std::path::Path, extra: &str) -> (String, Arc<Server>) {
@@ -188,7 +216,12 @@ fn encrypted_link_registers_lists_players_and_checks_accounts() {
     let w = world("listlink", "*\n");
     let id = ServerIdentity::generate();
     let key = id.public_key();
-    let (ls, seen, tap) = fake_listserver(id);
+    let FakeList {
+        addr: ls,
+        seen,
+        tap,
+        inject: _inject,
+    } = fake_listserver(id);
     let (addr, server) = start_with_link(
         &w,
         &format!(
@@ -247,7 +280,12 @@ fn encrypted_link_registers_lists_players_and_checks_accounts() {
 #[test]
 fn wrong_listserver_key_sends_nothing_after_the_hello() {
     let w = world("listlink-pin", "*\n");
-    let (ls, seen, tap) = fake_listserver(ServerIdentity::generate());
+    let FakeList {
+        addr: ls,
+        seen,
+        tap,
+        inject: _inject,
+    } = fake_listserver(ServerIdentity::generate());
     let other = seclogin::encode_key(&ServerIdentity::generate().public_key());
     let (_addr, _server) = start_with_link(
         &w,
@@ -266,4 +304,68 @@ fn wrong_listserver_key_sends_nothing_after_the_hello() {
     }
     assert!(!w.join("config/listserver.pin").exists());
     let _ = tap;
+}
+
+/// Messages until `id` has been seen and then nothing arrives for `quiet`.
+fn until_quiet(rx: &Receiver<Seen>, id: u8, quiet: Duration) -> Vec<Seen> {
+    let mut got = Vec::new();
+    let mut saw = false;
+    let end = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < end {
+        match rx.recv_timeout(if saw {
+            quiet
+        } else {
+            Duration::from_millis(200)
+        }) {
+            Ok(Seen::Closed(_)) => panic!("link closed"),
+            Ok(m) => {
+                if matches!(m, Seen::Msg(n, _) if n == id) {
+                    saw = true;
+                }
+                got.push(m);
+            }
+            Err(_) if saw => break,
+            Err(_) => {}
+        }
+    }
+    assert!(saw, "never saw message {id}: {got:?}");
+    got
+}
+
+fn zlib_frame(body: &[u8]) -> Vec<u8> {
+    let z = zlib_compress(body).unwrap();
+    [&(z.len() as u16).to_be_bytes()[..], &z].concat()
+}
+
+#[test]
+fn listserver_ping_is_answered_with_an_empty_pong_and_not_before() {
+    let w = world("listlink-ping", "*\n");
+    let FakeList {
+        addr: ls,
+        seen,
+        tap: _tap,
+        inject,
+    } = fake_listserver(ServerIdentity::generate());
+    let (_addr, server) = start_with_link(&w, &format!("listserver = {ls}\n"));
+    wait_connected(&server);
+    let early = until_quiet(&seen, 22, Duration::from_millis(250));
+    assert!(
+        !early.iter().any(|m| matches!(m, Seen::Msg(16, _))),
+        "pong before any ping: {early:?}"
+    );
+
+    let ping = |body: &[u8]| {
+        let mut line = vec![99 + 32];
+        line.extend_from_slice(body);
+        line.push(b'\n');
+        inject.send(zlib_frame(&line)).unwrap();
+    };
+    ping(b"");
+    assert!(next_msg(&seen, 16).is_empty(), "empty ping, empty pong");
+    ping(b"xy");
+    let echoed = next_msg(&seen, 16);
+    assert!(
+        echoed.is_empty(),
+        "the ping body is not a nonce to copy: {echoed:?}"
+    );
 }

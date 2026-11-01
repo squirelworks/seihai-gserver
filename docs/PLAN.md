@@ -203,8 +203,12 @@ Next:
       `tests/listserver_link.rs`, lab run in
       `docs/lab/listserver-link-2026-10-31.md`.
 - [x] `seihai-core` is on tag `v0.0.5`.
+- [x] Listserver link: answer the listserver's ping (99) with an empty
+      `SVO_PING` (16), and do not send 16 on its own. `src/listlink.rs`,
+      `tests/listserver_link.rs`. No real client: the packet is only
+      between this gserver and a listserver.
 - [ ] Listserver link, later: send the player's nickname and props
-      (`PLYRADD` sends only the id and type now), `SVO_PING`, and the
+      (`PLYRADD` sends only the id and type now), and the
       server-to-server messages (PMs, `SVI_FILESTART`) when stage 3 needs
       them. `VERIACC2`'s "type" is always 0 (a player); RC logins will
       send their own once `rc.rs` lands.

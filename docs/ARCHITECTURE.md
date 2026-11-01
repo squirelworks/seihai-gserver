@@ -22,7 +22,7 @@ How the server is put together, and where each later stage plugs in. Read
 | `src/world.rs` | the world task: levels, players, the 50 ms tick (skeleton) | 2 |
 | `src/levels.rs` | level files (`.nw`, `.graal`, `.zelda`), gmaps, links, signs, chests (skeleton) | 2 |
 | `src/files.rs` | `WANTFILE`/`UPDATEFILE` file serving from the world folder (skeleton) | 2 |
-| `src/listlink.rs` | the listserver link over the encrypted channel (`SVLINK01`): register, player count, account check (`VERIACC2`); two plain threads, reconnects every 15 s | link |
+| `src/listlink.rs` | the listserver link over the encrypted channel (`SVLINK01`): register, player count, account check (`VERIACC2`), pong (`SVO_PING` 16) for the listserver's ping (99); two plain threads, reconnects every 15 s | link |
 | `src/rc.rs` | RC and NC logins for `seihai-rc` (skeleton) | 4 |
 | `src/npclink.rs` | the link to `seihai-npcserver` (`PROTOCOL.md`): `Hub` (players for the link), `serve_link`, `supervise` for `npcserver = auto` | 5 (first half) |
 | `src/anticheat.rs` | violations, scores and the admin policy (planned; see `docs/PLAN.md`, stage 7) | 7 |
