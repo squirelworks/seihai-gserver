@@ -14,8 +14,11 @@
 //!
 //! Inside, the classic link: `SVO_REGISTERV3` (30) as one line, then zlib
 //! frames. Sent: `NEWSERVER` (22), `SETPLYR` (7), `PLYRADD` (14),
-//! `PLYRREM` (15), `VERIACC2` (17), `SETIP` (5) as the keep-alive.
-//! Read: `SVI_VERIACC2` (11).
+//! `PLYRREM` (15), `VERIACC2` (17), `SETIP` (5) as the keep-alive, and
+//! `SVO_PING` (16) only as the answer to the listserver's ping (99).
+//! Id 16 is a pong: it is never sent on its own, and a listserver does
+//! not answer it (answering 16 with another 99 would loop).
+//! Read: `SVI_VERIACC2` (11), `SVI_PING` (99).
 //!
 //! It runs on two plain threads (one writes, one reads), not on tokio: the
 //! channel's halves are blocking, and the link is one connection.
@@ -37,11 +40,14 @@ mod svo {
     pub const SETPLYR: u8 = 7;
     pub const PLYRADD: u8 = 14;
     pub const PLYRREM: u8 = 15;
+    pub const PING: u8 = 16;
     pub const VERIACC2: u8 = 17;
     pub const NEWSERVER: u8 = 22;
     pub const REGISTERV3: u8 = 30;
 }
 const SVI_VERIACC2: u8 = 11;
+/// The listserver's ping. Answered with [`svo::PING`], nothing else.
+const SVI_PING: u8 = 99;
 
 /// How long a login waits for the listserver's answer.
 pub const VERIFY_TIMEOUT: Duration = Duration::from_secs(10);
@@ -67,6 +73,8 @@ enum Cmd {
         player: u16,
         reply: Sender<Verdict>,
     },
+    /// The listserver sent ping 99. Reply with one empty `SVO_PING`.
+    Pong,
 }
 
 /// The handle the rest of the server uses.
@@ -124,7 +132,7 @@ impl ListLink {
         }
         let (tx, rx) = mpsc::channel();
         let link = Arc::new(Self {
-            tx: Mutex::new(tx),
+            tx: Mutex::new(tx.clone()),
             state: Arc::default(),
             ticket: Default::default(),
         });
@@ -132,7 +140,7 @@ impl ListLink {
         let cfg = cfg.clone();
         std::thread::Builder::new()
             .name("listlink".into())
-            .spawn(move || run(cfg, rx, state))
+            .spawn(move || run(cfg, tx, rx, state))
             .ok()?;
         Some(link)
     }
@@ -299,7 +307,13 @@ fn added(id: u16) -> Vec<u8> {
 }
 
 /// The reading side: decrypted (or plain) bytes in, `SVI_VERIACC2` answers out.
-fn reader(mut r: BufReader<TcpStream>, mut rx: Option<ChannelRecv>, state: Arc<Mutex<State>>) {
+/// A listserver ping (99) becomes [`Cmd::Pong`] on `tx`.
+fn reader(
+    mut r: BufReader<TcpStream>,
+    mut rx: Option<ChannelRecv>,
+    state: Arc<Mutex<State>>,
+    tx: Sender<Cmd>,
+) {
     let mut buf: Vec<u8> = Vec::new();
     loop {
         let more = match rx.as_mut() {
@@ -323,23 +337,33 @@ fn reader(mut r: BufReader<TcpStream>, mut rx: Option<ChannelRecv>, state: Arc<M
                 continue;
             };
             for line in raw.split(|&b| b == b'\n').filter(|l| !l.is_empty()) {
-                answer(line, &state);
+                on_line(line, &state, &tx);
             }
         }
     }
     let mut st = state.lock().unwrap();
     st.connected = false;
-    for (_, tx) in st.pending.drain() {
-        let _ = tx.send(Verdict::Unreachable);
+    for (_, reply) in st.pending.drain() {
+        let _ = reply.send(Verdict::Unreachable);
+    }
+}
+
+/// One decrypted listserver line.
+fn on_line(line: &[u8], state: &Mutex<State>, tx: &Sender<Cmd>) {
+    match line.first().map(|b| b.wrapping_sub(32)) {
+        Some(SVI_VERIACC2) => take_verdict(line, state),
+        // Empty pong. The body of the ping is not a nonce we were told
+        // to echo, so it is not copied back.
+        Some(SVI_PING) => {
+            let _ = tx.send(Cmd::Pong);
+        }
+        _ => {}
     }
 }
 
 /// `SVI_VERIACC2`: GSTRING account, the player GSHORT and type GCHAR as
 /// sent, then `SUCCESS` or the error text.
-fn answer(line: &[u8], state: &Mutex<State>) {
-    if line.first().map(|b| b.wrapping_sub(32)) != Some(SVI_VERIACC2) {
-        return;
-    }
+fn take_verdict(line: &[u8], state: &Mutex<State>) {
     let n = line.get(1).map_or(0, |b| b.wrapping_sub(32) as usize);
     let (Some(account), Some(player)) = (line.get(2..2 + n), line.get(2 + n..4 + n)) else {
         return;
@@ -361,7 +385,7 @@ fn answer(line: &[u8], state: &Mutex<State>) {
     }
 }
 
-fn run(cfg: Config, rx: Receiver<Cmd>, state: Arc<Mutex<State>>) {
+fn run(cfg: Config, tx: Sender<Cmd>, rx: Receiver<Cmd>, state: Arc<Mutex<State>>) {
     loop {
         let link = connect(&cfg).and_then(|(mut out, r, ch)| {
             let players = state.lock().unwrap().players.clone();
@@ -389,7 +413,8 @@ fn run(cfg: Config, rx: Receiver<Cmd>, state: Arc<Mutex<State>>) {
         );
         state.lock().unwrap().connected = true;
         let st = state.clone();
-        std::thread::spawn(move || reader(r, ch, st));
+        let to_writer = tx.clone();
+        std::thread::spawn(move || reader(r, ch, st, to_writer));
         let mut last = Instant::now();
         loop {
             if !state.lock().unwrap().connected {
@@ -406,6 +431,7 @@ fn run(cfg: Config, rx: Receiver<Cmd>, state: Arc<Mutex<State>>) {
                     gshort(&mut p, id);
                     message(svo::PLYRREM, &p)
                 }
+                Ok(Cmd::Pong) => message(svo::PING, b""),
                 Ok(Cmd::Verify {
                     account,
                     password,
@@ -466,6 +492,8 @@ fn wait_or_apply(rx: &Receiver<Cmd>, state: &Mutex<State>, d: Duration) -> Resul
             Ok(Cmd::Verify { reply, .. }) => {
                 let _ = reply.send(Verdict::Unreachable);
             }
+            // The link is down, so a ping has nobody to answer.
+            Ok(Cmd::Pong) => {}
             Err(RecvTimeoutError::Timeout) => return Ok(()),
             Err(RecvTimeoutError::Disconnected) => return Err(()),
         }
@@ -480,6 +508,7 @@ mod tests {
     fn veriacc2_answers_reach_the_waiting_login() {
         let state = Mutex::new(State::default());
         let (tx, rx) = mpsc::channel();
+        let (cmd_tx, cmd_rx) = mpsc::channel();
         state
             .lock()
             .unwrap()
@@ -490,7 +519,22 @@ mod tests {
         gshort(&mut line, 300);
         line.push(gchar(0));
         line.extend_from_slice(b"SUCCESS");
-        answer(&line, &state);
+        on_line(&line, &state, &cmd_tx);
         assert_eq!(rx.recv().unwrap(), Verdict::Ok);
+        assert!(cmd_rx.try_recv().is_err(), "a verdict is not a ping");
+    }
+
+    #[test]
+    fn listserver_ping_requests_an_empty_pong() {
+        let state = Mutex::new(State::default());
+        let (tx, rx) = mpsc::channel();
+        on_line(&[gchar(SVI_PING), b'x', b'y'], &state, &tx);
+        on_line(&[gchar(SVI_PING)], &state, &tx);
+        on_line(&[gchar(svo::SETIP)], &state, &tx);
+        assert!(matches!(rx.try_recv(), Ok(Cmd::Pong)));
+        assert!(matches!(rx.try_recv(), Ok(Cmd::Pong)));
+        assert!(rx.try_recv().is_err());
+        let pong = message(svo::PING, b"");
+        assert_eq!(pong, vec![gchar(svo::PING), b'\n']);
     }
 }
