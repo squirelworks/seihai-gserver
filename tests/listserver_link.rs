@@ -211,6 +211,21 @@ fn contains(hay: &[u8], needle: &[u8]) -> bool {
     hay.windows(needle.len()).any(|w| w == needle)
 }
 
+/// `VERIACC2` payload: GSTRING account, GSTRING password, GSHORT, GCHAR type.
+fn veriacc2_type(payload: &[u8]) -> u8 {
+    let an = (payload[0] - 32) as usize;
+    let pn = (payload[1 + an] - 32) as usize;
+    payload[2 + an + pn + 2].wrapping_sub(32)
+}
+
+/// Alignment (player prop 32) on a `PLYRADD` payload.
+fn plyradd_alignment(payload: &[u8]) -> Option<u8> {
+    seihai_core::protocol::parse_player_props(&payload[3..])
+        .iter()
+        .find(|p| p.id == 32)
+        .and_then(|p| p.gchar())
+}
+
 #[test]
 fn encrypted_link_registers_lists_players_and_checks_accounts() {
     let w = world("listlink", "*\n");
@@ -256,6 +271,12 @@ fn encrypted_link_registers_lists_players_and_checks_accounts() {
     .unwrap();
     let check = next_msg(&seen, 17);
     assert!(contains(&check, b"viaList") && contains(&check, PASSWORD.as_bytes()));
+    assert_ne!(v.client_type(), 0);
+    assert_eq!(
+        veriacc2_type(&check),
+        v.client_type(),
+        "VERIACC2 type is the login account type"
+    );
     let add = next_msg(&seen, 14); // PLYRADD: id, type, then nickname and props
     assert!(
         contains(&add, b"viaList"),
@@ -473,4 +494,67 @@ fn list_link_props_private_message_and_file_start() {
     assert_eq!(std::fs::read(w.join("heads/labhead.png")).unwrap(), b"HEAD");
     let saved = std::fs::read_to_string(w.join("accounts/viastage.txt")).unwrap();
     assert!(saved.contains("HEAD labhead.png"), "{saved}");
+}
+
+/// A non-zero `ALIGN` on the account is the alignment `PLYRADD` sends, and
+/// `VERIACC2`'s type byte is that login's account type (5 for 2.31, 0 for
+/// a classic build).
+#[test]
+fn stored_alignment_and_login_type_reach_the_list_link() {
+    let w = world("listlink-align", "*\n");
+    let mut account =
+        seihai_gserver::accounts::Account::new("aligned", "onlinestartlocal.nw", 12.0, 8.0);
+    account.alignment = 40;
+    account.nick = "Aligned".into();
+    seihai_gserver::accounts::Store::new(w.join("accounts"))
+        .save(&account)
+        .unwrap();
+
+    let FakeList {
+        addr: ls,
+        seen,
+        tap: _tap,
+        inject: _inject,
+    } = fake_listserver(ServerIdentity::generate());
+    let (addr, server) = start_with_link(
+        &w,
+        &format!(
+            "listserver = {ls}\nlistserver_accounts = true\ncreate_accounts = false\nname = Lab Link\n"
+        ),
+    );
+    wait_connected(&server);
+
+    let newer = ClientVersion::V231;
+    assert_ne!(newer.client_type(), 0);
+    run_one(
+        &addr,
+        &server,
+        newer,
+        "aligned",
+        Duration::from_millis(200),
+        None,
+    )
+    .unwrap();
+    let check = next_msg(&seen, 17);
+    assert_eq!(veriacc2_type(&check), newer.client_type());
+    let add = next_msg(&seen, 14);
+    assert_eq!(plyradd_alignment(&add), Some(40), "{add:?}");
+    let saved = std::fs::read_to_string(w.join("accounts/aligned.txt")).unwrap();
+    assert!(saved.contains("ALIGN 40"), "{saved}");
+
+    let classic = ClientVersion::V217;
+    assert_eq!(classic.client_type(), 0);
+    run_one(
+        &addr,
+        &server,
+        classic,
+        "classic",
+        Duration::from_millis(200),
+        None,
+    )
+    .unwrap();
+    let check = next_msg(&seen, 17);
+    assert_eq!(veriacc2_type(&check), 0);
+    let add = next_msg(&seen, 14);
+    assert_eq!(plyradd_alignment(&add), Some(0), "{add:?}");
 }

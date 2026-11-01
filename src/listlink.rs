@@ -113,6 +113,8 @@ pub struct ListedPlayer {
     pub level: String,
     pub x: f32,
     pub y: f32,
+    /// Alignment points (player prop 32). 0 until the account sets it.
+    pub alignment: u8,
 }
 
 /// Something the listserver sent for one local player. The session takes
@@ -150,6 +152,8 @@ enum Cmd {
         account: String,
         password: Vec<u8>,
         player: u16,
+        /// Login account type (`Login::client_type`).
+        account_type: u8,
         reply: Sender<Verdict>,
     },
     /// The listserver sent ping 99. Reply with one empty `SVO_PING`.
@@ -308,7 +312,12 @@ impl ListLink {
 
     /// Ask the listserver whether `account` and `password` are right. The
     /// answer comes on the receiver within [`VERIFY_TIMEOUT`].
-    pub fn verify(&self, account: &str, password: &[u8]) -> Receiver<Verdict> {
+    ///
+    /// `account_type` is the login line's type byte
+    /// ([`crate::login::Login::client_type`]): 0 for 1.21 to 2.17, 5 for
+    /// 2.22 and later. `rc.rs` names RC as 1 and 6, and NC as 3; those
+    /// logins are refused until that module accepts them.
+    pub fn verify(&self, account: &str, password: &[u8], account_type: u8) -> Receiver<Verdict> {
         let (reply, rx) = mpsc::channel();
         let player = self
             .ticket
@@ -322,6 +331,7 @@ impl ListLink {
                 account: account.to_string(),
                 password: password.to_vec(),
                 player,
+                account_type,
                 reply,
             });
         }
@@ -447,7 +457,7 @@ fn hello(cfg: &Config, players: &BTreeMap<u16, ListedPlayer>) -> io::Result<Vec<
 /// `PLYRADD`: GSHORT id, GCHAR type 0 (a player; an RC login will send
 /// its own type once `rc.rs` lands), then the props the list keeps.
 /// Account name (34), nickname (0), level (20), x (15), y (16), and
-/// alignment (32). Alignment is 0: this server does not store one yet.
+/// alignment (32). Alignment is the value stored on the player.
 /// Each prop is a GCHAR id and the same value a 2.22 client reads.
 fn plyradd(p: &ListedPlayer) -> Vec<u8> {
     let mut body = Vec::new();
@@ -461,8 +471,19 @@ fn plyradd(p: &ListedPlayer) -> Vec<u8> {
     body.push(gchar(16));
     body.push(gchar(tile2(p.y)));
     body.push(gchar(32));
-    body.push(gchar(0));
+    body.push(gchar(p.alignment));
     message(svo::PLYRADD, &body)
+}
+
+/// `VERIACC2`: GSTRING account, GSTRING password, GSHORT player, GCHAR
+/// account type (the login line's type byte).
+fn veriacc2(account: &str, password: &[u8], player: u16, account_type: u8) -> Vec<u8> {
+    let mut p = Vec::new();
+    gstr(&mut p, account.as_bytes());
+    gstr(&mut p, password);
+    gshort(&mut p, player);
+    p.push(gchar(account_type));
+    message(svo::VERIACC2, &p)
 }
 
 fn prop_str(out: &mut Vec<u8>, id: u8, text: &[u8]) {
@@ -1022,19 +1043,15 @@ fn run(
                     account,
                     password,
                     player,
+                    account_type,
                     reply,
                 }) => {
-                    let mut p = Vec::new();
-                    gstr(&mut p, account.as_bytes());
-                    gstr(&mut p, &password);
-                    gshort(&mut p, player);
-                    p.push(gchar(0));
                     state
                         .lock()
                         .unwrap()
                         .pending
                         .insert((account.to_ascii_lowercase(), player), reply);
-                    message(svo::VERIACC2, &p)
+                    veriacc2(&account, &password, player, account_type)
                 }
                 Err(RecvTimeoutError::Timeout) if last.elapsed() >= KEEPALIVE => {
                     message(svo::SETIP, b"AUTO")
@@ -1137,6 +1154,7 @@ mod tests {
             level: "onlinestartlocal.nw".into(),
             x: 30.0,
             y: 30.5,
+            alignment: 0,
         }
     }
 
@@ -1172,6 +1190,36 @@ mod tests {
         );
         let used: usize = props.iter().map(|p| 1 + p.raw.len()).sum();
         assert_eq!(used, payload.len() - 3);
+    }
+
+    #[test]
+    fn plyradd_sends_a_stored_alignment() {
+        let mut player = sample();
+        player.alignment = 40;
+        let line = plyradd(&player);
+        let payload = &line[1..line.len() - 1];
+        let props = seihai_core::protocol::parse_player_props(&payload[3..]);
+        assert_eq!(
+            props.iter().find(|p| p.id == 32).and_then(|p| p.gchar()),
+            Some(40)
+        );
+    }
+
+    #[test]
+    fn veriacc2_type_byte_is_the_argument() {
+        let line = veriacc2("tester", b"pw", 3, 5);
+        assert_eq!(line[0].wrapping_sub(32), svo::VERIACC2);
+        let payload = &line[1..line.len() - 1];
+        let an = (payload[0] - 32) as usize;
+        let pn = (payload[1 + an] - 32) as usize;
+        let at = 2 + an + pn;
+        let player = (u16::from(payload[at].wrapping_sub(32) & 0x7f) << 7)
+            | u16::from(payload[at + 1].wrapping_sub(32) & 0x7f);
+        assert_eq!(player, 3);
+        assert_eq!(payload[at + 2].wrapping_sub(32), 5);
+        let zero = veriacc2("tester", b"pw", 3, 0);
+        let z = &zero[1..zero.len() - 1];
+        assert_eq!(z[at + 2].wrapping_sub(32), 0);
     }
 
     #[test]

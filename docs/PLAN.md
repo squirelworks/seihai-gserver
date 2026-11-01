@@ -208,14 +208,16 @@ Next:
       `tests/listserver_link.rs`. No real client: the packet is only
       between this gserver and a listserver.
 - [x] Listserver link: `PLYRADD` sends the nickname and props after
-      the id and type (account, nickname, level, x, y, alignment 0).
+      the id and type (account, nickname, level, x, y, and alignment,
+      player prop 32, from the account's `ALIGN`, default 0).
       Private messages are `SVO_PMPLAYER` / `SVI_PMPLAYER` (29). File
       start is `SVI_FILESTART` (2) and `SVI_FILESTART3` (15), then
       `SVI_FILEDATA3` (16) and `SVI_FILEEND3` (17). `src/listlink.rs`,
       `tests/listserver_link.rs`. No real client: these packets are only
-      between this gserver and a listserver. `VERIACC2`'s "type" is
-      still always 0 (a player); RC logins will send their own once
-      `rc.rs` lands.
+      between this gserver and a listserver. `VERIACC2`'s type byte is
+      the login's account type (`login.rs`: 0 for 1.21 to 2.17, 5 for
+      2.22 and later). RC (1, 6) and NC (3) send theirs once `rc.rs`
+      accepts those logins.
 - [ ] RC logins (`rc.rs`, type 1/6): the same handshake once `seihai-rc`
       speaks it.
 - [ ] A `key-fingerprint` subcommand that prints the key without starting.

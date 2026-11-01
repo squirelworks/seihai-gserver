@@ -430,6 +430,7 @@ impl Conn {
                     level: level.to_string(),
                     x: account.x,
                     y: account.y,
+                    alignment: account.alignment,
                 });
             }
         }
@@ -534,6 +535,7 @@ impl Conn {
         let cfg = self.server.cfg.clone();
         let name = login.account.clone();
         let password = login.password.clone();
+        let account_type = login.client_type;
         let link = self
             .server
             .listlink
@@ -546,7 +548,7 @@ impl Conn {
                 // The listserver owns the password; the local file keeps
                 // the player's state and is made on first login.
                 let verdict = link
-                    .verify(&name, &password)
+                    .verify(&name, &password, account_type)
                     .recv_timeout(crate::listlink::VERIFY_TIMEOUT)
                     .unwrap_or(crate::listlink::Verdict::Unreachable);
                 return match verdict {
