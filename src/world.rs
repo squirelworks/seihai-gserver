@@ -31,7 +31,8 @@
 //!    players of their own cell only.
 //! 6. Accounts, chests, flags and floor items: on logout the player's
 //!    level, position, counted props, opened chests and flags go back to
-//!    the account file (the [`Saver`]). `PLI_OPENCHEST` (20) gives the
+//!    the account file (the [`Saver`]); a stop (Ctrl-C, SIGTERM) saves
+//!    everyone online the same way ([`World::save_all`]). `PLI_OPENCHEST` (20) gives the
 //!    chest's item and every level then shows it opened for that account;
 //!    `PLI_FLAGSET`/`PLI_FLAGDEL` (18/19) keep the flags. `PLI_ITEMADD`
 //!    (12) items lie in the level for the others and late arrivals,
@@ -120,6 +121,8 @@ pub enum WorldIn {
     },
     /// The connection closed.
     Left { player: u16 },
+    /// The server is stopping: save everyone online, then answer.
+    SaveAll { reply: oneshot::Sender<usize> },
 }
 
 /// Frame bodies for one player. Each item is a run of frames the
@@ -319,6 +322,17 @@ impl World {
         let _ = self.tx.send(WorldIn::Left { player });
     }
 
+    /// Write every online player's state to their account, as a logout
+    /// would, and return how many were saved. The players stay online;
+    /// the server calls this when it stops, before the connections drop.
+    pub async fn save_all(&self) -> usize {
+        let (reply, answer) = oneshot::channel();
+        if self.tx.send(WorldIn::SaveAll { reply }).is_err() {
+            return 0;
+        }
+        answer.await.unwrap_or(0)
+    }
+
     /// Accounts online now, lower-case and sorted. Updated by the world
     /// task after each join and leave.
     pub fn online_accounts(&self) -> Vec<String> {
@@ -355,6 +369,31 @@ struct Online {
 }
 
 impl Online {
+    /// What goes back to the account file.
+    fn leaving(&self) -> Leaving {
+        let mut chests: Vec<_> = self.opened.iter().cloned().collect();
+        chests.sort();
+        Leaving {
+            account: self.account.clone(),
+            level: self.level.clone(),
+            x: self.props.x(),
+            y: self.props.y(),
+            props: self.props.values().clone(),
+            chests,
+            flags: self
+                .flags
+                .iter()
+                .map(|(n, v)| {
+                    if v.is_empty() {
+                        n.clone()
+                    } else {
+                        format!("{n}={v}")
+                    }
+                })
+                .collect(),
+        }
+    }
+
     /// The position in gmap coordinates (the level's own off a gmap).
     fn global(&self) -> (f32, f32) {
         let (cx, cy) = self.gmap.as_ref().map_or((0, 0), |g| g.cell);
@@ -531,6 +570,16 @@ impl WorldTask {
                 }
             }
             WorldIn::Left { player } => self.leave(player),
+            WorldIn::SaveAll { reply } => {
+                let mut n = 0;
+                if let Some(save) = &self.saver {
+                    for p in self.players.values() {
+                        save(p.leaving());
+                        n += 1;
+                    }
+                }
+                let _ = reply.send(n);
+            }
             WorldIn::Props { player, raw } => self.props(player, &raw),
             WorldIn::LevelWarp(w) => self.warp(w),
             WorldIn::OpenChest { player, x, y } => self.open_chest(player, x, y),
@@ -964,27 +1013,7 @@ impl WorldTask {
     fn leave(&mut self, id: u16) {
         if let Some(p) = self.players.remove(&id) {
             if let Some(save) = &self.saver {
-                let mut chests: Vec<_> = p.opened.iter().cloned().collect();
-                chests.sort();
-                save(Leaving {
-                    account: p.account.clone(),
-                    level: p.level.clone(),
-                    x: p.props.x(),
-                    y: p.props.y(),
-                    props: p.props.values().clone(),
-                    chests,
-                    flags: p
-                        .flags
-                        .iter()
-                        .map(|(n, v)| {
-                            if v.is_empty() {
-                                n.clone()
-                            } else {
-                                format!("{n}={v}")
-                            }
-                        })
-                        .collect(),
-                });
+                save(p.leaving());
             }
             self.by_account.remove(&p.account);
             self.publish();
