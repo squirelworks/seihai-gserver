@@ -51,14 +51,14 @@ fn two_players_see_each_other() {
     .unwrap();
     let ben = sa.others[0].id;
 
-    // Ben walks.
+    // Ben walks a few tiles from the start (30, 30).
     b.conn
-        .send_messages(&[walk_message_for(ClientVersion::V231, 12.5, 40.0, 2)])
+        .send_messages(&[walk_message_for(ClientVersion::V231, 26.5, 33.0, 2)])
         .unwrap();
     read_until(&ra, &mut sa, Duration::from_secs(10), |s| {
         s.others
             .iter()
-            .any(|o| o.id == ben && o.x == 12.5 && o.y == 40.0)
+            .any(|o| o.id == ben && o.x == 26.5 && o.y == 33.0)
     })
     .unwrap();
 

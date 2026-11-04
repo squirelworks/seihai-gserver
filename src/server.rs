@@ -35,6 +35,8 @@ pub struct Server {
     store: Store,
     /// The world task's handle: who is online (see `world`).
     pub world: crate::world::World,
+    /// The anti-cheat policy and log, shared with the world.
+    pub anticheat: Arc<crate::anticheat::AntiCheat>,
     /// The files the world serves (see `files`).
     pub files: crate::files::FileStore,
     /// The NPC-server link's shared state (see `npclink`).
@@ -99,12 +101,18 @@ impl Server {
                 eprintln!("could not save the account {}: {e}", l.account);
             }
         }));
+        let anticheat = Arc::new(crate::anticheat::AntiCheat::new(
+            cfg.anticheat.clone(),
+            &cfg.world,
+        ));
+        world.set_anticheat(anticheat.clone());
         let login_rate = crate::ratelimit::LoginRate::new(cfg.login_rate, cfg.login_rate_loopback);
         let password_checks = crate::ratelimit::PasswordChecks::new(cfg.password_check_slots());
         Server {
             files: crate::files::FileStore::new(&cfg.world),
             npc,
             world,
+            anticheat,
             login_rate,
             password_checks,
             cfg,
@@ -498,6 +506,10 @@ impl Conn {
             account: account.name.clone(),
             sword_power: account.sword.0,
             shield_power: account.shield.0,
+            rate: Default::default(),
+            score: Default::default(),
+            flooding: None,
+            kicked: false,
         };
         for f in session.handle(&self.server, &self.peer, &early) {
             self.send(&mut codec, &f).await?;
@@ -536,6 +548,10 @@ impl Conn {
                             return self.refuse(&mut codec, "Disconnected for sending invalid packets.").await;
                         }
                         reply.extend(session.handle(&self.server, &self.peer, &msgs));
+                        if session.kicked {
+                            self.server.log(&self.peer, "kicked by the anti-cheat");
+                            return self.refuse(&mut codec, "Disconnected by the server.").await;
+                        }
                     }
                     for f in reply {
                         self.send(&mut codec, &f).await?;
@@ -553,6 +569,11 @@ impl Conn {
                     return self.refuse(&mut codec, "Disconnected for being idle.").await;
                 }
                 Some(frames) = from_world.recv() => {
+                    // An empty item: the anti-cheat kicks the player.
+                    if frames.is_empty() {
+                        self.server.log(&self.peer, "kicked by the anti-cheat");
+                        return self.refuse(&mut codec, "Disconnected by the server.").await;
+                    }
                     // The world decides the frames (gen 2 needs the board
                     // in a frame of its own), and an item's frames go out
                     // together: no reply of this task's lands between.
@@ -677,9 +698,44 @@ struct Session {
     account: String,
     sword_power: u8,
     shield_power: u8,
+    /// Messages in the last second, for the anti-cheat's rate check.
+    rate: crate::anticheat::Rate,
+    score: crate::anticheat::Score,
+    /// Over the rate now: whether to drop (one violation per run of
+    /// messages over the limit, not one per message).
+    flooding: Option<bool>,
+    /// The anti-cheat says to close the connection.
+    kicked: bool,
 }
 
 impl Session {
+    /// One more message against the rate limit: whether to drop it (and
+    /// `kicked` when the policy says so).
+    fn over_rate(&mut self, server: &Server) -> bool {
+        let ac = &server.anticheat;
+        let now = std::time::Instant::now();
+        if !self.rate.over(ac.policy.rate, now) {
+            self.flooding = None;
+            return false;
+        }
+        if let Some(drop) = self.flooding {
+            return drop;
+        }
+        let kind = crate::anticheat::Kind::Rate;
+        let v = self.score.report(&ac.policy, kind, now);
+        if v.log {
+            let what = format!(
+                "over {} a second{}",
+                ac.policy.rate,
+                if v.kick { "; kicked" } else { "" }
+            );
+            ac.log(&self.account, self.version.label(), "", kind, &what);
+        }
+        self.kicked |= v.kick;
+        self.flooding = Some(v.correct);
+        v.correct || v.kick
+    }
+
     /// Handle the client's messages; returns the reply as frame bodies
     /// (none, one, or more when a file needs frames of its own).
     fn handle(&mut self, server: &Server, peer: &SocketAddr, msgs: &[Vec<u8>]) -> Vec<Vec<u8>> {
@@ -690,6 +746,14 @@ impl Session {
                 continue;
             };
             let id = id.wrapping_sub(0x20);
+            // File checks are left out: a client checks its whole cache at
+            // login, hundreds at once, and each answer is cheap.
+            if !matches!(id, PLI_WANTFILE | PLI_UPDATEFILE) && self.over_rate(server) {
+                if self.kicked {
+                    break;
+                }
+                continue;
+            }
             let payload = rest.strip_suffix(b"\n").unwrap_or(rest);
             let n = self.stats.entry(id).or_insert(0);
             *n += 1;

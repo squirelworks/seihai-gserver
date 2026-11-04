@@ -93,6 +93,9 @@ pub struct Config {
     /// Check account passwords with the listserver (`VERIACC2`) in place
     /// of the local accounts' hashes. Off by default.
     pub listserver_accounts: bool,
+    /// The anti-cheat checks and what they do (`anticheat`,
+    /// `anticheat_log`, `anticheat_rate`, `anticheat.<check>`).
+    pub anticheat: crate::anticheat::Policy,
 }
 
 /// How the NPC-server link runs.
@@ -137,6 +140,7 @@ impl Config {
             listserver_secure: true,
             listserver_key: String::new(),
             listserver_accounts: false,
+            anticheat: crate::anticheat::Policy::default(),
         }
     }
 
@@ -235,7 +239,12 @@ impl Config {
             "listserver_secure" => self.listserver_secure = flag(v)?,
             "listserver_key" => self.listserver_key = v.to_string(),
             "listserver_accounts" => self.listserver_accounts = flag(v)?,
-            _ => return Err(format!("unknown setting `{key}`")),
+            _ => {
+                return match self.anticheat.set(key, v) {
+                    Some(r) => r,
+                    None => Err(format!("unknown setting `{key}`")),
+                }
+            }
         }
         Ok(())
     }

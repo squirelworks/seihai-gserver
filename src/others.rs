@@ -104,6 +104,34 @@ impl Props {
         c
     }
 
+    /// Put back a change the anti-cheat refused: the position goes back to
+    /// `x`, `y`, the props `ids` to their values before, and the change
+    /// passes on none of them.
+    pub fn put_back(
+        &mut self,
+        change: &mut Change,
+        x: f32,
+        y: f32,
+        before: &[(u8, Option<Vec<u8>>)],
+    ) {
+        self.x = Some(x);
+        self.y = Some(y);
+        change.x = None;
+        change.y = None;
+        for (id, v) in before {
+            change.values.remove(id);
+            match v {
+                Some(v) => self.values.insert(*id, v.clone()),
+                None => self.values.remove(id),
+            };
+        }
+    }
+
+    /// Whether the change moves the player.
+    pub fn moves(change: &Change) -> bool {
+        change.x.is_some() || change.y.is_some()
+    }
+
     /// A move the server made (a warp's arrival), as a change.
     pub fn moved(&mut self, x: f32, y: f32) -> Change {
         self.x = Some(x);
@@ -249,6 +277,18 @@ pub fn give_item(props: &mut Props, item: u8) -> Vec<(u8, Vec<u8>)> {
     }
     new.retain(|(id, v)| props.set(*id, v.clone()));
     new
+}
+
+/// The player's own position, for `own_message`: classic half tiles (15,
+/// 16) and precise (78, 79); each build reads the ones it has.
+pub fn own_position(x: f32, y: f32) -> Vec<(u8, Vec<u8>)> {
+    let half = |v: f32| vec![gchar((v * 2.0).clamp(0.0, 223.0) as u8)];
+    let fine = |v: f32| {
+        let mut w = Vec::new();
+        gshort(encode_pos_precise(v), &mut w);
+        w
+    };
+    vec![(X, half(x)), (Y, half(y)), (X2, fine(x)), (Y2, fine(y))]
 }
 
 /// Rupees stop here: the most a `GINT3` carries.

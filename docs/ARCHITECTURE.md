@@ -28,7 +28,7 @@ How the server is put together, and where each later stage plugs in. Read
 | `src/listlink.rs` | the listserver link over the encrypted channel (`SVLINK01`): register, player count with nickname and props, account check (`VERIACC2`), pong (`SVO_PING` 16), private messages, file start; two plain threads, reconnects every 15 s | link |
 | `src/rc.rs` | RC and NC logins for `seihai-rc` (skeleton) | 4 |
 | `src/npclink.rs` | the link to `seihai-npcserver` (`PROTOCOL.md`): `Hub` (players for the link), `serve_link`, `supervise` for `npcserver = auto` | 5 (first half) |
-| `src/anticheat.rs` | violations, scores and the admin policy (planned; see `docs/PLAN.md`, stage 7) | 7 |
+| `src/anticheat.rs` | the admin policy (`anticheat.*` settings), violation scores and kicks, the log; the speed, teleport, warp and message-rate checks (stage 2.9); item and damage checks to come (`docs/PLAN.md`, stage 7) | 2, 7 |
 
 The skeleton modules hold the plan for their stage as doc comments and the
 types the stage will fill in. They are compiled, so they stay in step with

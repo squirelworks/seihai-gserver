@@ -1,3 +1,4 @@
 /target
 *.key
 *.pin
+/world/logs/
