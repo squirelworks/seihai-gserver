@@ -43,6 +43,15 @@ pub struct Config {
     pub idle_timeout: Duration,
     /// How long a new connection gets to send its login frame.
     pub login_timeout: Duration,
+    /// Password checks (PBKDF2) running at once; more logins wait their
+    /// turn. 0 (the default): one per CPU.
+    pub password_checks: usize,
+    /// Logins a minute from one address (one IPv4 address, or one IPv6
+    /// /64), with a burst of the same size. 0 turns the limit off.
+    pub login_rate: u32,
+    /// Apply `login_rate` to loopback addresses too. Off by default, so a
+    /// lab rig with many bots on `127.0.0.1` is not throttled.
+    pub login_rate_loopback: bool,
     /// Tile number the generated board is filled with, sent when the
     /// level's file is missing from `levels/`.
     pub board_tile: u16,
@@ -111,6 +120,9 @@ impl Config {
             heartbeat: Duration::from_secs(5),
             idle_timeout: Duration::ZERO,
             login_timeout: Duration::from_secs(10),
+            password_checks: 0,
+            login_rate: 30,
+            login_rate_loopback: false,
             board_tile: 0x1FF,
             max_players: 256,
             secure_login_key: PathBuf::from("config/seihai-login.key"),
@@ -195,6 +207,9 @@ impl Config {
             "heartbeat" => self.heartbeat = secs(v)?,
             "idle_timeout" => self.idle_timeout = secs(v)?,
             "login_timeout" => self.login_timeout = secs(v)?,
+            "password_checks" => self.password_checks = num(v)?,
+            "login_rate" => self.login_rate = num(v)?,
+            "login_rate_loopback" => self.login_rate_loopback = flag(v)?,
             "board_tile" => self.board_tile = num::<u16>(v)? & 0x0FFF,
             "max_players" => self.max_players = num(v)?,
             "secure_login_key" => self.secure_login_key = PathBuf::from(v),
@@ -223,6 +238,14 @@ impl Config {
             _ => return Err(format!("unknown setting `{key}`")),
         }
         Ok(())
+    }
+
+    /// `password_checks` with 0 resolved to the number of CPUs.
+    pub fn password_check_slots(&self) -> usize {
+        match self.password_checks {
+            0 => std::thread::available_parallelism().map_or(2, |n| n.get()),
+            n => n,
+        }
     }
 
     pub fn accounts_dir(&self) -> PathBuf {
@@ -272,6 +295,8 @@ mod tests {
         assert_eq!(c.npcserver, NpcMode::Off);
         assert!(c.npcserver_bind.is_loopback());
         assert!(!c.require_secure_login);
+        assert!(c.password_check_slots() >= 1);
+        assert_eq!((c.login_rate, c.login_rate_loopback), (30, false));
         assert_eq!(
             c.secure_login_key_path(),
             Some(PathBuf::from("w/config/seihai-login.key"))

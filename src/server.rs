@@ -44,6 +44,10 @@ pub struct Server {
     /// The listserver link (see `listlink`); `None` when `listserver` is
     /// empty. Set by `run`.
     pub listlink: Option<Arc<crate::listlink::ListLink>>,
+    /// Logins a minute per address (`login_rate`).
+    login_rate: crate::ratelimit::LoginRate,
+    /// The cap on password checks at once (`password_checks`).
+    password_checks: crate::ratelimit::PasswordChecks,
 }
 
 impl Server {
@@ -79,9 +83,13 @@ impl Server {
                 blank_mod_time: started_unix,
             },
         );
+        let login_rate = crate::ratelimit::LoginRate::new(cfg.login_rate, cfg.login_rate_loopback);
+        let password_checks = crate::ratelimit::PasswordChecks::new(cfg.password_check_slots());
         Server {
             npc,
             world,
+            login_rate,
+            password_checks,
             cfg,
             allow,
             extra_tokens,
@@ -91,6 +99,11 @@ impl Server {
             identity: None,
             listlink: None,
         }
+    }
+
+    /// The most password checks that ran at once since the start.
+    pub fn peak_password_checks(&self) -> usize {
+        self.password_checks.peak()
     }
 
     /// Accounts online now, lower-case and sorted.
@@ -313,6 +326,18 @@ impl Conn {
         };
         let version = burst::shape_version(login.version, login.gen);
         let mut codec = Codec::new(login.gen, login.key, login.version);
+        if !self.server.login_rate.allow(self.peer.ip()) {
+            self.server.log(
+                &self.peer,
+                &format!("{}: too many logins from this address", login.account),
+            );
+            return self
+                .refuse(
+                    &mut codec,
+                    "Too many logins from your address; try again in a minute.",
+                )
+                .await;
+        }
         inbuf.long = login
             .version
             .is_some_and(|v| v.profile().protocol.gen5_long_frames);
@@ -536,9 +561,18 @@ impl Conn {
             .listlink
             .clone()
             .filter(|_| cfg.listserver_accounts);
-        // PBKDF2 is slow on purpose, and the listserver answer blocks:
-        // keep both off the network threads.
+        // PBKDF2 is slow on purpose (about 0.15 CPU-seconds), so a local
+        // check waits for one of the `password_checks` slots: a burst of
+        // logins queues instead of fanning out over the blocking pool. The
+        // listserver answer only waits on the network, so it takes none.
+        let slot = match link {
+            Some(_) => None,
+            None => Some(self.server.password_checks.slot().await),
+        };
+        // Both block: keep them off the network threads.
         tokio::task::spawn_blocking(move || {
+            // Held until the hash is done, even if the connection goes.
+            let _slot = slot;
             if let Some(link) = link {
                 // The listserver owns the password; the local file keeps
                 // the player's state and is made on first login.
