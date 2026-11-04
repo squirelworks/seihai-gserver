@@ -5,6 +5,11 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to draft, without the v (e.g. 0.1.0). Leave empty to build only.'
+        required: false
+        default: ''
 
 jobs:
   build:
@@ -53,22 +58,44 @@ jobs:
             ${{ matrix.name }}.tar.gz
             ${{ matrix.name }}.zip
 
-  publish:
-    if: startsWith(github.ref, 'refs/tags/v')
+  # Drafts only. The tag is made when Squirrel presses Publish on the draft, so
+  # nothing is tagged or released without the owner's go-ahead. See RELEASES.md
+  # in squirelworks/seihai.
+  draft:
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.version != ''
     needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
-      - name: Upload to the release
+      - name: Draft the release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          TITLE: seihai-gserver
         run: |
-          gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
-            || gh release create "$TAG" -R "$GITHUB_REPOSITORY" --verify-tag --title "seihai-gserver ${TAG#v}" --notes ""
-          gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber dist/*
+          if [ -n "$INPUT_VERSION" ]; then TAG="v$INPUT_VERSION"; else TAG="$GITHUB_REF_NAME"; fi
+          echo "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$' || { echo "::error::bad version $TAG"; exit 1; }
+          CARGO=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          [ "v$CARGO" = "$TAG" ] || echo "::warning::Cargo.toml says $CARGO, the release is $TAG"
+          # Release notes are written by hand, reviewed in a PR, and kept here.
+          NOTES="docs/releases/$TAG.md"
+          [ -f "$NOTES" ] || { echo "::error::No release notes: write $NOTES in a PR first"; exit 1; }
+          ls -l dist
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            if [ "$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json isDraft -q .isDraft)" = true ]; then
+              gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber dist/*
+              gh release edit "$TAG" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --notes-file "$NOTES"
+            else
+              echo "$TAG is already published; leaving it as it is."
+            fi
+          else
+            gh release create "$TAG" -R "$GITHUB_REPOSITORY" --draft --target "$GITHUB_SHA" \
+              --title "$TITLE ${TAG#v}" --notes-file "$NOTES" dist/*
+          fi
+          echo "Draft: $(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json url -q .url)" >> "$GITHUB_STEP_SUMMARY"
