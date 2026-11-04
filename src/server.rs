@@ -1,8 +1,8 @@
 //! Listening, login and the idle session.
 //!
-//! One tokio task per connection. Stage 1 keeps the shared state small: who
-//! is online and which player ids are taken. The world task with levels and
-//! the 50 ms tick comes with stage 2.
+//! One tokio task per connection. Who is online, and which player ids are
+//! taken, belongs to the world task (`world.rs`); a connection asks it for
+//! an id after the account check and tells it when it closes.
 
 use crate::accounts::{Account, Store};
 use crate::allow::AllowList;
@@ -16,10 +16,10 @@ use crate::wire::{gchar, gint4, gshort, gstring, ids::*, latin1, msg};
 use seihai_core::protocol::{
     parse_player_props_with, zlib_decompress, ClientVersion, EncryptionGen,
 };
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::io;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -33,7 +33,8 @@ pub struct Server {
     pub allow: AllowList,
     extra_tokens: Vec<String>,
     store: Store,
-    online: Mutex<Online>,
+    /// The world task's handle: who is online (see `world`).
+    pub world: crate::world::World,
     /// The NPC-server link's shared state (see `npclink`).
     pub npc: Arc<crate::npclink::Hub>,
     started: Instant,
@@ -44,29 +45,6 @@ pub struct Server {
     /// The listserver link (see `listlink`); `None` when `listserver` is
     /// empty. Set by `run`.
     pub listlink: Option<Arc<crate::listlink::ListLink>>,
-}
-
-#[derive(Default)]
-struct Online {
-    /// Lower-case account name to player id.
-    by_account: HashMap<String, u16>,
-    next_id: u16,
-}
-
-impl Online {
-    fn take_id(&mut self) -> u16 {
-        let used: std::collections::HashSet<u16> = self.by_account.values().copied().collect();
-        loop {
-            self.next_id = self.next_id.wrapping_add(1);
-            // GSHORT holds 14 bits; 0 is not a player.
-            if self.next_id == 0 || self.next_id >= 1 << 14 {
-                self.next_id = 1;
-            }
-            if !used.contains(&self.next_id) {
-                return self.next_id;
-            }
-        }
-    }
 }
 
 impl Server {
@@ -94,13 +72,14 @@ impl Server {
             &cfg.name,
             &cfg.levels_dir(),
         ));
+        let world = crate::world::World::new(cfg.max_players);
         Server {
             npc,
+            world,
             cfg,
             allow,
             extra_tokens,
             store,
-            online: Mutex::new(Online::default()),
             started: Instant::now(),
             started_unix,
             verbose: false,
@@ -109,18 +88,9 @@ impl Server {
         }
     }
 
-    /// Accounts online now, lower-case.
+    /// Accounts online now, lower-case and sorted.
     pub fn online_accounts(&self) -> Vec<String> {
-        let mut v: Vec<String> = self
-            .online
-            .lock()
-            .unwrap()
-            .by_account
-            .keys()
-            .cloned()
-            .collect();
-        v.sort();
-        v
+        self.world.online_accounts()
     }
 
     fn log(&self, peer: &SocketAddr, text: &str) {
@@ -153,8 +123,9 @@ impl Server {
     }
 }
 
-/// Accept connections until the listener fails.
+/// Start the world task and accept connections until the listener fails.
 pub async fn serve(server: Arc<Server>, listener: TcpListener) -> io::Result<()> {
+    server.world.start();
     loop {
         let (stream, peer) = listener.accept().await?;
         let _ = stream.set_nodelay(true);
@@ -169,13 +140,13 @@ pub async fn serve(server: Arc<Server>, listener: TcpListener) -> io::Result<()>
             };
             let result = conn.run().await;
             if let Some(id) = conn.player.take() {
+                s.world.left(id);
                 s.npc.left(id);
                 if let Some(l) = &s.listlink {
                     l.player_removed(id);
                 }
             }
             if let Some(name) = conn.account.take() {
-                s.online.lock().unwrap().by_account.remove(&name);
                 s.log(
                     &peer,
                     &format!(
@@ -199,7 +170,7 @@ struct Conn {
     server: Arc<Server>,
     stream: TcpStream,
     peer: SocketAddr,
-    /// Lower-case account name, once it is registered online.
+    /// Lower-case account name, once the world has it online.
     account: Option<String>,
     /// Player id, once logged in.
     player: Option<u16>,
@@ -384,26 +355,22 @@ impl Conn {
             }
         };
         let key = login.account.to_ascii_lowercase();
-        let id = {
-            let mut on = self.server.online.lock().unwrap();
-            if on.by_account.contains_key(&key) {
-                None
-            } else if on.by_account.len() >= cfg.max_players {
-                Some(None)
-            } else {
-                let id = on.take_id();
-                on.by_account.insert(key.clone(), id);
-                Some(Some(id))
+        // What the world sends this player; framed and sent below.
+        let (outbox, mut from_world) = tokio::sync::mpsc::unbounded_channel();
+        let id = match self.server.world.join(&key, outbox).await {
+            Some(Ok(id)) => id,
+            Some(Err(why)) => {
+                if why == crate::world::Refused::InUse {
+                    self.server
+                        .log(&self.peer, &format!("{who}: already online"));
+                }
+                return self.refuse(&mut codec, why.text()).await;
             }
-        };
-        let id = match id {
             None => {
-                self.server
-                    .log(&self.peer, &format!("{who}: already online"));
-                return self.refuse(&mut codec, "Account already in use.").await;
+                return self
+                    .refuse(&mut codec, "The server is shutting down.")
+                    .await
             }
-            Some(None) => return self.refuse(&mut codec, "The server is full.").await,
-            Some(Some(id)) => id,
         };
         self.account = Some(key);
         self.player = Some(id);
@@ -516,6 +483,14 @@ impl Conn {
                 _ = sleep_opt(idle_left) => {
                     self.server.log(&self.peer, "idle timeout");
                     return self.refuse(&mut codec, "Disconnected for being idle.").await;
+                }
+                Some(body) = from_world.recv() => {
+                    // Whatever else the world queued goes in the same frame.
+                    let mut out = body;
+                    while let Ok(more) = from_world.try_recv() {
+                        out.extend(more);
+                    }
+                    self.send(&mut codec, &out).await?;
                 }
                 _ = list_ready(listlink.as_deref()) => {
                     let reply = session.link_out(&self.server);
@@ -649,6 +624,7 @@ impl Session {
                 }
                 PLI_PLAYERPROPS => {
                     let bow = self.version.profile().props.bow_prop10;
+                    server.world.props(self.id, payload);
                     server.npc.props(self.id, payload, bow);
                     let props = parse_player_props_with(payload, bow);
                     if let Some(nick) = props.iter().find(|p| p.id == 0) {

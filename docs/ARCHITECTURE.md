@@ -19,7 +19,7 @@ How the server is put together, and where each later stage plugs in. Read
 | `src/wire.rs` | server-to-client message writers and the ids we use | 1 |
 | `src/burst.rs` | the login burst per generation, own player props | 1 |
 | `src/server.rs` | accept loop, one task per connection, the idle session | 1 |
-| `src/world.rs` | the world task: levels, players, the 50 ms tick (skeleton) | 2 |
+| `src/world.rs` | the world task: who is online and player ids (done); levels, other players, the 50 ms tick (to do) | 2 |
 | `src/levels.rs` | level files (`.nw`, `.graal`, `.zelda`), gmaps, links, signs, chests (skeleton) | 2 |
 | `src/files.rs` | `WANTFILE`/`UPDATEFILE` file serving from the world folder (skeleton) | 2 |
 | `src/listlink.rs` | the listserver link over the encrypted channel (`SVLINK01`): register, player count with nickname and props, account check (`VERIACC2`), pong (`SVO_PING` 16), private messages, file start; two plain threads, reconnects every 15 s | link |
@@ -48,8 +48,9 @@ TcpListener ──accept──▶ Conn task (server.rs)
           idle timeout (off by default) }
 ```
 
-Shared state is one `Mutex<Online>` (account to player id). Stage 2 replaces
-it with the world task below.
+Who is online (account to player id) is owned by the world task below: a
+login asks it with `World::join` after the account check, and the
+connection sends `Left` when it closes.
 
 ## Rules the code follows
 
