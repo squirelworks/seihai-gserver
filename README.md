@@ -25,6 +25,9 @@ Stage 1 covers:
   generation needs; a generated board when the level file is missing);
 * other players in the level, and links between levels (`PLI_LEVELWARP`,
   `PLI_LEVELWARPMOD`; a current cached copy gets the level name alone);
+* gmaps: `.gmap` files in `levels/`, played as one world by the builds that
+  play gmaps (neighbour requests, walking across seams), as plain levels by
+  the rest;
 * files: `WANTFILE`/`UPDATEFILE` served from `<world>/files/` (any depth)
   and the `.gmap` files in `levels/`, in each build's file layout, large
   files in chunks where the build takes them;
@@ -43,7 +46,7 @@ Stage 1 covers:
   listserver's key is pinned in `config/listserver.pin` on first contact, or
   given as `listserver_key`.
 
-Gmaps, NPCs and RC are later stages.
+NPCs and RC are later stages.
 
 ## Build and run
 

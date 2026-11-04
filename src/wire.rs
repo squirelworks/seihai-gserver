@@ -91,6 +91,7 @@ pub fn latin1(s: &str) -> Vec<u8> {
 /// The message ids this server uses.
 pub mod ids {
     // Server to client.
+    pub const PLO_LEVELBOARD: u8 = 0;
     pub const PLO_LEVELLINK: u8 = 1;
     pub const PLO_LEVELCHEST: u8 = 4;
     pub const PLO_LEVELSIGN: u8 = 5;
@@ -99,6 +100,7 @@ pub mod ids {
     pub const PLO_LEVELNAME: u8 = 6;
     pub const PLO_ISLEADER: u8 = 10;
     pub const PLO_PLAYERWARP: u8 = 14;
+    pub const PLO_PLAYERWARP2: u8 = 49;
     pub const PLO_DISCMESSAGE: u8 = 16;
     pub const PLO_SIGNATURE: u8 = 25;
     pub const PLO_FILESENDFAILED: u8 = 30;

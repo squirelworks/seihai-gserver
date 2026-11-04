@@ -12,6 +12,7 @@ pub mod burst;
 pub mod codec;
 pub mod config;
 pub mod files;
+pub mod gmaps;
 pub mod levels;
 pub mod listlink;
 pub mod login;
