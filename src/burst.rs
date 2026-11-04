@@ -86,6 +86,12 @@ pub fn login_burst(
             out.put(PLO_LEVELCHEST, &c);
         }
     };
+    // The account's player flags, one `PLO_FLAGSET` each.
+    let flags = |out: &mut Out| {
+        for f in &a.flags {
+            out.put(PLO_FLAGSET, &latin1(f));
+        }
+    };
 
     if gen == EncryptionGen::Gen2 || gen == EncryptionGen::Gen1 {
         out.put(PLO_PLAYERPROPS, &props);
@@ -104,6 +110,7 @@ pub fn login_burst(
         links_and_signs(&mut out);
         out.put(PLO_LEVELMODTIME, &mod_time);
         chests(&mut out);
+        flags(&mut out);
         out.put(PLO_ISLEADER, b"");
         return vec![first, second, out.body];
     }
@@ -116,6 +123,7 @@ pub fn login_burst(
         out.put(PLO_STATUSLIST, &latin1(&cfg.status_list));
     }
     out.put(PLO_PLAYERPROPS, &props);
+    flags(&mut out);
     out.put(PLO_DEFAULTWEAPON, &[gchar(8)]);
     out.put(PLO_DEFAULTWEAPON, &[gchar(7)]);
     match gmap {

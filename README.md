@@ -31,6 +31,11 @@ Stage 1 covers:
 * files: `WANTFILE`/`UPDATEFILE` served from `<world>/files/` (any depth)
   and the `.gmap` files in `levels/`, in each build's file layout, large
   files in chunks where the build takes them;
+* the account keeps what the player does: on logout their level, position,
+  hearts, rupees, arrows, bombs and glove go back into the account file,
+  with the chests they opened (sent opened from then on; a chest's rupees,
+  bombs, darts or hearts are given) and their player flags (`PLI_FLAGSET`,
+  `PLI_FLAGDEL`; sent back as `PLO_FLAGSET` at login);
 * the idle session: the world time as a heartbeat;
 * the NPC-server link (`PROTOCOL.md`): `seihai-npcserver` logs in on its own
   loopback port and is told the level list and every player's props. With

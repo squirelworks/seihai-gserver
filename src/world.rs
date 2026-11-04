@@ -49,6 +49,14 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot, watch};
 
+/// `name=value` as name and value; a bare `name` has an empty value.
+fn split_flag(text: &str) -> (String, String) {
+    match text.split_once('=') {
+        Some((n, v)) => (n.trim().to_string(), v.to_string()),
+        None => (text.trim().to_string(), String::new()),
+    }
+}
+
 /// The world tick. Real 2.x clients send walk props every 100 ms and expect
 /// replies within a frame.
 pub const TICK: Duration = Duration::from_millis(50);
@@ -70,6 +78,15 @@ pub enum WorldIn {
     Props { player: u16, raw: Vec<u8> },
     /// `PLI_LEVELWARP` (0) or `PLI_LEVELWARPMOD` (30).
     LevelWarp(Warp),
+    /// `PLI_OPENCHEST` (20): the chest at tile `x`, `y` of the player's level.
+    OpenChest { player: u16, x: u8, y: u8 },
+    /// `PLI_FLAGSET` (18, `name` or `name=value`) and `PLI_FLAGDEL` (19,
+    /// `name`, `set` false).
+    Flag {
+        player: u16,
+        text: String,
+        set: bool,
+    },
     /// `PLI_ADJACENTLEVEL` (35): a gmap neighbour the client wants, with
     /// the mod time of its copy (0 for none).
     Adjacent {
@@ -113,6 +130,10 @@ pub struct Joining {
     /// The player's props from the account, in the 2.22 encoding
     /// (`burst::own_props(ClientVersion::V222, ..)`).
     pub props: Vec<u8>,
+    /// Chests the account opened: level (lower case), x, y.
+    pub chests: Vec<(String, u8, u8)>,
+    /// The account's player flags (`name` or `name=value`).
+    pub flags: Vec<String>,
 }
 
 /// The world's answer to a login it lets in.
@@ -186,9 +207,28 @@ impl World {
                 players: BTreeMap::new(),
                 by_account: HashMap::new(),
                 last_id: 0,
+                saver: None,
                 pending: BTreeMap::new(),
             })),
         }
+    }
+
+    /// Where logged-out players' state goes (the account files). Call
+    /// before [`World::start`]; later calls do nothing.
+    pub fn set_saver(&self, saver: Saver) {
+        if let Some(t) = self.task.lock().unwrap().as_mut() {
+            t.saver = Some(saver);
+        }
+    }
+
+    /// `PLI_OPENCHEST`.
+    pub fn open_chest(&self, player: u16, x: u8, y: u8) {
+        let _ = self.tx.send(WorldIn::OpenChest { player, x, y });
+    }
+
+    /// `PLI_FLAGSET` (`set`) or `PLI_FLAGDEL`.
+    pub fn flag(&self, player: u16, text: String, set: bool) {
+        let _ = self.tx.send(WorldIn::Flag { player, text, set });
     }
 
     /// Spawn the world task on the current runtime. Later calls do nothing.
@@ -254,8 +294,71 @@ struct Online {
     /// player's own gmap level; walking back into one sends its name.
     entered: HashSet<String>,
     props: Props,
+    /// Chests this account has opened: level (lower case), x, y.
+    opened: HashSet<(String, u8, u8)>,
+    /// Player flags by name; the value is empty for a bare flag.
+    flags: BTreeMap<String, String>,
     outbox: Outbox,
 }
+
+/// What the world knows of a player who logged out, for the account file.
+#[derive(Debug, Clone, Default)]
+pub struct Leaving {
+    /// Lower-case account name.
+    pub account: String,
+    /// The level the player was in (its name in lower case).
+    pub level: String,
+    pub x: Option<f32>,
+    pub y: Option<f32>,
+    /// Own props in the 2.22 encoding, by id (no position).
+    pub props: BTreeMap<u8, Vec<u8>>,
+    pub chests: Vec<(String, u8, u8)>,
+    pub flags: Vec<String>,
+}
+
+impl Leaving {
+    /// Put the player's state into their account: level, position, the
+    /// counted props (hearts, rupees, arrows, bombs, glove), opened chests
+    /// and flags. The password and the rest are left as they are.
+    pub fn apply_to(&self, a: &mut crate::accounts::Account) {
+        if !self.level.is_empty() {
+            a.level = self.level.clone();
+        }
+        if let Some(x) = self.x {
+            a.x = x;
+        }
+        if let Some(y) = self.y {
+            a.y = y;
+        }
+        let byte = |id: u8| match self.props.get(&id).map(Vec::as_slice) {
+            Some([v, ..]) => Some(v.wrapping_sub(0x20)),
+            _ => None,
+        };
+        if let Some(v) = byte(1) {
+            a.max_hp = v;
+        }
+        if let Some(v) = byte(2) {
+            a.hp = f32::from(v) / 2.0;
+        }
+        if let Some(v) = self.props.get(&3) {
+            a.rupees = seihai_core::protocol::read_gint3(v).map_or(0, |r| r as u32);
+        }
+        if let Some(v) = byte(4) {
+            a.arrows = v;
+        }
+        if let Some(v) = byte(5) {
+            a.bombs = v;
+        }
+        if let Some(v) = byte(6) {
+            a.glove = v;
+        }
+        a.chests = self.chests.clone();
+        a.flags = self.flags.clone();
+    }
+}
+
+/// Where the world hands a player's state when they log out.
+pub type Saver = Box<dyn Fn(Leaving) + Send>;
 
 /// The world's own state, owned by its task.
 pub struct WorldTask {
@@ -272,6 +375,7 @@ pub struct WorldTask {
     last_id: u16,
     /// Prop changes since the last tick, merged per player.
     pending: BTreeMap<u16, Change>,
+    saver: Option<Saver>,
 }
 
 impl WorldTask {
@@ -309,7 +413,10 @@ impl WorldTask {
                         if gmap.is_some() {
                             p.entered.insert(p.level.clone());
                         }
+                        p.opened = who.chests.iter().cloned().collect();
+                        p.flags = who.flags.iter().map(|f| split_flag(f)).collect();
                     }
+                    let level = self.view(id, &level);
                     Joined { id, level, gmap }
                 });
                 let new_id = answer.as_ref().ok().map(|j| j.id);
@@ -329,11 +436,78 @@ impl WorldTask {
             WorldIn::Left { player } => self.leave(player),
             WorldIn::Props { player, raw } => self.props(player, &raw),
             WorldIn::LevelWarp(w) => self.warp(w),
+            WorldIn::OpenChest { player, x, y } => self.open_chest(player, x, y),
+            WorldIn::Flag { player, text, set } => {
+                if let Some(p) = self.players.get_mut(&player) {
+                    let (name, value) = split_flag(&text);
+                    if !name.is_empty() {
+                        if set {
+                            p.flags.insert(name, value);
+                        } else {
+                            p.flags.remove(&name);
+                        }
+                    }
+                }
+            }
             WorldIn::Adjacent {
                 player,
                 level,
                 mod_time,
             } => self.adjacent(player, &level, mod_time),
+        }
+    }
+
+    /// `level` as player `id` sees it: the chests the account opened go as
+    /// opened.
+    fn view(&self, id: u16, level: &Arc<Level>) -> Arc<Level> {
+        let Some(p) = self.players.get(&id) else {
+            return level.clone();
+        };
+        let key = level.name.to_ascii_lowercase();
+        let is_open = |c: &seihai_core::assets::Chest| {
+            let (x, y) = (c.x.clamp(0, 63) as u8, c.y.clamp(0, 63) as u8);
+            p.opened.contains(&(key.clone(), x, y))
+        };
+        if !level.chests.iter().any(is_open) {
+            return level.clone();
+        }
+        let mut l = (**level).clone();
+        for c in &mut l.chests {
+            c.opened = is_open(c);
+        }
+        Arc::new(l)
+    }
+
+    /// A chest opened (`PLI_OPENCHEST`): the account keeps it as opened,
+    /// and its item counts where this server has the prop for it (rupees,
+    /// bombs, darts, hearts). The client draws the chest open itself; the
+    /// player gets their new props.
+    fn open_chest(&mut self, id: u16, x: u8, y: u8) {
+        let Some(p) = self.players.get(&id) else {
+            return;
+        };
+        let Some(level) = self.loaded.get(&p.level).cloned() else {
+            return;
+        };
+        let Some(chest) = level
+            .chests
+            .iter()
+            .find(|c| c.x == i32::from(x) && c.y == i32::from(y))
+        else {
+            return;
+        };
+        let Some(item) = crate::levels::chest_item(chest) else {
+            return;
+        };
+        let Some(p) = self.players.get_mut(&id) else {
+            return;
+        };
+        if !p.opened.insert((p.level.clone(), x, y)) {
+            return;
+        }
+        let changed = others::give_item(&mut p.props, item);
+        if let Some(m) = others::own_message(p.version, &changed) {
+            let _ = p.outbox.send(vec![m]);
         }
     }
 
@@ -363,6 +537,7 @@ impl WorldTask {
         };
         if let Some(p) = self.players.get(&id) {
             let full = mod_time != level.mod_time;
+            let level = self.view(id, &level);
             let f = crate::burst::gmap_level(p.version, &level, &gmap.gmap, full);
             let _ = p.outbox.send(vec![f]);
         }
@@ -400,6 +575,7 @@ impl WorldTask {
         }
         self.part(id, &old);
         if let Some(p) = self.players.get(&id) {
+            let level = self.view(id, &level);
             let f = crate::burst::gmap_level(p.version, &level, &gmap.gmap, full);
             let _ = p.outbox.send(vec![f]);
         }
@@ -471,6 +647,7 @@ impl WorldTask {
         if old != key {
             self.part(w.player, &old);
         }
+        let level = self.view(w.player, &level);
         let Some(p) = self.players.get(&w.player) else {
             return;
         };
@@ -541,6 +718,8 @@ impl WorldTask {
                 gmap: None,
                 entered: HashSet::new(),
                 props: Props::default(),
+                opened: HashSet::new(),
+                flags: BTreeMap::new(),
                 outbox,
             },
         );
@@ -550,6 +729,29 @@ impl WorldTask {
 
     fn leave(&mut self, id: u16) {
         if let Some(p) = self.players.remove(&id) {
+            if let Some(save) = &self.saver {
+                let mut chests: Vec<_> = p.opened.iter().cloned().collect();
+                chests.sort();
+                save(Leaving {
+                    account: p.account.clone(),
+                    level: p.level.clone(),
+                    x: p.props.x(),
+                    y: p.props.y(),
+                    props: p.props.values().clone(),
+                    chests,
+                    flags: p
+                        .flags
+                        .iter()
+                        .map(|(n, v)| {
+                            if v.is_empty() {
+                                n.clone()
+                            } else {
+                                format!("{n}={v}")
+                            }
+                        })
+                        .collect(),
+                });
+            }
             self.by_account.remove(&p.account);
             self.publish();
             self.tell_level(&p.level, id, &Change::default(), &others::LOGGED_OUT);
@@ -699,6 +901,8 @@ mod tests {
             version: ClientVersion::V222,
             gen: EncryptionGen::Gen5,
             props: Vec::new(),
+            chests: Vec::new(),
+            flags: Vec::new(),
         }
     }
 
@@ -723,6 +927,53 @@ mod tests {
         }
         assert!(st.ignored.is_empty(), "{v:?}");
         st
+    }
+
+    #[test]
+    fn leaving_goes_into_the_account() {
+        let mut was = crate::accounts::Account::new("cora", "start.nw", 30.0, 30.0);
+        was.rupees = 7;
+        let mut p = Props::default();
+        p.apply(
+            &crate::burst::own_props(
+                ClientVersion::V222,
+                &crate::burst::Player {
+                    id: 1,
+                    account: &was,
+                },
+            ),
+            ClientVersion::V222,
+        );
+        let mut changed = others::give_item(&mut p, 2);
+        changed.extend(others::give_item(&mut p, 11));
+        assert_eq!(changed.len(), 3);
+        p.moved(12.5, 40.0);
+        let l = Leaving {
+            account: "cora".into(),
+            level: "house.nw".into(),
+            x: p.x(),
+            y: p.y(),
+            props: p.values().clone(),
+            chests: vec![("house.nw".into(), 1, 2)],
+            flags: vec!["quest=2".into()],
+        };
+        let mut a = was.clone();
+        l.apply_to(&mut a);
+        assert_eq!((a.level.as_str(), a.x, a.y), ("house.nw", 12.5, 40.0));
+        assert_eq!(a.rupees, 37);
+        assert_eq!(
+            (a.max_hp, a.hp),
+            (was.max_hp + 1, f32::from(was.max_hp + 1))
+        );
+        assert_eq!(
+            (a.arrows, a.bombs, a.glove),
+            (was.arrows, was.bombs, was.glove)
+        );
+        assert_eq!(a.chests, l.chests);
+        assert_eq!(a.flags, l.flags);
+        assert_eq!(a.password, was.password);
+        assert_eq!(split_flag("a=b=c"), ("a".into(), "b=c".into()));
+        assert_eq!(split_flag("door"), ("door".into(), String::new()));
     }
 
     #[tokio::test]
@@ -1108,6 +1359,8 @@ mod tests {
                     gmap: None,
                     entered: HashSet::new(),
                     props: Props::default(),
+                    opened: HashSet::new(),
+                    flags: BTreeMap::new(),
                     outbox: o.clone(),
                 },
             );

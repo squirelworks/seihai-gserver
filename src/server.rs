@@ -85,6 +85,20 @@ impl Server {
                 blank_mod_time: started_unix,
             },
         );
+        // A player who logs out is written back to their account file.
+        let saving = store.clone();
+        world.set_saver(Box::new(move |l: crate::world::Leaving| {
+            let saved = saving.load(&l.account).and_then(|a| match a {
+                Some(mut a) => {
+                    l.apply_to(&mut a);
+                    saving.save(&a)
+                }
+                None => Ok(()),
+            });
+            if let Err(e) = saved {
+                eprintln!("could not save the account {}: {e}", l.account);
+            }
+        }));
         let login_rate = crate::ratelimit::LoginRate::new(cfg.login_rate, cfg.login_rate_loopback);
         let password_checks = crate::ratelimit::PasswordChecks::new(cfg.password_check_slots());
         Server {
@@ -412,6 +426,8 @@ impl Conn {
                     account: &account,
                 },
             ),
+            chests: account.chests.clone(),
+            flags: account.flags.clone(),
         };
         let (id, level, gmap) = match self.server.world.join(joining, outbox).await {
             Some(Ok(j)) => (j.id, j.level, j.gmap),
@@ -746,10 +762,25 @@ impl Session {
                 // Read and not answered in stage 1: the language, the
                 // packet count (1.33 to 1.39, every 10 s; not a login),
                 // the 1.33 to 1.37 weapon upload, the tamper check (never
-                // required), the process list, image and flag updates,
+                // required), the process list, image updates,
                 // level entry and walking off a level.
                 PLI_LANGUAGE | PLI_PACKETCOUNT | PLI_WEAPONADD | PLI_TAMPERCHECK
-                | PLI_PROCESSLIST | PLI_SHOWIMG | PLI_FLAGSET | PLI_ENTERLEVEL => {}
+                | PLI_PROCESSLIST | PLI_SHOWIMG | PLI_ENTERLEVEL => {}
+                // Player flags: `name` or `name=value`; kept with the account.
+                PLI_FLAGSET | PLI_FLAGDEL => {
+                    let text = seihai_core::protocol::latin1(payload);
+                    server.world.flag(self.id, text, id == PLI_FLAGSET);
+                }
+                // A chest the player opened: `GCHAR x, GCHAR y` in tiles.
+                PLI_OPENCHEST => {
+                    if let [x, y, ..] = payload {
+                        server.world.open_chest(
+                            self.id,
+                            x.wrapping_sub(0x20),
+                            y.wrapping_sub(0x20),
+                        );
+                    }
+                }
                 // A gmap neighbour: `GINT5 mod time, name`.
                 PLI_ADJACENTLEVEL => {
                     if let Some((t, name)) = payload.split_at_checked(5) {
