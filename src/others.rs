@@ -61,6 +61,14 @@ impl Change {
             self.y = later.y;
         }
     }
+
+    /// A one-`GCHAR` prop in the change (the gmap cell, 43 and 44).
+    pub fn byte(&self, id: u8) -> Option<u8> {
+        match self.values.get(&id)?.as_slice() {
+            [v] => Some(v.wrapping_sub(0x20)),
+            _ => None,
+        }
+    }
 }
 
 impl Props {
@@ -93,6 +101,17 @@ impl Props {
             self.y = c.y;
         }
         c
+    }
+
+    /// A move the server made (a warp's arrival), as a change.
+    pub fn moved(&mut self, x: f32, y: f32) -> Change {
+        self.x = Some(x);
+        self.y = Some(y);
+        Change {
+            x: self.x,
+            y: self.y,
+            ..Change::default()
+        }
     }
 
     /// Everything kept, as a change.
@@ -156,6 +175,8 @@ pub fn message(
 
 /// The tail for a player who is now in the receiver's level.
 pub const JOINED: [(u8, &[u8]); 1] = [(JOINLEAVELVL, &[0x21])];
+/// The tail for a player who went to another level.
+pub const LEFT_LEVEL: [(u8, &[u8]); 1] = [(JOINLEAVELVL, &[0x20])];
 /// The tail for a player who logged out.
 pub const LOGGED_OUT: [(u8, &[u8]); 2] = [(JOINLEAVELVL, &[0x20]), (PCONNECTED, &[])];
 
