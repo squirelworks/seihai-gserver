@@ -37,9 +37,6 @@ pub struct Codec {
     out5: Option<Gen5>,
     /// 5.12 sends (and so we send it) every body compressed.
     compress_all: bool,
-    /// The zlib state, kept between frames: making a fresh one costs more
-    /// than compressing a tick's body.
-    zlib: flate2::Compress,
     /// Gen-3 messages whose inserted byte did not check out, in a row.
     pub bad_in_a_row: u32,
 }
@@ -62,7 +59,6 @@ impl Codec {
             in5: (gen == EncryptionGen::Gen5).then(g5),
             out5: (gen == EncryptionGen::Gen5).then(g5),
             compress_all: round_down,
-            zlib: flate2::Compress::new(flate2::Compression::new(2), true),
             bad_in_a_row: 0,
         }
     }
@@ -84,7 +80,7 @@ impl Codec {
                 let (comp, packed) = match choose_comp(body.len()) {
                     Gen5Comp::None if !self.compress_all => (Gen5Comp::None, body.to_vec()),
                     _ => {
-                        let z = zlib_fast(&mut self.zlib, body)?;
+                        let z = zlib_fast(body)?;
                         if z.len() < MAX_OUT_FRAME {
                             (Gen5Comp::Zlib, z)
                         } else {
@@ -102,7 +98,7 @@ impl Codec {
                 out
             }
             None => {
-                let packed = zlib_fast(&mut self.zlib, body)?;
+                let packed = zlib_fast(body)?;
                 let mut out = Vec::with_capacity(packed.len() + 2);
                 push_len(&mut out, packed.len())?;
                 out.extend_from_slice(&packed);
@@ -172,25 +168,37 @@ pub fn frame_header(buf: &[u8], long: bool) -> Option<(usize, usize)> {
     len.header(buf)
 }
 
-/// zlib at the fast level, with `z` reset for the next frame. Frames go
-/// out every tick to every player, so compression is most of the server's
-/// CPU at a few hundred players in a level; level 1 costs half to a quarter
-/// of the default level's time for frames about 1 % bigger. Clients inflate
-/// any level.
-fn zlib_fast(z: &mut flate2::Compress, body: &[u8]) -> io::Result<Vec<u8>> {
-    z.reset();
-    // Room for an incompressible body, the zlib header and the checksum.
-    let mut out = Vec::with_capacity(body.len() + body.len() / 1000 + 64);
-    loop {
-        let read = z.total_in() as usize;
-        let st = z
-            .compress_vec(&body[read..], &mut out, flate2::FlushCompress::Finish)
-            .map_err(io::Error::other)?;
-        match st {
-            flate2::Status::StreamEnd => return Ok(out),
-            _ => out.reserve(out.capacity().max(64)),
+thread_local! {
+    /// One zlib state per thread, reset for each frame. Making a fresh one
+    /// costs more than compressing a tick's body, and keeping one per
+    /// connection costs about 360 KB each (window and hash tables), so the
+    /// connections on a worker thread share one: a frame is compressed in
+    /// one go, never across an `.await`.
+    static ZLIB: std::cell::RefCell<flate2::Compress> =
+        std::cell::RefCell::new(flate2::Compress::new(flate2::Compression::new(2), true));
+}
+
+/// zlib at level 2 on the zlib-rs backend. Frames go out every tick to
+/// every player, so compression is most of the server's CPU at a few
+/// hundred players in a level; this costs about a third of the default
+/// level's time for the same size. Clients inflate any level.
+fn zlib_fast(body: &[u8]) -> io::Result<Vec<u8>> {
+    ZLIB.with(|z| {
+        let mut z = z.borrow_mut();
+        z.reset();
+        // Room for an incompressible body, the zlib header and the checksum.
+        let mut out = Vec::with_capacity(body.len() + body.len() / 1000 + 64);
+        loop {
+            let read = z.total_in() as usize;
+            let st = z
+                .compress_vec(&body[read..], &mut out, flate2::FlushCompress::Finish)
+                .map_err(io::Error::other)?;
+            match st {
+                flate2::Status::StreamEnd => return Ok(out),
+                _ => out.reserve(out.capacity().max(64)),
+            }
         }
-    }
+    })
 }
 
 fn push_len(out: &mut Vec<u8>, n: usize) -> io::Result<()> {
