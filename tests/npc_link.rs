@@ -64,7 +64,7 @@ fn npcserver(link: &str, token: &str) -> (Arc<Mutex<Vec<String>>>, std::thread::
     let lines = Arc::new(Mutex::new(Vec::new()));
     let (l, link, token) = (lines.clone(), link.to_string(), token.to_string());
     let h = std::thread::spawn(move || {
-        let (end, _) = session::run(&link, token.as_bytes(), quick(), &mut |s| {
+        let (end, _) = session::run(&link, token.as_bytes(), quick(), None, &mut |s| {
             l.lock().unwrap().push(s)
         });
         end
