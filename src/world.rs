@@ -45,6 +45,10 @@ use tokio::sync::{mpsc, oneshot, watch};
 /// replies within a frame.
 pub const TICK: Duration = Duration::from_millis(50);
 
+/// One level's tick batch for one build: the body, and each mover's id
+/// with where its message sits in the body.
+type Batch = (Vec<u8>, Vec<(u16, usize, usize)>);
+
 /// Player ids are GSHORTs, which hold 14 bits; 0 is not a player.
 const ID_LIMIT: u16 = 1 << 14;
 
@@ -362,7 +366,9 @@ impl WorldTask {
     }
 
     /// The tick: every receiver gets the batched changes of the others in
-    /// its level, in one body.
+    /// its level, in one body. The messages depend only on the receiver's
+    /// build, so each level's batch is written once per build there and
+    /// each receiver gets a copy without its own message.
     fn flush(&mut self) {
         if self.pending.is_empty() {
             return;
@@ -374,18 +380,30 @@ impl WorldTask {
                 by_level.entry(&p.level).or_default().push((*id, change));
             }
         }
+        // (level, build) to the batch body and where each mover's message
+        // sits in it.
+        let mut written: HashMap<(&str, ClientVersion), Batch> = HashMap::new();
         for (&rid, r) in &self.players {
             let Some(moved) = by_level.get(r.level.as_str()) else {
                 continue;
             };
-            let mut body = Vec::new();
-            for &(id, change) in moved {
-                if id != rid {
-                    if let Some(m) = others::message(r.version, id, change, &[]) {
-                        body.extend(m);
+            let (all, spans) = written
+                .entry((r.level.as_str(), r.version))
+                .or_insert_with(|| {
+                    let mut body = Vec::new();
+                    let mut spans = Vec::new();
+                    for &(id, change) in moved {
+                        if let Some(m) = others::message(r.version, id, change, &[]) {
+                            spans.push((id, body.len(), body.len() + m.len()));
+                            body.extend(m);
+                        }
                     }
-                }
-            }
+                    (body, spans)
+                });
+            let body = match spans.iter().find(|s| s.0 == rid) {
+                Some(&(_, from, to)) => [&all[..from], &all[to..]].concat(),
+                None => all.clone(),
+            };
             if !body.is_empty() {
                 let _ = r.outbox.send(body);
             }
@@ -726,5 +744,106 @@ mod tests {
         assert!(t.players.is_empty());
         assert!(t.by_account.is_empty());
         assert!(w.online_accounts().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod bench {
+    use super::*;
+    use crate::codec::Codec;
+    use seihai_core::protocol::EncryptionGen;
+    use std::time::Instant;
+
+    /// One level, everyone walking, every build Seihai knows; how long the
+    /// tick's fan-out and the connections' frame encoding take.
+    /// `SEIHAI_BENCH_PLAYERS=1000 cargo test --release --lib bench_fanout -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn bench_fanout() {
+        let n: usize = std::env::var("SEIHAI_BENCH_PLAYERS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(300);
+        let versions = ClientVersion::all_versions();
+        let mut w = World::new(
+            n,
+            LevelSource {
+                dir: PathBuf::from("no-such"),
+                blank_tile: 0,
+                blank_mod_time: 0,
+            },
+        )
+        .task
+        .lock()
+        .unwrap()
+        .take()
+        .unwrap();
+        let mut rxs = Vec::new();
+        for i in 0..n {
+            let (o, r) = mpsc::unbounded_channel();
+            rxs.push(r);
+            let v = versions[i % versions.len()];
+            let id = w.join(&format!("p{i}"), v, o).unwrap();
+            let a = crate::accounts::Account::new(&format!("p{i}"), "one.nw", 30.0, 30.0);
+            let p = w.players.get_mut(&id).unwrap();
+            p.level = "one.nw".into();
+            p.props.apply(
+                &crate::burst::own_props(
+                    ClientVersion::V222,
+                    &crate::burst::Player { id, account: &a },
+                ),
+                ClientVersion::V222,
+            );
+        }
+        let ids: Vec<u16> = w.players.keys().copied().collect();
+        let ticks = 40;
+        let mut flush_t = std::time::Duration::ZERO;
+        let mut enc_t = std::time::Duration::ZERO;
+        let mut bytes = 0usize;
+        let mut out_bytes = 0usize;
+        let mut codecs: Vec<Codec> = (0..n)
+            .map(|i| {
+                let v = versions[i % versions.len()];
+                Codec::new(v.encryption(), 0x33, Some(v))
+            })
+            .collect();
+        for t in 0..ticks {
+            // Half the players step each tick (walking every 100 ms).
+            for (k, &id) in ids.iter().enumerate() {
+                if (k + t) % 2 == 0 {
+                    let mut raw = vec![crate::wire::gchar(78)];
+                    crate::wire::gshort(
+                        seihai_core::protocol::encode_pos_precise(10.0 + (t as f32) * 0.5),
+                        &mut raw,
+                    );
+                    raw.push(crate::wire::gchar(79));
+                    crate::wire::gshort(seihai_core::protocol::encode_pos_precise(20.0), &mut raw);
+                    w.props(id, &raw);
+                }
+            }
+            let s = Instant::now();
+            w.flush();
+            flush_t += s.elapsed();
+            let s = Instant::now();
+            for (i, r) in rxs.iter_mut().enumerate() {
+                while let Ok(b) = r.try_recv() {
+                    bytes += b.len();
+                    let f = codecs[i].encode(&b).unwrap();
+                    out_bytes += f.len();
+                    std::hint::black_box(f);
+                }
+            }
+            enc_t += s.elapsed();
+        }
+        let _ = EncryptionGen::Gen5;
+        eprintln!(
+            "{n} players, {ticks} ticks: flush {:?}/tick, encode {:?}/tick, {} bytes/tick ({} on the wire); at 20 ticks/s: flush {:.0}% + encode {:.0}% of a core",
+            flush_t / ticks as u32,
+            enc_t / ticks as u32,
+            bytes / ticks,
+            out_bytes / ticks,
+            flush_t.as_secs_f64() / ticks as f64 * 20.0 * 100.0,
+            enc_t.as_secs_f64() / ticks as f64 * 20.0 * 100.0,
+        );
     }
 }

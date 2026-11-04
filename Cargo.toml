@@ -17,6 +17,8 @@ seihai-npcserver = { git = "https://github.com/squirelworks/seihai-npcserver", r
 sha2 = "0.10"
 getrandom = "0.2"
 pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
+# Live frames are compressed at the fast level (seihai-core uses the default).
+flate2 = { version = "1", features = ["zlib-rs"] }
 
 [dev-dependencies]
 # Paused time for the world-tick tests.
