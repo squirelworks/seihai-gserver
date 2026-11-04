@@ -630,6 +630,19 @@ impl Conn {
             .await;
         let _ = self.stream.flush().await;
         let _ = self.stream.shutdown().await;
+        // Read what the client still sends until it closes (at most 2 s).
+        // Closing a socket with unread input makes Windows send a reset,
+        // and a reset can drop the message above before the client reads
+        // it (seen in CI: the secure-login refusal arrived empty).
+        let drain = async {
+            let mut buf = [0u8; 4096];
+            while let Ok(n) = self.stream.read(&mut buf).await {
+                if n == 0 {
+                    break;
+                }
+            }
+        };
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), drain).await;
         Err(io::Error::new(
             io::ErrorKind::ConnectionAborted,
             why.to_string(),
