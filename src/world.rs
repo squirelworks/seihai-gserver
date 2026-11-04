@@ -75,8 +75,12 @@ pub enum WorldIn {
     Left { player: u16 },
 }
 
-/// Message bodies for one player; the connection task frames and sends them.
-pub type Outbox = mpsc::UnboundedSender<Vec<u8>>;
+/// Frame bodies for one player. Each item is a run of frames the
+/// connection task writes back to back, with nothing of its own in
+/// between: a gen-2 level answer is two frames (the raw-data header, then
+/// the board), and a client takes whatever frame follows the header as the
+/// board.
+pub type Outbox = mpsc::UnboundedSender<Vec<Vec<u8>>>;
 
 /// A link request: the player walked into a link to `level`.
 #[derive(Debug, Clone)]
@@ -338,7 +342,7 @@ impl WorldTask {
         if let Some(p) = self.players.get(&id) {
             let full = mod_time != level.mod_time;
             let f = crate::burst::gmap_level(p.version, &level, &gmap.gmap, full);
-            let _ = p.outbox.send(f);
+            let _ = p.outbox.send(vec![f]);
         }
     }
 
@@ -375,7 +379,7 @@ impl WorldTask {
         self.part(id, &old);
         if let Some(p) = self.players.get(&id) {
             let f = crate::burst::gmap_level(p.version, &level, &gmap.gmap, full);
-            let _ = p.outbox.send(f);
+            let _ = p.outbox.send(vec![f]);
         }
         self.tell_level(&old, id, &Change::default(), &others::LEFT_LEVEL);
         self.meet(id);
@@ -459,12 +463,11 @@ impl WorldTask {
                 f.extend(crate::burst::gmap_level(
                     p.version, &level, &g.gmap, !cached,
                 ));
-                let _ = p.outbox.send(f);
+                let _ = p.outbox.send(vec![f]);
             }
             None => {
-                for f in crate::burst::level_answer(p.version, p.gen, &level, cached) {
-                    let _ = p.outbox.send(f);
-                }
+                let answer = crate::burst::level_answer(p.version, p.gen, &level, cached);
+                let _ = p.outbox.send(answer);
             }
         }
         if old == key {
@@ -485,7 +488,7 @@ impl WorldTask {
             if other != id && p.level == old {
                 let none = Change::default();
                 if let Some(m) = others::message(me.version, other, &none, &others::LEFT_LEVEL) {
-                    let _ = me.outbox.send(m);
+                    let _ = me.outbox.send(vec![m]);
                 }
             }
         }
@@ -542,10 +545,10 @@ impl WorldTask {
                 continue;
             }
             if let Some(m) = others::message(me.version, other, &p.props.all(), &others::JOINED) {
-                let _ = me.outbox.send(m);
+                let _ = me.outbox.send(vec![m]);
             }
             if let Some(m) = others::message(p.version, id, &mine, &others::JOINED) {
-                let _ = p.outbox.send(m);
+                let _ = p.outbox.send(vec![m]);
             }
         }
     }
@@ -588,7 +591,7 @@ impl WorldTask {
         for (&other, p) in &self.players {
             if other != id && p.level == level {
                 if let Some(m) = others::message(p.version, id, change, tail) {
-                    let _ = p.outbox.send(m);
+                    let _ = p.outbox.send(vec![m]);
                 }
             }
         }
@@ -622,7 +625,7 @@ mod tests {
     use super::*;
     use seihai_core::protocol::SessionState;
 
-    fn outbox() -> (Outbox, mpsc::UnboundedReceiver<Vec<u8>>) {
+    fn outbox() -> (Outbox, mpsc::UnboundedReceiver<Vec<Vec<u8>>>) {
         mpsc::unbounded_channel()
     }
 
@@ -658,10 +661,10 @@ mod tests {
     }
 
     /// What a client of build `v` makes of everything in its outbox.
-    fn seen(v: ClientVersion, rx: &mut mpsc::UnboundedReceiver<Vec<u8>>) -> SessionState {
+    fn seen(v: ClientVersion, rx: &mut mpsc::UnboundedReceiver<Vec<Vec<u8>>>) -> SessionState {
         let mut st = SessionState::for_version(v);
         while let Ok(m) = rx.try_recv() {
-            st.apply_body(&m);
+            m.iter().for_each(|f| st.apply_body(f));
         }
         assert!(st.ignored.is_empty(), "{v:?}");
         st
@@ -714,7 +717,7 @@ mod tests {
         let mut st = SessionState::for_version(ClientVersion::V205);
         let mut moved = false;
         while let Ok(m) = ra.try_recv() {
-            st.apply_body(&m);
+            m.iter().for_each(|f| st.apply_body(f));
             if st.others.first().is_some_and(|o| o.x == 12.5) {
                 moved = true;
             }
@@ -793,7 +796,7 @@ mod tests {
         // Ben, left behind, saw Amy go; Cal saw her arrive at the link's
         // arrival.
         while let Ok(m) = rb.try_recv() {
-            sb.apply_body(&m);
+            m.iter().for_each(|f| sb.apply_body(f));
         }
         assert!(sb.others.is_empty(), "amy left ben's level");
         let sc = seen(v, &mut rc);
@@ -815,13 +818,55 @@ mod tests {
         let mut ids = Vec::new();
         while let Ok(m) = ra.try_recv() {
             ids.extend(
-                seihai_core::protocol::split_messages(&m)
+                seihai_core::protocol::split_messages(&m.concat())
                     .iter()
                     .map(|m| m.id),
             );
         }
         assert!(ids.contains(&6) && ids.contains(&156));
         assert!(!ids.contains(&101), "{ids:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A gen-2 level answer is two frames (the raw-data header, then the
+    /// board) and goes to the connection as one item, so nothing the
+    /// connection sends itself can land between them (suite stress run,
+    /// 1.32 and 1.39 lost a `WANTFILE` answer to the board slot).
+    #[tokio::test]
+    async fn a_gen2_level_answer_is_one_item() {
+        let dir = std::env::temp_dir().join(format!("seihai-gserver-gen2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("two.nw"), "GLEVNW01\n").unwrap();
+        let w = World::new(
+            8,
+            LevelSource {
+                dir: dir.clone(),
+                ..blank()
+            },
+        );
+        w.start();
+        let v = ClientVersion::V139;
+        let (a, mut ra) = outbox();
+        let mut j = joining("old", "one.nw", v);
+        j.gen = EncryptionGen::Gen2;
+        let id = w.join(j, a).await.unwrap().unwrap().id;
+        w.warp(Warp {
+            player: id,
+            level: "two.nw".into(),
+            x: 30.0,
+            y: 30.0,
+            mod_time: None,
+        });
+        let (b, _rb) = outbox();
+        w.join(who("rt", "x.nw"), b).await.unwrap().unwrap();
+        let item = ra.try_recv().expect("the level answer");
+        assert!(item.len() >= 2, "header and board together");
+        assert!(item[0].ends_with(b"\n"));
+        let mut st = SessionState::for_version(v);
+        item.iter().for_each(|f| st.apply_body(f));
+        assert_eq!(st.current_level_name().as_deref(), Some("two.nw"));
+        assert!(st.board.is_some());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

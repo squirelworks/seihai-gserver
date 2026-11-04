@@ -506,10 +506,13 @@ impl Conn {
                     self.server.log(&self.peer, "idle timeout");
                     return self.refuse(&mut codec, "Disconnected for being idle.").await;
                 }
-                Some(body) = from_world.recv() => {
-                    // One frame per item: the world decides the frames
-                    // (gen 2 needs the board in a frame of its own).
-                    self.send(&mut codec, &body).await?;
+                Some(frames) = from_world.recv() => {
+                    // The world decides the frames (gen 2 needs the board
+                    // in a frame of its own), and an item's frames go out
+                    // together: no reply of this task's lands between.
+                    for f in frames {
+                        self.send(&mut codec, &f).await?;
+                    }
                 }
                 _ = list_ready(listlink.as_deref()) => {
                     let reply = session.link_out(&self.server);

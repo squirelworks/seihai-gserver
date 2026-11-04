@@ -7,7 +7,9 @@
 mod common;
 
 use common::*;
-use seihai_core::net::{levelwarp_message, levelwarpmod_message, login_gserver, random_key};
+use seihai_core::net::{
+    levelwarp_message, levelwarpmod_message, login_gserver, random_key, wantfile_message,
+};
 use seihai_core::protocol::{ClientVersion, SessionState};
 use std::sync::mpsc::Receiver;
 use std::time::Duration;
@@ -114,6 +116,31 @@ fn links_load_the_next_level() {
         in_house(s, &house)
     })
     .unwrap();
+    // Back and forth with a file request in flight each time: every board
+    // arrives whole and every request gets its answer (the suite stress
+    // run lost answers to the gen-2 board slot).
+    let start_board = seihai_core::assets::Level::parse(START).unwrap().tile_ids();
+    for i in 0..10 {
+        let (to, x, y, board) = if i % 2 == 0 {
+            ("onlinestartlocal.nw", 30.5, 2.0, &start_board)
+        } else {
+            ("house.nw", 30.0, 60.0, &house)
+        };
+        let asked = sc.file_requests.len();
+        c.conn
+            .send_messages(&[
+                wantfile_message("head0.png"),
+                levelwarp_message(x, y, to),
+                wantfile_message("body.png"),
+            ])
+            .unwrap();
+        read_until(&rc, &mut sc, Duration::from_secs(10), |s| {
+            s.current_level_name().as_deref() == Some(to)
+                && s.board.as_deref() == Some(&board[..])
+                && s.file_requests.len() >= asked + 2
+        })
+        .unwrap_or_else(|e| panic!("round {i}: {e}"));
+    }
     assert!(sc.ignored.is_empty(), "{:?}", sc.ignored);
     assert!(sc.disconnect_message.is_none());
 
