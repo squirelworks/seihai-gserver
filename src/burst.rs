@@ -27,6 +27,7 @@
 
 use crate::accounts::Account;
 use crate::config::Config;
+use crate::gmaps::Place;
 use crate::levels::{chest_record, link_line, sign_record, Level};
 use crate::wire::{self, gchar, gint3, gint4, gint5, gshort, gstring, ids::*, latin1, msg};
 use seihai_core::protocol::{encode_pos_precise, ClientVersion, EncryptionGen, IdSet};
@@ -54,6 +55,7 @@ pub fn login_burst(
     gen: EncryptionGen,
     p: &Player,
     level: &Level,
+    gmap: Option<&Place>,
     world_time: u32,
 ) -> Vec<Vec<u8>> {
     let plo = &version.profile().protocol.plo;
@@ -116,12 +118,18 @@ pub fn login_burst(
     out.put(PLO_PLAYERPROPS, &props);
     out.put(PLO_DEFAULTWEAPON, &[gchar(8)]);
     out.put(PLO_DEFAULTWEAPON, &[gchar(7)]);
-    out.put(PLO_PLAYERWARP, &warp);
+    match gmap {
+        Some(g) => out.put(PLO_PLAYERWARP2, &warp2(a.x, a.y, g)),
+        None => out.put(PLO_PLAYERWARP, &warp),
+    }
     out.put(PLO_LEVELNAME, &latin1(level));
     out.body.extend(wire::raw_block(PLO_BOARDPACKET, &board));
     links_and_signs(&mut out);
     out.put(PLO_LEVELMODTIME, &mod_time);
     chests(&mut out);
+    if let Some(g) = gmap {
+        out.put(PLO_LEVELNAME, &latin1(&g.gmap));
+    }
     out.put(PLO_SETACTIVELEVEL, &latin1(level));
     out.put(PLO_ISLEADER, b"");
     let mut t = Vec::new();
@@ -190,6 +198,59 @@ pub fn level_answer(
     out.put(PLO_SETACTIVELEVEL, &name);
     frames.push(out.body);
     frames
+}
+
+/// `PLO_PLAYERWARP2` (49): `GCHAR x*2, y*2, z, gmap x, gmap y`, then the
+/// gmap's name. z goes as 50, the value in the captured 49s Seihai's tests
+/// keep; no client build reads it.
+pub fn warp2(x: f32, y: f32, g: &Place) -> Vec<u8> {
+    let mut w = vec![
+        gchar((x * 2.0).clamp(0.0, 223.0) as u8),
+        gchar((y * 2.0).clamp(0.0, 223.0) as u8),
+        gchar(50),
+        gchar(g.cell.0),
+        gchar(g.cell.1),
+    ];
+    w.extend(latin1(&g.gmap));
+    w
+}
+
+/// A gmap level for a build that plays gmaps, as one frame: the answer to
+/// `PLI_ADJACENTLEVEL` (35) for a neighbour, and the level a player walks
+/// into across a seam. With `full`: the name, `PLO_LEVELMODTIME`, the
+/// board, links, signs and chests; without (the client holds the level):
+/// the name alone. Both end with an empty `PLO_LEVELBOARD` (0) and a
+/// `PLO_LEVELNAME` that names the gmap again, which tells the client the
+/// player's own level is current again. The lab's 2.22 and 2.31 crossings
+/// had this shape (Seihai `protocol.md`, "Gmaps"); the 35 answers are
+/// taken to be the same.
+pub fn gmap_level(version: ClientVersion, level: &Level, gmap: &str, full: bool) -> Vec<u8> {
+    let plo = &version.profile().protocol.plo;
+    let has = |id: u8| plo.contains(id);
+    let mut out = Out {
+        has: &has,
+        body: Vec::new(),
+    };
+    out.put(PLO_LEVELNAME, &latin1(&level.name));
+    if full {
+        let mut mod_time = Vec::new();
+        gint5(level.mod_time, &mut mod_time);
+        out.put(PLO_LEVELMODTIME, &mod_time);
+        let board: Vec<u8> = level.board.iter().flat_map(|t| t.to_le_bytes()).collect();
+        out.body.extend(wire::raw_block(PLO_BOARDPACKET, &board));
+        for l in &level.links {
+            out.put(PLO_LEVELLINK, &link_line(l));
+        }
+        for s in &level.signs {
+            out.put(PLO_LEVELSIGN, &sign_record(s));
+        }
+        for c in level.chests.iter().filter_map(chest_record) {
+            out.put(PLO_LEVELCHEST, &c);
+        }
+    }
+    out.put(PLO_LEVELBOARD, b"");
+    out.put(PLO_LEVELNAME, &latin1(gmap));
+    out.body
 }
 
 struct Out<'a> {
@@ -286,6 +347,57 @@ mod tests {
         a
     }
 
+    /// A login into a gmap cell and a gmap level answer, read by every
+    /// build that plays gmaps: the gmap and cell from 49, the level from
+    /// the first name, and the player's level current again after each
+    /// level sent.
+    #[test]
+    fn gmap_login_and_levels_for_every_gmap_build() {
+        let cfg = Config::defaults(Path::new("w"));
+        let a = account();
+        let mut board = vec![0x1FF; 4096];
+        board[3] = 0x44;
+        let west = Level {
+            board: board.clone(),
+            ..Level::blank("gm_w.nw", 0x1FF, 1_700_000_000)
+        };
+        let east = Level::blank("gm_e.nw", 0x22, 1_700_000_001);
+        let place = Place {
+            gmap: "world.gmap".into(),
+            cell: (0, 0),
+        };
+        let mut seen = 0;
+        for &v in ClientVersion::all_versions() {
+            if !crate::gmaps::plays_gmaps(v) {
+                continue;
+            }
+            seen += 1;
+            let p = Player { id: 1, account: &a };
+            let mut st = SessionState::for_version(v);
+            for f in login_burst(&cfg, v, v.encryption(), &p, &west, Some(&place), 0) {
+                st.apply_body(&f);
+            }
+            let g = st
+                .gmap
+                .as_ref()
+                .unwrap_or_else(|| panic!("{v:?} not on the gmap"));
+            assert_eq!((g.name.as_str(), g.cell), ("world.gmap", (0, 0)), "{v:?}");
+            assert_eq!(st.current_level_name().as_deref(), Some("gm_w.nw"), "{v:?}");
+            assert_eq!(st.board.as_deref(), Some(&board[..]), "{v:?}");
+            st.apply_body(&gmap_level(v, &east, "world.gmap", true));
+            assert_eq!(st.level_name.as_deref(), Some("gm_w.nw"), "{v:?}");
+            assert_eq!(st.board_of("gm_e.nw").map(|b| b[0]), Some(0x22), "{v:?}");
+            assert!(st.ignored.is_empty(), "{v:?} drops {:?}", st.ignored);
+            let short = gmap_level(v, &east, "world.gmap", false);
+            let ids: Vec<u8> = seihai_core::protocol::split_messages(&short)
+                .iter()
+                .map(|m| m.id)
+                .collect();
+            assert_eq!(ids, [PLO_LEVELNAME, PLO_LEVELBOARD, PLO_LEVELNAME], "{v:?}");
+        }
+        assert!(seen >= 3, "only {seen} builds play gmaps");
+    }
+
     /// The core's own-prop parser reads every prop we send, for every
     /// build: nothing is cut short by an id the build does not take.
     #[test]
@@ -312,7 +424,7 @@ mod tests {
         for &v in ClientVersion::all_versions() {
             let p = Player { id: 3, account: &a };
             let level = Level::blank("onlinestartlocal.nw", cfg.board_tile, 1_700_000_000);
-            let frames = login_burst(&cfg, v, v.encryption(), &p, &level, 1234);
+            let frames = login_burst(&cfg, v, v.encryption(), &p, &level, None, 1234);
             let mut st = SessionState::for_version(v);
             for f in &frames {
                 st.apply_body(f);
@@ -356,7 +468,7 @@ mod tests {
         };
         for &v in ClientVersion::all_versions() {
             let p = Player { id: 3, account: &a };
-            let frames = login_burst(&cfg, v, v.encryption(), &p, &level, 1234);
+            let frames = login_burst(&cfg, v, v.encryption(), &p, &level, None, 1234);
             let mut st = SessionState::for_version(v);
             for f in &frames {
                 st.apply_body(f);
@@ -377,6 +489,7 @@ mod tests {
             EncryptionGen::Gen3,
             &Player { id: 1, account: &a },
             &level,
+            None,
             0,
         );
         let ids: Vec<u8> = seihai_core::protocol::split_messages(&f[0])
@@ -455,6 +568,7 @@ mod tests {
             EncryptionGen::Gen2,
             &Player { id: 1, account: &a },
             &Level::blank("start.nw", 0, 0),
+            None,
             0,
         );
         assert_eq!(frames.len(), 3);
@@ -476,6 +590,7 @@ mod tests {
             EncryptionGen::Gen3,
             &Player { id: 1, account: &a },
             &Level::blank("start.nw", 0, 0),
+            None,
             0,
         );
         let m = seihai_core::protocol::split_messages(&f[0]);
@@ -490,6 +605,7 @@ mod tests {
             EncryptionGen::Gen5,
             &Player { id: 1, account: &a },
             &Level::blank("start.nw", 0, 0),
+            None,
             0,
         );
         let m = seihai_core::protocol::split_messages(&f[0]);

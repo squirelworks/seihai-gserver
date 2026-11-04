@@ -20,8 +20,9 @@ How the server is put together, and where each later stage plugs in. Read
 | `src/wire.rs` | server-to-client message writers and the ids we use | 1 |
 | `src/burst.rs` | the login burst per generation, own player props | 1 |
 | `src/server.rs` | accept loop, one task per connection, the idle session | 1 |
-| `src/world.rs` | the world task: who is online and player ids, the levels read so far, other players in a level, links between levels (done); gmaps, the 50 ms tick (to do) | 2 |
-| `src/levels.rs` | level files (`.nw`, `.graal`, `.zelda`) through `seihai_core::assets`, the level name check, the link, sign and chest writers (done); gmaps (to do) | 2 |
+| `src/world.rs` | the world task: who is online and player ids, the levels read so far, other players in a level, links between levels, gmap cells and crossings (done); the 50 ms tick (to do) | 2 |
+| `src/levels.rs` | level files (`.nw`, `.graal`, `.zelda`) through `seihai_core::assets`, the level name check, the link, sign and chest writers | 2 |
+| `src/gmaps.rs` | `.gmap` files in `levels/` (`seihai_core::gmap::Gmap`), which builds play gmaps, a level's cell | 2 |
 | `src/others.rs` | other players' props: kept in one form, sent as `PLO_OTHERPLPROPS` (8) per receiver's build; join (50 = 1), logout (50 = 0, 51) | 2 |
 | `src/files.rs` | `WANTFILE`/`UPDATEFILE` file serving from the world folder (skeleton) | 2 |
 | `src/listlink.rs` | the listserver link over the encrypted channel (`SVLINK01`): register, player count with nickname and props, account check (`VERIACC2`), pong (`SVO_PING` 16), private messages, file start; two plain threads, reconnects every 15 s | link |
@@ -137,6 +138,9 @@ Conn task ──Hub::joined / props / left──▶ Hub (Mutex: players + link s
   the file is missing.
 - `tests/other_players.rs`: a 2.05 and a 2.31 in one level see each other
   arrive, walk (X2/Y2 seen as half tiles) and log out.
+- `tests/gmaps.rs`: a 2.22 on a 2x1 gmap is told the gmap at login, asks for
+  its neighbour, walks east across the seam and back; a 2.05 in the west
+  level gets it as a plain level and sees the 2.22 go and come back.
 - `tests/level_warps.rs`: a 2.22 takes a link into another level and back,
   then in again with its cached copy's mod time (name only); a 1.39 takes the
   same link; a 2.05 left behind sees the player go and come back.

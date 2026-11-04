@@ -23,16 +23,21 @@
 //!    client's mod time is current). The old level sees the player leave
 //!    (50 = 0) and the player sees its players leave; the new level meets
 //!    the player as on a join. A level that is not there gets no answer.
+//! 5. Gmaps (`gmaps.rs`): for a build that plays them, a level that is a
+//!    cell of a `.gmap` in `levels/` is played as one. The login and links
+//!    into it say `PLO_PLAYERWARP2` (49); `PLI_ADJACENTLEVEL` (35) gets the
+//!    neighbour (`burst::gmap_level`); own props 43/44 with a new cell move
+//!    the player into that cell's level, as a link does. Players see the
+//!    players of their own cell only.
 //!
 //! To do, in order:
-//! 5. Gmaps: `PLI_ADJACENTLEVEL` (35), cell props 43/44 (`gmap-order.md`,
-//!    `bigmap-neighbours.md` in the seihai repo).
 //! 6. Flags (`PLI_FLAGSET`), chests, items on the ground.
 
+use crate::gmaps::{plays_gmaps, Gmaps, Place, GMAPLEVELX, GMAPLEVELY};
 use crate::levels::Level;
 use crate::others::{self, Change, Props};
 use seihai_core::protocol::{ClientVersion, EncryptionGen};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -59,6 +64,13 @@ pub enum WorldIn {
     Props { player: u16, raw: Vec<u8> },
     /// `PLI_LEVELWARP` (0) or `PLI_LEVELWARPMOD` (30).
     LevelWarp(Warp),
+    /// `PLI_ADJACENTLEVEL` (35): a gmap neighbour the client wants, with
+    /// the mod time of its copy (0 for none).
+    Adjacent {
+        player: u16,
+        level: String,
+        mod_time: u64,
+    },
     /// The connection closed.
     Left { player: u16 },
 }
@@ -103,6 +115,8 @@ pub struct Joined {
     pub id: u16,
     /// The level the player starts in.
     pub level: Arc<Level>,
+    /// The gmap that level is a cell of, for a build that plays gmaps.
+    pub gmap: Option<Place>,
 }
 
 /// Where the world finds its levels, and what it sends without one.
@@ -147,6 +161,10 @@ impl World {
     /// A world for at most `max_players`. Nothing runs until
     /// [`World::start`], so this can be made outside a tokio runtime.
     pub fn new(max_players: usize, levels: LevelSource) -> Self {
+        let (gmaps, warnings) = Gmaps::load(&levels.dir);
+        for w in warnings {
+            eprintln!("levels: {w}");
+        }
         let (tx, rx) = mpsc::unbounded_channel();
         let (online_tx, online) = watch::channel(Vec::new());
         World {
@@ -157,6 +175,7 @@ impl World {
                 online: online_tx,
                 max_players,
                 levels,
+                gmaps,
                 loaded: HashMap::new(),
                 players: BTreeMap::new(),
                 by_account: HashMap::new(),
@@ -193,6 +212,15 @@ impl World {
         let _ = self.tx.send(WorldIn::LevelWarp(w));
     }
 
+    /// A gmap neighbour request.
+    pub fn adjacent(&self, player: u16, level: String, mod_time: u64) {
+        let _ = self.tx.send(WorldIn::Adjacent {
+            player,
+            level,
+            mod_time,
+        });
+    }
+
     /// The player's connection closed.
     pub fn left(&self, player: u16) {
         let _ = self.tx.send(WorldIn::Left { player });
@@ -213,6 +241,11 @@ struct Online {
     gen: EncryptionGen,
     /// Lower-case name of the level the player is in.
     level: String,
+    /// The gmap the player plays that level as a cell of.
+    gmap: Option<Place>,
+    /// The levels (lower-case) this connection was sent in full as the
+    /// player's own gmap level; walking back into one sends its name.
+    entered: HashSet<String>,
     props: Props,
     outbox: Outbox,
 }
@@ -223,6 +256,7 @@ pub struct WorldTask {
     online: watch::Sender<Vec<String>>,
     max_players: usize,
     levels: LevelSource,
+    gmaps: Gmaps,
     /// Levels read so far, by lower-case name.
     loaded: HashMap<String, Arc<Level>>,
     players: BTreeMap<u16, Online>,
@@ -245,11 +279,16 @@ impl WorldTask {
                 let key = who.account.to_ascii_lowercase();
                 let answer = self.join(&key, who.version, who.gen, outbox).map(|id| {
                     let level = self.level(&who.level);
+                    let gmap = self.gmap_of(who.version, &level.name);
                     if let Some(p) = self.players.get_mut(&id) {
                         p.level = level.name.to_ascii_lowercase();
                         p.props.apply(&who.props, ClientVersion::V222);
+                        p.gmap = gmap.clone();
+                        if gmap.is_some() {
+                            p.entered.insert(p.level.clone());
+                        }
                     }
-                    Joined { id, level }
+                    Joined { id, level, gmap }
                 });
                 let new_id = answer.as_ref().ok().map(|j| j.id);
                 match (reply.send(answer), new_id) {
@@ -268,7 +307,82 @@ impl WorldTask {
             WorldIn::Left { player } => self.leave(player),
             WorldIn::Props { player, raw } => self.props(player, &raw),
             WorldIn::LevelWarp(w) => self.warp(w),
+            WorldIn::Adjacent {
+                player,
+                level,
+                mod_time,
+            } => self.adjacent(player, &level, mod_time),
         }
+    }
+
+    /// Where `level` is on a gmap, for a build that plays gmaps.
+    fn gmap_of(&self, version: ClientVersion, level: &str) -> Option<Place> {
+        plays_gmaps(version)
+            .then(|| self.gmaps.find(level))
+            .flatten()
+    }
+
+    /// A gmap neighbour the client asked for. It must be a cell of the gmap
+    /// the player is on and its file must be there; otherwise there is no
+    /// answer. A copy with the level's mod time gets the name alone.
+    fn adjacent(&mut self, id: u16, name: &str, mod_time: u64) {
+        let Some(gmap) = self.players.get(&id).and_then(|p| p.gmap.clone()) else {
+            return;
+        };
+        if self.gmaps.find(name).is_none_or(|g| g.gmap != gmap.gmap) {
+            return;
+        }
+        let level = match self.find_level(name) {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("player {id} neighbour {name}: {e}; not answered");
+                return;
+            }
+        };
+        if let Some(p) = self.players.get(&id) {
+            let full = mod_time != level.mod_time;
+            let f = crate::burst::gmap_level(p.version, &level, &gmap.gmap, full);
+            let _ = p.outbox.send(vec![f]);
+        }
+    }
+
+    /// The player walked across a seam: their props named a new cell. The
+    /// level there becomes theirs; a cell with no level leaves them where
+    /// they are.
+    fn cross(&mut self, id: u16, cell: (u8, u8)) {
+        let Some(p) = self.players.get(&id) else {
+            return;
+        };
+        let Some(gmap) = p.gmap.clone() else {
+            return;
+        };
+        if cell == gmap.cell {
+            return;
+        }
+        let Some(name) = self.gmaps.level_at(&gmap.gmap, cell).map(str::to_string) else {
+            return;
+        };
+        let level = self.level(&name);
+        let key = level.name.to_ascii_lowercase();
+        let Some(p) = self.players.get_mut(&id) else {
+            return;
+        };
+        let old = std::mem::replace(&mut p.level, key.clone());
+        p.gmap = Some(Place {
+            gmap: gmap.gmap.clone(),
+            cell,
+        });
+        let full = p.entered.insert(key.clone());
+        if old == key {
+            return;
+        }
+        self.part(id, &old);
+        if let Some(p) = self.players.get(&id) {
+            let f = crate::burst::gmap_level(p.version, &level, &gmap.gmap, full);
+            let _ = p.outbox.send(vec![f]);
+        }
+        self.tell_level(&old, id, &Change::default(), &others::LEFT_LEVEL);
+        self.meet(id);
     }
 
     /// The level called `name`, read on first use. A name that does not
@@ -322,18 +436,40 @@ impl WorldTask {
         let Some(p) = self.players.get_mut(&w.player) else {
             return;
         };
+        let gmap = plays_gmaps(p.version)
+            .then(|| self.gmaps.find(&level.name))
+            .flatten();
         let old = std::mem::replace(&mut p.level, key.clone());
         let moved = p.props.moved(w.x, w.y);
         let cached = w.mod_time == Some(level.mod_time);
+        p.gmap = gmap.clone();
+        if gmap.is_some() {
+            p.entered.insert(key.clone());
+        }
         if old != key {
             self.part(w.player, &old);
         }
         let Some(p) = self.players.get(&w.player) else {
             return;
         };
-        let _ = p
-            .outbox
-            .send(crate::burst::level_answer(p.version, p.gen, &level, cached));
+        match &gmap {
+            // A link into a gmap cell says where on the gmap, then the
+            // level as a gmap level (Seihai's beta4 lab notes, "Warps").
+            Some(g) => {
+                let mut f = crate::wire::msg(
+                    crate::wire::ids::PLO_PLAYERWARP2,
+                    &crate::burst::warp2(w.x, w.y, g),
+                );
+                f.extend(crate::burst::gmap_level(
+                    p.version, &level, &g.gmap, !cached,
+                ));
+                let _ = p.outbox.send(vec![f]);
+            }
+            None => {
+                let answer = crate::burst::level_answer(p.version, p.gen, &level, cached);
+                let _ = p.outbox.send(answer);
+            }
+        }
         if old == key {
             self.tell_level(&key, w.player, &moved, &[]);
         } else {
@@ -380,6 +516,8 @@ impl WorldTask {
                 version,
                 gen,
                 level: String::new(),
+                gmap: None,
+                entered: HashSet::new(),
                 props: Props::default(),
                 outbox,
             },
@@ -421,6 +559,27 @@ impl WorldTask {
             return;
         };
         let change = p.props.apply(raw, p.version);
+        let cell = p.gmap.as_ref().map(|g| {
+            (
+                g.cell,
+                (
+                    change.byte(GMAPLEVELX).unwrap_or(g.cell.0),
+                    change.byte(GMAPLEVELY).unwrap_or(g.cell.1),
+                ),
+            )
+        });
+        if let Some((_, now)) = cell.filter(|(was, now)| was != now) {
+            let before = p.level.clone();
+            self.cross(id, now);
+            // Into a new level: the players there met the player with
+            // every prop, so this change is not said again.
+            if self.players.get(&id).is_some_and(|p| p.level != before) {
+                return;
+            }
+        }
+        let Some(p) = self.players.get(&id) else {
+            return;
+        };
         if !change.is_empty() {
             let level = p.level.clone();
             self.tell_level(&level, id, &change, &[]);
@@ -837,6 +996,8 @@ mod tests {
                     version: ClientVersion::V222,
                     gen: EncryptionGen::Gen5,
                     level: String::new(),
+                    gmap: None,
+                    entered: HashSet::new(),
                     props: Props::default(),
                     outbox: o.clone(),
                 },
