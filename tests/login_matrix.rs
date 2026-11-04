@@ -30,7 +30,7 @@ fn every_profile_logs_in_and_stays() {
 #[test]
 fn wrong_password_version_and_double_login_are_refused() {
     let w = world("refuse", "2.05\n2.22\n1.39\n");
-    let (addr, _server) = start(&w);
+    let (addr, server) = start(&w);
     // First login makes the account (create_accounts is on).
     let mut first = login_gserver(
         &addr,
@@ -55,6 +55,27 @@ fn wrong_password_version_and_double_login_are_refused() {
     let m = refused(&addr, ClientVersion::V133, "other", PASSWORD).unwrap();
     assert!(m.contains("not allowed"), "{m}");
     // The first session is still fine.
+    assert_eq!(server.online_accounts(), ["dup"]);
+    // Once it closes, the world frees the account and it logs in again.
+    drop(rx);
     drop(first);
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !server.online_accounts().is_empty() {
+        assert!(std::time::Instant::now() < deadline, "dup still online");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let mut again = login_gserver(
+        &addr,
+        ClientVersion::V222,
+        random_key(),
+        "dup",
+        PASSWORD,
+        false,
+    )
+    .unwrap();
+    let rx = again.conn.spawn_reader().unwrap();
+    let mut st = SessionState::for_version(ClientVersion::V222);
+    read_until(&rx, &mut st, Duration::from_secs(10), |s| s.board.is_some()).unwrap();
+    assert_eq!(server.online_accounts(), ["dup"]);
     let _ = std::fs::remove_dir_all(&w);
 }
