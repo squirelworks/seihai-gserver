@@ -303,12 +303,15 @@ impl Conn {
             Ok(l) => l,
             Err(e) => {
                 self.server.log(&self.peer, &format!("login refused: {e}"));
-                // The generation is not known: a plain zlib frame is the
-                // best guess (it is what gen 2 and gen 3 read).
-                let mut c = Codec::new(EncryptionGen::Gen2, 0, None);
-                return self
-                    .refuse(&mut c, "This server cannot read that login.")
-                    .await;
+                // A known type that is not served yet (RC, NC) is refused
+                // in its own framing, so the client shows the reason. For
+                // anything else the generation is not known: a plain zlib
+                // frame is the best guess (it is what gen 2 and gen 3 read).
+                let mut c = match e {
+                    login::LoginError::NotServed { gen, key, .. } => Codec::new(gen, key, None),
+                    _ => Codec::new(EncryptionGen::Gen2, 0, None),
+                };
+                return self.refuse(&mut c, &e.client_text()).await;
             }
         };
         let version = burst::shape_version(login.version, login.gen);
