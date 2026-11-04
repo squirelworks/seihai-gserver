@@ -23,7 +23,10 @@ Stage 1 covers:
 * the login burst (props, warp, the start level from `levels/` with its
   links, signs and chests, mod time and the rest, in the order each
   generation needs; a generated board when the level file is missing);
-* the idle session: file requests answered, the world time as a heartbeat;
+* files: `WANTFILE`/`UPDATEFILE` served from `<world>/files/` (any depth)
+  and the `.gmap` files in `levels/`, in each build's file layout, large
+  files in chunks where the build takes them;
+* the idle session: the world time as a heartbeat;
 * the NPC-server link (`PROTOCOL.md`): `seihai-npcserver` logs in on its own
   loopback port and is told the level list and every player's props. With
   `npcserver = auto` in `config/server.txt` the gserver starts

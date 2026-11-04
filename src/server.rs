@@ -35,6 +35,8 @@ pub struct Server {
     store: Store,
     /// The world task's handle: who is online (see `world`).
     pub world: crate::world::World,
+    /// The files the world serves (see `files`).
+    pub files: crate::files::FileStore,
     /// The NPC-server link's shared state (see `npclink`).
     pub npc: Arc<crate::npclink::Hub>,
     started: Instant,
@@ -80,6 +82,7 @@ impl Server {
             },
         );
         Server {
+            files: crate::files::FileStore::new(&cfg.world),
             npc,
             world,
             cfg,
@@ -453,9 +456,8 @@ impl Conn {
             sword_power: account.sword.0,
             shield_power: account.shield.0,
         };
-        let reply = session.handle(&self.server, &self.peer, &early);
-        if !reply.is_empty() {
-            self.send(&mut codec, &reply).await?;
+        for f in session.handle(&self.server, &self.peer, &early) {
+            self.send(&mut codec, &f).await?;
         }
         // A listserver message can arrive while the burst is going out.
         let queued = session.link_out(&self.server);
@@ -482,7 +484,7 @@ impl Conn {
                 r = read_more(&mut self.stream, &mut inbuf.buf) => {
                     r?;
                     last_heard = Instant::now();
-                    let mut reply = Vec::new();
+                    let mut reply: Vec<Vec<u8>> = Vec::new();
                     while let Some(frame) = inbuf.take_frame()? {
                         let body = codec.decode(&frame)?;
                         let msgs = codec.messages(&body);
@@ -492,8 +494,8 @@ impl Conn {
                         }
                         reply.extend(session.handle(&self.server, &self.peer, &msgs));
                     }
-                    if !reply.is_empty() {
-                        self.send(&mut codec, &reply).await?;
+                    for f in reply {
+                        self.send(&mut codec, &f).await?;
                     }
                 }
                 _ = tick(heartbeat.as_mut()) => {
@@ -613,9 +615,10 @@ struct Session {
 }
 
 impl Session {
-    /// Handle the client's messages; returns the reply body (maybe empty).
-    fn handle(&mut self, server: &Server, peer: &SocketAddr, msgs: &[Vec<u8>]) -> Vec<u8> {
-        let plo = &self.version.profile().protocol.plo;
+    /// Handle the client's messages; returns the reply as frame bodies
+    /// (none, one, or more when a file needs frames of its own).
+    fn handle(&mut self, server: &Server, peer: &SocketAddr, msgs: &[Vec<u8>]) -> Vec<Vec<u8>> {
+        let mut frames: Vec<Vec<u8>> = Vec::new();
         let mut reply = Vec::new();
         for m in msgs {
             let Some((&id, rest)) = m.split_first() else {
@@ -627,22 +630,46 @@ impl Session {
             *n += 1;
             let first_time = *n == 1;
             match id {
-                // Stage 1 serves no files: a request gets "failed", a check
-                // of a file the client has gets "up to date" where the
-                // build reads that (2.1 on), else "failed".
-                // 1.21 reads neither answer; it gets none.
-                PLI_WANTFILE => {
-                    if plo.contains(PLO_FILESENDFAILED) {
-                        reply.extend(msg(PLO_FILESENDFAILED, payload));
+                // Files from the world folder (`files.rs`). A request for
+                // a file the world does not have gets "failed"; a check of
+                // a copy gets the file when the server's is newer, else
+                // "up to date" (before 2.1, "failed"). 1.21 reads none of
+                // the answers and gets none.
+                PLI_WANTFILE | PLI_UPDATEFILE => {
+                    let (since, raw) = if id == PLI_UPDATEFILE {
+                        match payload.split_at_checked(5) {
+                            Some((t, name)) => (Some(crate::wire::read_gint5(t)), name),
+                            None => continue,
+                        }
+                    } else {
+                        (None, payload)
+                    };
+                    let name = seihai_core::protocol::latin1(raw);
+                    let found = server.files.find(&name);
+                    let newer = match (&found, since) {
+                        (Some(f), Some(t)) => f.mod_time > t,
+                        (found, None) => found.is_some(),
+                        (None, Some(_)) => false,
+                    };
+                    let sent = found
+                        .filter(|_| newer)
+                        .and_then(|f| crate::files::send_file(self.version, &f));
+                    match sent {
+                        Some(mut out) if out.len() == 1 => reply.append(&mut out[0]),
+                        Some(out) => {
+                            if !reply.is_empty() {
+                                frames.push(std::mem::take(&mut reply));
+                            }
+                            frames.extend(out);
+                        }
+                        None if since.is_some() && !newer => {
+                            reply.extend(crate::files::up_to_date(self.version, raw));
+                        }
+                        None => reply.extend(crate::files::failed(self.version, raw)),
                     }
-                }
-                PLI_UPDATEFILE => {
-                    let name = payload.get(5..).unwrap_or_default();
-                    let answer = [PLO_FILEUPTODATE, PLO_FILESENDFAILED]
-                        .into_iter()
-                        .find(|&id| plo.contains(id));
-                    if let Some(answer) = answer {
-                        reply.extend(msg(answer, name));
+                    if server.verbose {
+                        let what = if newer { "sent" } else { "not sent" };
+                        server.log(peer, &format!("file {name}: {what}"));
                     }
                 }
                 PLI_PLAYERPROPS => {
@@ -682,7 +709,10 @@ impl Session {
                 }
             }
         }
-        reply
+        if !reply.is_empty() {
+            frames.push(reply);
+        }
+        frames
     }
 
     /// Packets for a private message or a finished listserver file.

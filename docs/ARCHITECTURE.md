@@ -22,7 +22,7 @@ How the server is put together, and where each later stage plugs in. Read
 | `src/world.rs` | the world task: who is online and player ids, the levels read so far, other players in a level (done); warps, gmaps, the 50 ms tick (to do) | 2 |
 | `src/levels.rs` | level files (`.nw`, `.graal`, `.zelda`) through `seihai_core::assets`, the level name check, the link, sign and chest writers (done); gmaps (to do) | 2 |
 | `src/others.rs` | other players' props: kept in one form, sent as `PLO_OTHERPLPROPS` (8) per receiver's build; join (50 = 1), logout (50 = 0, 51) | 2 |
-| `src/files.rs` | `WANTFILE`/`UPDATEFILE` file serving from the world folder (skeleton) | 2 |
+| `src/files.rs` | `WANTFILE`/`UPDATEFILE` served from `<world>/files/` and the `.gmap` files in `levels/`: the name check, the case-insensitive index, `PLO_FILE` per build, large files | 2 |
 | `src/listlink.rs` | the listserver link over the encrypted channel (`SVLINK01`): register, player count with nickname and props, account check (`VERIACC2`), pong (`SVO_PING` 16), private messages, file start; two plain threads, reconnects every 15 s | link |
 | `src/rc.rs` | RC and NC logins for `seihai-rc` (skeleton) | 4 |
 | `src/npclink.rs` | the link to `seihai-npcserver` (`PROTOCOL.md`): `Hub` (players for the link), `serve_link`, `supervise` for `npcserver = auto` | 5 (first half) |
@@ -74,8 +74,9 @@ connection sends `Left` when it closes.
   row that do not check out) or a refused login, always with a
   `PLO_DISCMESSAGE` first.
 - **Files and names are untrusted.** Account names pass
-  `login::valid_account_name` before they name a file. Level and file names
-  from clients will need the same treatment in `files.rs`.
+  `login::valid_account_name` before they name a file; level names pass
+  `levels::valid_level_name` and file names `files::valid_name`, and a
+  file is only ever looked up in the index of the world's own folders.
 
 ## The world task (stage 2)
 
@@ -136,6 +137,9 @@ Conn task ──Hub::joined / props / left──▶ Hub (Mutex: players + link s
   the file is missing.
 - `tests/other_players.rs`: a 2.05 and a 2.31 in one level see each other
   arrive, walk (X2/Y2 seen as half tiles) and log out.
+- `tests/file_serving.rs`: 1.39, 2.05, 2.22 and 2.31 ask for a small file,
+  a missing one, a `.gmap`, a 150 KB one and a name with `..`, and check
+  copies with old and future times; every answer and every byte is checked.
 - `tests/npc_link.rs`: this gserver, the real NPC-server session code and real
   client logins (2.22, 2.05) on loopback.
 - `tools/lab-matrix.sh`: the real `seihai-mae` binary for every profile.

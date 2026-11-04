@@ -46,6 +46,16 @@ pub fn gint5(v: u64, out: &mut Vec<u8>) {
     gint_n(v, 5, out)
 }
 
+/// Read a GINT5 (five GCHARs, high 7 bits first); short input reads as 0.
+pub fn read_gint5(b: &[u8]) -> u64 {
+    if b.len() < 5 {
+        return 0;
+    }
+    b[..5]
+        .iter()
+        .fold(0, |v, &c| (v << 7) | u64::from(c.wrapping_sub(0x20) & 0x7F))
+}
+
 /// `GCHAR len` + bytes, cut to the 223 bytes a `GCHAR` can count.
 pub fn gstring(s: &[u8], out: &mut Vec<u8>) {
     let s = &s[..s.len().min(223)];
@@ -98,7 +108,11 @@ pub mod ids {
     pub const PLO_NEWWORLDTIME: u8 = 42;
     pub const PLO_DEFAULTWEAPON: u8 = 43;
     pub const PLO_FILEUPTODATE: u8 = 45;
+    pub const PLO_LARGEFILESTART: u8 = 68;
+    pub const PLO_LARGEFILEEND: u8 = 69;
+    pub const PLO_LARGEFILESIZE: u8 = 84;
     pub const PLO_RAWDATA: u8 = 100;
+    pub const PLO_FILE: u8 = 102;
     pub const PLO_BOARDPACKET: u8 = 101;
     pub const PLO_SETACTIVELEVEL: u8 = 156;
     pub const PLO_STATUSLIST: u8 = 180;
