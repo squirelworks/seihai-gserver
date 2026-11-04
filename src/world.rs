@@ -29,6 +29,14 @@
 //!    neighbour (`burst::gmap_level`); own props 43/44 with a new cell move
 //!    the player into that cell's level, as a link does. Players see the
 //!    players of their own cell only.
+//! 6. Accounts, chests, flags and floor items: on logout the player's
+//!    level, position, counted props, opened chests and flags go back to
+//!    the account file (the [`Saver`]). `PLI_OPENCHEST` (20) gives the
+//!    chest's item and every level then shows it opened for that account;
+//!    `PLI_FLAGSET`/`PLI_FLAGDEL` (18/19) keep the flags. `PLI_ITEMADD`
+//!    (12) items lie in the level for the others and late arrivals,
+//!    `PLI_ITEMTAKE` (32) gives one to the first taker only and
+//!    `PLI_ITEMDEL` (13) clears it.
 //!
 //! Prop changes are batched on the [`TICK`] (2.8, issue #20): each
 //! player's changes are merged until the tick, latest value per prop, and
@@ -36,8 +44,8 @@
 //! frame. Before a join or a leave the batch goes out first, so a client
 //! never hears of a move after the mover left.
 //!
-//! To do, in order:
-//! 6. Flags (`PLI_FLAGSET`), chests, items on the ground.
+//! To do: the anti-cheat checks of stage 7 that guard these (movement,
+//! warps, items and counted props), see `docs/PLAN.md`.
 
 use crate::gmaps::{plays_gmaps, Gmaps, Place, GMAPLEVELX, GMAPLEVELY};
 use crate::levels::Level;
