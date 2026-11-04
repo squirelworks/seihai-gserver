@@ -76,13 +76,31 @@ fn run_server(world: &std::path::Path, mut args: Vec<String>) -> Result<(), Stri
     rt.block_on(async {
         let server = Arc::new(server);
         tokio::select! {
-            r = seihai_gserver::run(server) => r.map_err(|e| e.to_string()),
-            _ = tokio::signal::ctrl_c() => {
-                eprintln!("stopping");
+            r = seihai_gserver::run(server.clone()) => r.map_err(|e| e.to_string()),
+            _ = stop_signal() => {
+                // Players still online keep what they did, as on a logout.
+                let n = server.world.save_all().await;
+                eprintln!("stopping: saved {n} online player(s)");
                 Ok(())
             }
         }
     })
+}
+
+/// Ctrl-C, or SIGTERM where there is one (a service manager's stop).
+async fn stop_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        if let Ok(mut term) = signal(SignalKind::terminate()) {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {}
+                _ = term.recv() => {}
+            }
+            return;
+        }
+    }
+    let _ = tokio::signal::ctrl_c().await;
 }
 
 fn account_command(world: &std::path::Path, args: &[String]) -> ExitCode {
