@@ -165,18 +165,28 @@ fn num(v: f32) -> String {
 /// `PLO_LEVELCHEST` (4) for a closed chest: `c 0, c x, c y, c item, c sign`.
 /// Sign index -1 (no sign) goes as `0xFF`, as the beta4 lab gserver sends it
 /// to 2.00, 2.05 and 2.22 (Seihai `chest-drawing.md`). `None` for an item
-/// name the clients have no index for.
+/// name the clients have no index for. A chest the account has opened goes
+/// as the short record: opened flag, x, y.
 pub fn chest_record(c: &assets::Chest) -> Option<Vec<u8>> {
-    let item = CHEST_ITEMS
-        .iter()
-        .position(|i| i.eq_ignore_ascii_case(c.item.trim()))?;
+    let item = chest_item(c)?;
     let pos = |v: i32| gchar(v.clamp(0, 63) as u8);
+    if c.opened {
+        return Some(vec![gchar(1), pos(c.x), pos(c.y)]);
+    }
     let sign = if c.sign_index < 0 {
         0xFF
     } else {
         gchar(c.sign_index.min(223) as u8)
     };
-    Some(vec![gchar(0), pos(c.x), pos(c.y), gchar(item as u8), sign])
+    Some(vec![gchar(0), pos(c.x), pos(c.y), gchar(item), sign])
+}
+
+/// A chest's item as its index in the clients' item table.
+pub fn chest_item(c: &assets::Chest) -> Option<u8> {
+    CHEST_ITEMS
+        .iter()
+        .position(|i| i.eq_ignore_ascii_case(c.item.trim()))
+        .map(|i| i as u8)
 }
 
 /// `PLO_LEVELSIGN` (5): `c x, c y`, then the text in the sign alphabet.

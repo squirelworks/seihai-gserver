@@ -18,7 +18,8 @@
 
 use crate::wire::{gchar, gshort, ids::PLO_OTHERPLPROPS, msg};
 use seihai_core::protocol::{
-    decode_pos_precise, encode_pos_precise, parse_player_props_with, read_gshort, ClientVersion,
+    decode_pos_precise, encode_pos_precise, parse_player_props_with, read_gint3, read_gshort,
+    ClientVersion,
 };
 use std::collections::BTreeMap;
 
@@ -114,6 +115,29 @@ impl Props {
         }
     }
 
+    /// The kept position, in tiles.
+    pub fn x(&self) -> Option<f32> {
+        self.x
+    }
+
+    pub fn y(&self) -> Option<f32> {
+        self.y
+    }
+
+    /// The kept value bytes by prop id (no position).
+    pub fn values(&self) -> &BTreeMap<u8, Vec<u8>> {
+        &self.values
+    }
+
+    /// Set one prop's value bytes; returns whether it changed.
+    fn set(&mut self, id: u8, v: Vec<u8>) -> bool {
+        if self.values.get(&id) == Some(&v) {
+            return false;
+        }
+        self.values.insert(id, v);
+        true
+    }
+
     /// Everything kept, as a change.
     pub fn all(&self) -> Change {
         Change {
@@ -180,12 +204,109 @@ pub const LEFT_LEVEL: [(u8, &[u8]); 1] = [(JOINLEAVELVL, &[0x20])];
 /// The tail for a player who logged out.
 pub const LOGGED_OUT: [(u8, &[u8]); 2] = [(JOINLEAVELVL, &[0x20]), (PCONNECTED, &[])];
 
+/// Give `item` (a chest item index, `seihai_core::assets::CHEST_ITEMS`)
+/// to a player: the counted props it raises (rupees 3, bombs 5, arrows 4,
+/// hearts 1 and 2, glove 6). Returns the props that changed, in the 2.22
+/// encoding; items this server does not count yet change nothing.
+pub fn give_item(props: &mut Props, item: u8) -> Vec<(u8, Vec<u8>)> {
+    let byte = |p: &Props, id: u8| match p.values.get(&id).map(Vec::as_slice) {
+        Some([v, ..]) => v.wrapping_sub(0x20),
+        _ => 0,
+    };
+    let rupees = |p: &Props| {
+        p.values
+            .get(&3)
+            .and_then(|v| read_gint3(v))
+            .map_or(0, |r| r as u32)
+    };
+    let mut new: Vec<(u8, Vec<u8>)> = Vec::new();
+    let mut add_rupees = |p: &Props, n: u32| {
+        let mut v = Vec::new();
+        crate::wire::gint3((rupees(p) + n).min(MAX_RUPEES), &mut v);
+        new.push((3, v));
+    };
+    match item {
+        0 => add_rupees(props, 1),
+        1 => add_rupees(props, 5),
+        2 => add_rupees(props, 30),
+        19 => add_rupees(props, 100),
+        3 => new.push((5, vec![gchar(byte(props, 5).saturating_add(5).min(99))])),
+        4 => new.push((4, vec![gchar(byte(props, 4).saturating_add(5).min(99))])),
+        5 => {
+            let max = byte(props, 1).saturating_mul(2);
+            new.push((2, vec![gchar(byte(props, 2).saturating_add(2).min(max))]));
+        }
+        11 => {
+            let max = byte(props, 1).saturating_add(1).min(MAX_HEARTS);
+            new.push((1, vec![gchar(max)]));
+            new.push((2, vec![gchar(max * 2)]));
+        }
+        6 | 16 => {
+            let glove = if item == 6 { 1 } else { 2 };
+            new.push((6, vec![gchar(byte(props, 6).max(glove))]));
+        }
+        _ => {}
+    }
+    new.retain(|(id, v)| props.set(*id, v.clone()));
+    new
+}
+
+/// Rupees stop here: the most a `GINT3` carries.
+pub const MAX_RUPEES: u32 = (1 << 21) - 1;
+/// Hearts stop here.
+pub const MAX_HEARTS: u8 = 20;
+
+/// `PLO_PLAYERPROPS` (9) for the player's own build with `changed` (2.22
+/// encoding, no position), keeping only the props the build reads as its
+/// own. `None` when nothing is left.
+pub fn own_message(version: ClientVersion, changed: &[(u8, Vec<u8>)]) -> Option<Vec<u8>> {
+    let own = &version.profile().props.own;
+    let mut body = Vec::new();
+    for (id, v) in changed {
+        if own.contains(*id) {
+            body.push(gchar(*id));
+            body.extend_from_slice(v);
+        }
+    }
+    (!body.is_empty()).then(|| msg(crate::wire::ids::PLO_PLAYERPROPS, &body))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::accounts::Account;
     use crate::burst::{own_props, Player};
     use seihai_core::protocol::SessionState;
+
+    #[test]
+    fn chest_items_raise_the_counted_props() {
+        let mut p = alice();
+        let rupees = |p: &Props| read_gint3(&p.values()[&3]).unwrap();
+        let byte = |p: &Props, id: u8| p.values()[&id][0] - 0x20;
+        let (r, b, d) = (rupees(&p), byte(&p, 5), byte(&p, 4));
+        assert_eq!(give_item(&mut p, 2).len(), 1);
+        assert_eq!(rupees(&p), r + 30);
+        give_item(&mut p, 19);
+        assert_eq!(rupees(&p), r + 130);
+        give_item(&mut p, 3);
+        give_item(&mut p, 4);
+        assert_eq!((byte(&p, 5), byte(&p, 4)), (b + 5, d + 5));
+        // A heart fills two half hearts, up to the maximum.
+        let max = byte(&p, 1);
+        assert!(give_item(&mut p, 5).is_empty(), "already full");
+        give_item(&mut p, 11);
+        assert_eq!((byte(&p, 1), byte(&p, 2)), (max + 1, (max + 1) * 2));
+        // Items the server does not count change nothing.
+        assert!(give_item(&mut p, 10).is_empty());
+        // The own message has only what the build reads as its own.
+        let changed = give_item(&mut p, 0);
+        let m = own_message(ClientVersion::V222, &changed).unwrap();
+        assert_eq!(m[0], 9 + 0x20);
+        let mut st = SessionState::for_version(ClientVersion::V222);
+        st.apply_body(&m);
+        assert_eq!(st.own_rupees, Some(r as u32 + 131));
+        assert!(own_message(ClientVersion::V222, &[]).is_none());
+    }
 
     fn alice() -> Props {
         let mut a = Account::new("alice", "", 30.0, 30.5);

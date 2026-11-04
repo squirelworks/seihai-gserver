@@ -103,6 +103,7 @@ pub mod ids {
     pub const PLO_PLAYERWARP2: u8 = 49;
     pub const PLO_DISCMESSAGE: u8 = 16;
     pub const PLO_SIGNATURE: u8 = 25;
+    pub const PLO_FLAGSET: u8 = 28;
     pub const PLO_FILESENDFAILED: u8 = 30;
     pub const PLO_PRIVATEMESSAGE: u8 = 37;
     pub const PLO_LEVELMODTIME: u8 = 39;
@@ -124,6 +125,8 @@ pub mod ids {
     pub const PLI_LEVELWARP: u8 = 0;
     pub const PLI_PLAYERPROPS: u8 = 2;
     pub const PLI_FLAGSET: u8 = 18;
+    pub const PLI_FLAGDEL: u8 = 19;
+    pub const PLI_OPENCHEST: u8 = 20;
     pub const PLI_WANTFILE: u8 = 23;
     pub const PLI_SHOWIMG: u8 = 24;
     pub const PLI_WEAPONADD: u8 = 25;
