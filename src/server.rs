@@ -367,7 +367,21 @@ impl Conn {
         } else {
             account.level.as_str()
         };
-        let (id, level) = match self.server.world.join(&key, start, outbox).await {
+        let joining = crate::world::Joining {
+            account: key.clone(),
+            level: start.to_string(),
+            version,
+            // The world keeps props in the 2.22 encoding, as the
+            // NPC-server link does; the id is in the message header.
+            props: burst::own_props(
+                ClientVersion::V222,
+                &Player {
+                    id: 0,
+                    account: &account,
+                },
+            ),
+        };
+        let (id, level) = match self.server.world.join(joining, outbox).await {
             Some(Ok(j)) => (j.id, j.level),
             Some(Err(why)) => {
                 if why == crate::world::Refused::InUse {

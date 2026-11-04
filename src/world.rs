@@ -13,10 +13,12 @@
 //!    first time (`levels.rs`), or the stage 1 board when there is no such
 //!    file. The connection builds the burst from it (`burst::login_burst`),
 //!    since the burst's frames depend on the client's generation.
+//! 3. Other players (`others.rs`): `PLO_OTHERPLPROPS` (8) to the players in
+//!    the same level on join (with 50 = 1, both ways), on each prop change,
+//!    and on logout (50 = 0, then 51). Only props in each receiver's
+//!    `props.other` set.
 //!
 //! To do, in order:
-//! 3. Other players: `PLO_OTHERPLPROPS` (8) on join, prop changes, leave.
-//!    Only props in each receiver's `props.other` set.
 //! 4. `PLI_LEVELWARP` (0) and `PLI_LEVELWARPMOD` (30): load the level, send
 //!    it (see Seihai `documentation/protocol.md`, "Level changes"); a current
 //!    mod time gets no board.
@@ -25,6 +27,8 @@
 //! 6. Flags (`PLI_FLAGSET`), chests, items on the ground.
 
 use crate::levels::Level;
+use crate::others::{self, Change, Props};
+use seihai_core::protocol::ClientVersion;
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -44,9 +48,7 @@ pub enum WorldIn {
     /// A login passed the allow-list and the account check. The world
     /// answers with the player id or the reason to refuse.
     Joined {
-        account: String,
-        /// The level the account was in, or the start level.
-        level: String,
+        who: Joining,
         outbox: Outbox,
         reply: oneshot::Sender<Result<Joined, Refused>>,
     },
@@ -66,6 +68,19 @@ pub enum WorldIn {
 
 /// Message bodies for one player; the connection task frames and sends them.
 pub type Outbox = mpsc::UnboundedSender<Vec<u8>>;
+
+/// A login the world is asked to let in.
+#[derive(Debug, Clone)]
+pub struct Joining {
+    pub account: String,
+    /// The level the account was in, or the start level.
+    pub level: String,
+    /// The client's build: what it reads of other players.
+    pub version: ClientVersion,
+    /// The player's props from the account, in the 2.22 encoding
+    /// (`burst::own_props(ClientVersion::V222, ..)`).
+    pub props: Vec<u8>,
+}
 
 /// The world's answer to a login it lets in.
 #[derive(Debug, Clone)]
@@ -142,23 +157,11 @@ impl World {
         }
     }
 
-    /// Register a logged-in account that starts in `level`. `None` when
-    /// the world task is gone (the server is shutting down).
-    pub async fn join(
-        &self,
-        account: &str,
-        level: &str,
-        outbox: Outbox,
-    ) -> Option<Result<Joined, Refused>> {
+    /// Register a logged-in account. `None` when the world task is gone
+    /// (the server is shutting down).
+    pub async fn join(&self, who: Joining, outbox: Outbox) -> Option<Result<Joined, Refused>> {
         let (reply, answer) = oneshot::channel();
-        self.tx
-            .send(WorldIn::Joined {
-                account: account.to_string(),
-                level: level.to_string(),
-                outbox,
-                reply,
-            })
-            .ok()?;
+        self.tx.send(WorldIn::Joined { who, outbox, reply }).ok()?;
         answer.await.ok()
     }
 
@@ -186,7 +189,10 @@ impl World {
 struct Online {
     /// Lower-case account name.
     account: String,
-    #[allow(dead_code)] // the world starts sending with item 3
+    version: ClientVersion,
+    /// Lower-case name of the level the player is in.
+    level: String,
+    props: Props,
     outbox: Outbox,
 }
 
@@ -214,26 +220,34 @@ impl WorldTask {
 
     fn handle(&mut self, ev: WorldIn) {
         match ev {
-            WorldIn::Joined {
-                account,
-                level,
-                outbox,
-                reply,
-            } => {
-                let key = account.to_ascii_lowercase();
-                let answer = self.join(&key, outbox).map(|id| Joined {
-                    id,
-                    level: self.level(&level),
+            WorldIn::Joined { who, outbox, reply } => {
+                let key = who.account.to_ascii_lowercase();
+                let answer = self.join(&key, who.version, outbox).map(|id| {
+                    let level = self.level(&who.level);
+                    if let Some(p) = self.players.get_mut(&id) {
+                        p.level = level.name.to_ascii_lowercase();
+                        p.props.apply(&who.props, ClientVersion::V222);
+                    }
+                    Joined { id, level }
                 });
-                // The connection may have closed while it waited; then the
-                // id goes straight back.
-                if let Err(Ok(j)) = reply.send(answer) {
-                    self.leave(j.id);
+                let new_id = answer.as_ref().ok().map(|j| j.id);
+                match (reply.send(answer), new_id) {
+                    (Ok(()), Some(id)) => self.meet(id),
+                    // The connection closed while it waited: the id goes
+                    // straight back, before anyone heard of it.
+                    (Err(_), Some(id)) => {
+                        if let Some(p) = self.players.remove(&id) {
+                            self.by_account.remove(&p.account);
+                            self.publish();
+                        }
+                    }
+                    _ => {}
                 }
             }
             WorldIn::Left { player } => self.leave(player),
-            // Read from item 3 (other players) and item 4 (warps) on.
-            WorldIn::Props { .. } | WorldIn::LevelWarp { .. } => {}
+            WorldIn::Props { player, raw } => self.props(player, &raw),
+            // Read from item 4 (warps) on.
+            WorldIn::LevelWarp { .. } => {}
         }
     }
 
@@ -264,7 +278,7 @@ impl WorldTask {
         }
     }
 
-    fn join(&mut self, key: &str, outbox: Outbox) -> Result<u16, Refused> {
+    fn join(&mut self, key: &str, version: ClientVersion, outbox: Outbox) -> Result<u16, Refused> {
         if self.by_account.contains_key(key) {
             return Err(Refused::InUse);
         }
@@ -277,6 +291,9 @@ impl WorldTask {
             id,
             Online {
                 account: key.to_string(),
+                version,
+                level: String::new(),
+                props: Props::default(),
                 outbox,
             },
         );
@@ -288,6 +305,49 @@ impl WorldTask {
         if let Some(p) = self.players.remove(&id) {
             self.by_account.remove(&p.account);
             self.publish();
+            self.tell_level(&p.level, id, &Change::default(), &others::LOGGED_OUT);
+        }
+    }
+
+    /// A player is in: they and the others in their level see each other.
+    fn meet(&mut self, id: u16) {
+        let Some(me) = self.players.get(&id) else {
+            return;
+        };
+        let mine = me.props.all();
+        for (&other, p) in &self.players {
+            if other == id || p.level != me.level {
+                continue;
+            }
+            if let Some(m) = others::message(me.version, other, &p.props.all(), &others::JOINED) {
+                let _ = me.outbox.send(m);
+            }
+            if let Some(m) = others::message(p.version, id, &mine, &others::JOINED) {
+                let _ = p.outbox.send(m);
+            }
+        }
+    }
+
+    /// A player's own prop update, passed on to the others in the level.
+    fn props(&mut self, id: u16, raw: &[u8]) {
+        let Some(p) = self.players.get_mut(&id) else {
+            return;
+        };
+        let change = p.props.apply(raw, p.version);
+        if !change.is_empty() {
+            let level = p.level.clone();
+            self.tell_level(&level, id, &change, &[]);
+        }
+    }
+
+    /// `change` about player `id` to everyone else in `level`.
+    fn tell_level(&self, level: &str, id: u16, change: &Change, tail: &[(u8, &[u8])]) {
+        for (&other, p) in &self.players {
+            if other != id && p.level == level {
+                if let Some(m) = others::message(p.version, id, change, tail) {
+                    let _ = p.outbox.send(m);
+                }
+            }
         }
     }
 
@@ -317,6 +377,7 @@ impl WorldTask {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use seihai_core::protocol::SessionState;
 
     fn outbox() -> (Outbox, mpsc::UnboundedReceiver<Vec<u8>>) {
         mpsc::unbounded_channel()
@@ -330,9 +391,98 @@ mod tests {
         }
     }
 
+    fn who(account: &str, level: &str) -> Joining {
+        Joining {
+            account: account.into(),
+            level: level.into(),
+            version: ClientVersion::V222,
+            props: Vec::new(),
+        }
+    }
+
+    fn joining(account: &str, level: &str, v: ClientVersion) -> Joining {
+        let a = crate::accounts::Account::new(account, level, 30.0, 30.0);
+        Joining {
+            version: v,
+            props: crate::burst::own_props(
+                ClientVersion::V222,
+                &crate::burst::Player { id: 0, account: &a },
+            ),
+            ..who(account, level)
+        }
+    }
+
+    /// What a client of build `v` makes of everything in its outbox.
+    fn seen(v: ClientVersion, rx: &mut mpsc::UnboundedReceiver<Vec<u8>>) -> SessionState {
+        let mut st = SessionState::for_version(v);
+        while let Ok(m) = rx.try_recv() {
+            st.apply_body(&m);
+        }
+        assert!(st.ignored.is_empty(), "{v:?}");
+        st
+    }
+
+    #[tokio::test]
+    async fn players_in_a_level_see_each_other_come_move_and_go() {
+        let w = World::new(8, blank());
+        w.start();
+        let (a, mut ra) = outbox();
+        let (b, mut rb) = outbox();
+        let (c, mut rc) = outbox();
+        let alice = w
+            .join(joining("alice", "one.nw", ClientVersion::V205), a)
+            .await
+            .unwrap()
+            .unwrap()
+            .id;
+        let bob = w
+            .join(joining("bob", "ONE.nw", ClientVersion::V231), b)
+            .await
+            .unwrap()
+            .unwrap()
+            .id;
+        // In another level: sees nobody, and nobody sees them.
+        let carol = w
+            .join(joining("carol", "two.nw", ClientVersion::V222), c)
+            .await
+            .unwrap()
+            .unwrap()
+            .id;
+        let st = seen(ClientVersion::V205, &mut ra);
+        assert_eq!(st.others.len(), 1);
+        assert_eq!(st.others[0].id, bob);
+        assert_eq!(st.others[0].nick.as_deref(), Some("bob"));
+        let st = seen(ClientVersion::V231, &mut rb);
+        assert_eq!(st.others.iter().map(|o| o.id).collect::<Vec<_>>(), [alice]);
+        assert!(seen(ClientVersion::V222, &mut rc).others.is_empty());
+
+        // Bob (2.31) walks with X2/Y2; Alice (2.05) sees it.
+        let mut raw = vec![crate::wire::gchar(78)];
+        crate::wire::gshort(seihai_core::protocol::encode_pos_precise(12.5), &mut raw);
+        w.props(bob, &raw);
+        w.left(carol);
+        // Bob logs out: Alice sees him go.
+        w.left(bob);
+        let (d, _rd) = outbox();
+        // A round trip, so the events above are handled.
+        w.join(who("dave", "x.nw"), d).await.unwrap().unwrap();
+        let mut st = SessionState::for_version(ClientVersion::V205);
+        let mut moved = false;
+        while let Ok(m) = ra.try_recv() {
+            st.apply_body(&m);
+            if st.others.first().is_some_and(|o| o.x == 12.5) {
+                moved = true;
+            }
+        }
+        assert!(moved);
+        assert!(st.others.is_empty(), "bob left");
+        assert!(rb.try_recv().is_err(), "carol was in another level");
+        let _ = carol;
+    }
+
     /// `join` for tests that only look at the id.
     async fn id(w: &World, account: &str, o: Outbox) -> Option<Result<u16, Refused>> {
-        w.join(account, "start.nw", o)
+        w.join(who(account, "start.nw"), o)
             .await
             .map(|r| r.map(|j| j.id))
     }
@@ -352,17 +502,17 @@ mod tests {
         );
         w.start();
         let (a, _ra) = outbox();
-        let j = w.join("alice", "lab.nw", a).await.unwrap().unwrap();
+        let j = w.join(who("alice", "lab.nw"), a).await.unwrap().unwrap();
         assert_eq!(j.level.name, "Lab.nw");
         assert_eq!(j.level.links.len(), 1);
         // Read once: the second player gets the same level.
         let (b, _rb) = outbox();
-        let k = w.join("bob", "LAB.NW", b).await.unwrap().unwrap();
+        let k = w.join(who("bob", "LAB.NW"), b).await.unwrap().unwrap();
         assert!(Arc::ptr_eq(&j.level, &k.level));
         // No file, or a name that may not name one: the stage 1 board.
         for name in ["gone.nw", "../Lab.nw"] {
             let (c, _rc) = outbox();
-            let l = w.join(name, name, c).await.unwrap().unwrap().level;
+            let l = w.join(who(name, name), c).await.unwrap().unwrap().level;
             assert_eq!(l.name, name);
             assert!(l.board.iter().all(|&t| t == 0x1FF));
             assert_eq!(l.mod_time, 5);
@@ -427,11 +577,14 @@ mod tests {
         let mut t = w.task.lock().unwrap().take().unwrap();
         t.last_id = ID_LIMIT - 2;
         let (o, _r) = outbox();
-        assert_eq!(t.join("a", o.clone()), Ok(ID_LIMIT - 1));
+        assert_eq!(
+            t.join("a", ClientVersion::V222, o.clone()),
+            Ok(ID_LIMIT - 1)
+        );
         // Past the 14-bit limit the ids start again at 1, skipping 0.
-        assert_eq!(t.join("b", o.clone()), Ok(1));
+        assert_eq!(t.join("b", ClientVersion::V222, o.clone()), Ok(1));
         t.last_id = ID_LIMIT - 2;
-        assert_eq!(t.join("c", o.clone()), Ok(2));
+        assert_eq!(t.join("c", ClientVersion::V222, o.clone()), Ok(2));
         // Every id taken: the world is full whatever max_players says.
         let mut full = World::new(usize::MAX, blank())
             .task
@@ -444,11 +597,14 @@ mod tests {
                 id,
                 Online {
                     account: format!("p{id}"),
+                    version: ClientVersion::V222,
+                    level: String::new(),
+                    props: Props::default(),
                     outbox: o.clone(),
                 },
             );
         }
-        assert_eq!(full.join("z", o), Err(Refused::Full));
+        assert_eq!(full.join("z", ClientVersion::V222, o), Err(Refused::Full));
     }
 
     #[tokio::test]
@@ -459,8 +615,7 @@ mod tests {
         let (reply, answer) = oneshot::channel();
         drop(answer);
         t.handle(WorldIn::Joined {
-            account: "alice".into(),
-            level: "start.nw".into(),
+            who: who("alice", "start.nw"),
             outbox: o,
             reply,
         });
