@@ -39,7 +39,8 @@ behaviour against, never a code source (see `00-rules.md`).
    `docs/lab/npclink-2026-10-31.md`): `npcserver = off | external | auto`, the
    token handshake, level list, player join/props/leave, keep-alive. Left:
    `PLAYER_LEVEL` and `LEVEL_RELOADED` once the world task exists, and the
-   NPC-server to gserver messages (drafted in `PROTOCOL.md`).
+   NPC-server to gserver messages (specified in `PROTOCOL.md`, milestone 2;
+   not handled here yet).
 6. 3.x to 6.x: the Login lobby and server warp, GS2 bytecode delivery, and later our
    own GS2 compiler (gs2-parser is GPL, so it cannot be used).
 7. Server-side anti-cheat (see "Milestone: server-side anti-cheat" below). Each
