@@ -51,6 +51,17 @@ impl Change {
         self.values.is_empty() && self.x.is_none() && self.y.is_none()
     }
 
+    /// Add a later change: where both set a prop, the later value stays.
+    pub fn merge(&mut self, later: Change) {
+        self.values.extend(later.values);
+        if later.x.is_some() {
+            self.x = later.x;
+        }
+        if later.y.is_some() {
+            self.y = later.y;
+        }
+    }
+
     /// A one-`GCHAR` prop in the change (the gmap cell, 43 and 44).
     pub fn byte(&self, id: u8) -> Option<u8> {
         match self.values.get(&id)?.as_slice() {
@@ -256,6 +267,22 @@ mod tests {
         // The bow slot of a 1.39 sender is not kept.
         let raw = [gchar(10), gchar(3)];
         assert!(p.apply(&raw, ClientVersion::V139).is_empty());
+    }
+
+    #[test]
+    fn merged_changes_keep_the_latest_value() {
+        let mut a = Change::default();
+        a.values.insert(0, b"one".to_vec());
+        a.values.insert(1, b"x".to_vec());
+        a.x = Some(1.0);
+        a.y = Some(2.0);
+        let mut b = Change::default();
+        b.values.insert(0, b"two".to_vec());
+        b.x = Some(3.0);
+        a.merge(b);
+        assert_eq!(a.values[&0], b"two");
+        assert_eq!(a.values[&1], b"x");
+        assert_eq!((a.x, a.y), (Some(3.0), Some(2.0)));
     }
 
     #[test]
