@@ -24,6 +24,14 @@ heartbeat = 5
 # Close a connection silent for this many seconds (0 = never).
 idle_timeout = 0
 login_timeout = 10
+# Password checks (PBKDF2, about 0.15 CPU-seconds each) running at once;
+# a burst of logins queues behind them. 0 = one per CPU.
+password_checks = 0
+# Logins a minute from one address (an IPv6 /64 counts as one), with a
+# burst of the same size; 0 = no limit. Loopback is not limited unless
+# login_rate_loopback is on, so lab bots on 127.0.0.1 are not throttled.
+login_rate = 30
+login_rate_loopback = false
 max_players = 256
 
 # Stage 1 has no level files: the start board is one tile everywhere.

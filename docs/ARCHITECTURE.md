@@ -15,6 +15,7 @@ How the server is put together, and where each later stage plugs in. Read
 | `src/accounts.rs` | `accounts/<name>.txt`, PBKDF2 passwords | 1 |
 | `src/login.rs` | the login line: type, key, token, account, password, tail | 1 |
 | `src/secure.rs` | the Seihai secure login (`SEI00001`): spots C1, answers S1, opens C2 and rebuilds the classic login frame | 1 |
+| `src/ratelimit.rs` | login scheduling: the cap on password checks at once (`password_checks`) and the per-address login rate (`login_rate`) | 1 |
 | `src/codec.rs` | frames per generation (gen 2 zlib, gen 3 LCG byte, gen 5 XOR) | 1 |
 | `src/wire.rs` | server-to-client message writers and the ids we use | 1 |
 | `src/burst.rs` | the login burst per generation, own player props | 1 |
