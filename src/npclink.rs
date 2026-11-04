@@ -15,8 +15,10 @@
 //!
 //! TODO(stage 2): `PLAYER_LEVEL` when the world task handles level warps,
 //! `LEVEL_RELOADED` when it watches level files.
-//! TODO(npcserver milestone 2): the NPC-server to gserver messages drafted in
-//! `PROTOCOL.md` (NPC props, player changes, warps), relayed by the world.
+//! TODO(npcserver milestone 2): the NPC-server to gserver messages specified
+//! in `PROTOCOL.md` (`0x40` to `0x47`: NPC props, player changes, warps), and
+//! the gserver to NPC-server `0x24` to `0x26`, relayed by the world. Until
+//! then they are logged once and skipped.
 
 use std::collections::BTreeMap;
 use std::io;

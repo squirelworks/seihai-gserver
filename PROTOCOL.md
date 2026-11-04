@@ -10,9 +10,10 @@ programs can share framing code with the client protocol, and adds its own
 message ids and a length on every message so either side can skip a message it
 does not know.
 
-Status: milestone 1 (handshake, level list, player props, keep-alive) is
-specified and implemented in `seihai-npcserver`. Message ids marked *reserved*
-are planned, not specified; do not send them yet.
+Status: milestone 1 (handshake, level list, player props, keep-alive) and the
+milestone 2 messages in the tables below are specified. Link version stays 1.
+`seihai-npcserver` sends the NPC-to-gserver messages its scripts ask for.
+Ids still marked *reserved* are not specified; do not send them.
 
 ## Roles and transport
 
@@ -121,7 +122,10 @@ Level names are file names relative to the world's `levels/` folder, with
 | `0x21` | `PLAYER_PROPS` | `player_id: u16`, `props: blob` |
 | `0x22` | `PLAYER_LEFT` | `player_id: u16` |
 | `0x23` | `PLAYER_LEVEL` | `player_id: u16`, `level: str`. The player entered another level. |
-| `0x24` to `0x2F` | *reserved* | PMs to NPCs, `server.` flag add and remove, game time |
+| `0x24` | `PM_TO_NPC` | `player_id: u16`, `text: str` |
+| `0x25` | `SERVER_FLAGS` | `count: u16`, then `count` × `name=value: str`. The whole set. |
+| `0x26` | `TRIGGER_ACTION` | `player_id: u16`, `level: str`, `x: u16`, `y: u16` (half tiles), `action: str` |
+| `0x27` to `0x2F` | *reserved* | Game time, level temporary state the NPC-server still does not read |
 
 `player_id` is the id the gserver gives the player's connection, the same one
 it puts in `PLO_OTHERPLPROPS`. It is unique while the player is online and may
@@ -133,35 +137,40 @@ gserver would send a 2.22 client after the player id in `PLO_OTHERPLPROPS`
 knows; `PLAYER_PROPS` carries only the props that changed. An NPC-server reads
 props until the first id it does not know and keeps what it has, as clients do.
 
-### 0x40 to 0x7F: NPC-server to gserver (*reserved*, milestone 2)
+### 0x40 to 0x4F: NPC-server to gserver
 
-Planned: NPC props, player props changed by scripts, PM replies, weapon grants
-(`addweapon`, `toweapons`), warps (`setlevel2`), `server.` flag changes.
+These ids were reserved in link version 1. Specifying them does not bump the
+version. `seihai-npcserver` sends `NPC_ADDED` when it loads an NPC, and the
+other rows when a script effect maps onto them (`docs/ARCHITECTURE.md`).
+`say2` is sent as `PM` to the player the event ran for. `toweapons` and
+`addweapon` are sent as `ADD_WEAPON`. `showcharacter` is `NPC_PROPS` with
+image `#c#` and gani `idle`. A script command with no message in this
+table is logged once and not sent. `0x48` to `0x7F` stay reserved.
 
-#### Draft: milestone 2 (not final, do not send yet)
-
-A starting point for milestone 2. Change it freely until it is implemented on
-both sides; then move it into the tables above and drop "draft".
-
-| Id | Name | Direction | Fields |
-|---|---|---|---|
-| `0x40` | `NPC_ADDED` | NPC → GS | `npc_id: u32`, `level: str`, `props: blob` |
-| `0x41` | `NPC_PROPS` | NPC → GS | `npc_id: u32`, `props: blob`, only what changed |
-| `0x42` | `NPC_DELETED` | NPC → GS | `npc_id: u32` |
-| `0x43` | `SET_PLAYER_PROPS` | NPC → GS | `player_id: u16`, `props: blob` |
-| `0x44` | `WARP_PLAYER` | NPC → GS | `player_id: u16`, `level: str`, `x: u16`, `y: u16` (half tiles) |
-| `0x45` | `ADD_WEAPON` | NPC → GS | `player_id: u16`, `weapon: str` |
-| `0x46` | `SERVER_FLAG` | NPC → GS | `name: str`, `set: u8` (1 set, 0 unset), `value: str` |
-| `0x47` | `PM` | NPC → GS | `player_id: u16`, `text: str` |
-| `0x24` | `PM_TO_NPC` | GS → NPC | `player_id: u16`, `text: str` |
-| `0x25` | `SERVER_FLAGS` | GS → NPC | `count: u16`, then `count` × `name=value: str`; the whole set, sent after `LEVEL_LIST` |
-| `0x26` | `TRIGGER_ACTION` | GS → NPC | `player_id: u16`, `level: str`, `x: u16`, `y: u16`, `action: str` |
+| Id | Name | Fields |
+|---|---|---|
+| `0x40` | `NPC_ADDED` | `npc_id: u32`, `level: str`, `props: blob` |
+| `0x41` | `NPC_PROPS` | `npc_id: u32`, `props: blob`, only what changed |
+| `0x42` | `NPC_DELETED` | `npc_id: u32` |
+| `0x43` | `SET_PLAYER_PROPS` | `player_id: u16`, `props: blob` |
+| `0x44` | `WARP_PLAYER` | `player_id: u16`, `level: str`, `x: u16`, `y: u16` (half tiles) |
+| `0x45` | `ADD_WEAPON` | `player_id: u16`, `weapon: str` |
+| `0x46` | `SERVER_FLAG` | `name: str`, `set: u8` (1 set, 0 unset), `value: str` |
+| `0x47` | `PM` | `player_id: u16`, `text: str` |
 
 `npc_id` is the NPC-server's id for a server-side NPC, unique while the link is
 up. NPC prop streams use the same encoding the gserver sends a 2.22 client in
 `PLO_NPCPROPS` after the NPC id. The gserver relays `NPC_ADDED`/`NPC_PROPS` to
 the players in that level and answers `SET_PLAYER_PROPS` with the usual
 `PLAYER_PROPS` once it has applied them.
+
+`PM_TO_NPC` is delivered to the NPCs on the sender's level as
+`playerchats`, with `#c` set to the text (the script engine has no
+separate PM event, and the message does not name an NPC). `SERVER_FLAGS`
+replaces the server flag set scripts read as `server.` names.
+`TRIGGER_ACTION` fires `action<name>` on each NPC whose touch rectangle
+holds that point. `x` and `y` are half tiles, the same unit as
+`WARP_PLAYER`.
 
 ### 0x80 to 0xFF: NPC Control (*reserved*)
 
@@ -206,3 +215,4 @@ With `npcserver = auto` the gserver:
 | Link version | Date | Change |
 |---|---|---|
 | 1 | 2026-10-31 | First version: control, levels, players (milestone 1) |
+| 1 | 2026-11-01 | Milestone 2 messages (`0x24` to `0x26`, `0x40` to `0x47`) specified. No version bump: the ids were reserved. This copy only; `seihai-gserver` still has the earlier draft until its side of the link is written. |
