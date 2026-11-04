@@ -16,8 +16,8 @@
 //! iterators start at the seed with the first frame after the login.
 
 use seihai_core::protocol::{
-    bz2_compress, bz2_decompress, choose_comp, zlib_compress, zlib_decompress, ClientVersion,
-    EncryptionGen, FrameLen, Gen3, Gen5, Gen5Comp,
+    bz2_compress, bz2_decompress, choose_comp, zlib_decompress, ClientVersion, EncryptionGen,
+    FrameLen, Gen3, Gen5, Gen5Comp,
 };
 use std::io;
 
@@ -71,14 +71,22 @@ impl Codec {
     pub fn encode(&mut self, body: &[u8]) -> io::Result<Vec<u8>> {
         let frame = match self.out5.as_mut() {
             Some(g) => {
-                let mut comp = choose_comp(body.len());
-                if comp == Gen5Comp::None && self.compress_all {
-                    comp = Gen5Comp::Zlib;
-                }
-                let packed = match comp {
-                    Gen5Comp::None => body.to_vec(),
-                    Gen5Comp::Zlib => zlib_compress(body)?,
-                    Gen5Comp::Bz2 => bz2_compress(body)?,
+                // Small bodies go plain; the rest go zlib at the fast level,
+                // which every gen-5 build reads at any size. bz2 packs a big
+                // body a third smaller but costs about 15 times the CPU, and
+                // a busy level's tick body passes 4 KB (where `choose_comp`
+                // turns to bz2) at a few hundred players: it is only used
+                // when the zlib frame would not fit.
+                let (comp, packed) = match choose_comp(body.len()) {
+                    Gen5Comp::None if !self.compress_all => (Gen5Comp::None, body.to_vec()),
+                    _ => {
+                        let z = zlib_fast(body)?;
+                        if z.len() < MAX_OUT_FRAME {
+                            (Gen5Comp::Zlib, z)
+                        } else {
+                            (Gen5Comp::Bz2, bz2_compress(body)?)
+                        }
+                    }
                 };
                 // Check the length before the XOR steps the iterator, so a
                 // refused frame leaves the cipher where it was.
@@ -90,7 +98,7 @@ impl Codec {
                 out
             }
             None => {
-                let packed = zlib_compress(body)?;
+                let packed = zlib_fast(body)?;
                 let mut out = Vec::with_capacity(packed.len() + 2);
                 push_len(&mut out, packed.len())?;
                 out.extend_from_slice(&packed);
@@ -160,6 +168,39 @@ pub fn frame_header(buf: &[u8], long: bool) -> Option<(usize, usize)> {
     len.header(buf)
 }
 
+thread_local! {
+    /// One zlib state per thread, reset for each frame. Making a fresh one
+    /// costs more than compressing a tick's body, and keeping one per
+    /// connection costs about 360 KB each (window and hash tables), so the
+    /// connections on a worker thread share one: a frame is compressed in
+    /// one go, never across an `.await`.
+    static ZLIB: std::cell::RefCell<flate2::Compress> =
+        std::cell::RefCell::new(flate2::Compress::new(flate2::Compression::new(2), true));
+}
+
+/// zlib at level 2 on the zlib-rs backend. Frames go out every tick to
+/// every player, so compression is most of the server's CPU at a few
+/// hundred players in a level; this costs about a third of the default
+/// level's time for the same size. Clients inflate any level.
+fn zlib_fast(body: &[u8]) -> io::Result<Vec<u8>> {
+    ZLIB.with(|z| {
+        let mut z = z.borrow_mut();
+        z.reset();
+        // Room for an incompressible body, the zlib header and the checksum.
+        let mut out = Vec::with_capacity(body.len() + body.len() / 1000 + 64);
+        loop {
+            let read = z.total_in() as usize;
+            let st = z
+                .compress_vec(&body[read..], &mut out, flate2::FlushCompress::Finish)
+                .map_err(io::Error::other)?;
+            match st {
+                flate2::Status::StreamEnd => return Ok(out),
+                _ => out.reserve(out.capacity().max(64)),
+            }
+        }
+    })
+}
+
 fn push_len(out: &mut Vec<u8>, n: usize) -> io::Result<()> {
     if n > MAX_OUT_FRAME {
         return Err(bad(&format!("frame of {n} bytes is too long to send")));
@@ -175,7 +216,21 @@ fn bad(what: &str) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use seihai_core::protocol::{read_frame, read_zlib_frame, write_zlib_frame};
+    use seihai_core::protocol::{read_frame, read_zlib_frame, write_zlib_frame, zlib_compress};
+
+    /// A big body (a busy level's tick) goes zlib, not bz2, and reads back.
+    #[test]
+    fn big_bodies_go_zlib() {
+        let mut server = Codec::new(EncryptionGen::Gen5, 0x21, Some(ClientVersion::V231));
+        let mut client = Gen5::new(0x21);
+        let body: Vec<u8> = (0..9000u32).map(|i| b'a' + (i * 7 % 23) as u8).collect();
+        let frame = server.encode(&body).unwrap();
+        assert_eq!(frame[2], Gen5Comp::Zlib as u8);
+        assert_eq!(
+            read_frame(&mut frame.as_slice(), &mut client).unwrap(),
+            body
+        );
+    }
 
     /// What we send a gen-5 client reads back with the client's own reader,
     /// frame after frame (the iterators stay in step).
@@ -256,5 +311,63 @@ mod tests {
             })
             .collect();
         assert!(c.encode(&body).is_err());
+    }
+}
+
+#[cfg(test)]
+mod bench {
+    use super::*;
+    use flate2::{write::ZlibEncoder, Compression};
+    use std::io::Write;
+    use std::time::Instant;
+
+    fn z(level: u32, b: &[u8]) -> Vec<u8> {
+        let mut e = ZlibEncoder::new(Vec::new(), Compression::new(level));
+        e.write_all(b).unwrap();
+        e.finish().unwrap()
+    }
+
+    /// `cargo test --release --lib bench_compress -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn bench_compress() {
+        // A tick body: N movers' X2/Y2 updates, as `others::message` writes them.
+        for movers in [10usize, 150, 500] {
+            let mut body = Vec::new();
+            for id in 0..movers {
+                let mut m = vec![8 + 32];
+                crate::wire::gshort(id as u16 + 1, &mut m);
+                m.push(78 + 32);
+                crate::wire::gshort(
+                    seihai_core::protocol::encode_pos_precise(10.0 + id as f32 * 0.37),
+                    &mut m,
+                );
+                m.push(79 + 32);
+                crate::wire::gshort(
+                    seihai_core::protocol::encode_pos_precise(20.0 + id as f32 * 0.11),
+                    &mut m,
+                );
+                m.push(b'\n');
+                body.extend(m);
+            }
+            let reps = 2000;
+            let mut row = format!("{movers:>4} movers, {:>5} B:", body.len());
+            for (name, f) in [
+                ("zlib6", &(|b: &[u8]| z(6, b)) as &dyn Fn(&[u8]) -> Vec<u8>),
+                ("zlib1", &|b: &[u8]| z(1, b)),
+                ("bz2", &|b: &[u8]| bz2_compress(b).unwrap()),
+            ] {
+                let s = Instant::now();
+                let mut out = 0;
+                for _ in 0..reps {
+                    out = std::hint::black_box(f(&body)).len();
+                }
+                row += &format!(
+                    "  {name} {:>6.1} us -> {out} B",
+                    s.elapsed().as_secs_f64() / reps as f64 * 1e6
+                );
+            }
+            eprintln!("{row}");
+        }
     }
 }
