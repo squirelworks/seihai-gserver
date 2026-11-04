@@ -38,6 +38,8 @@ pub struct Level {
     pub links: Vec<assets::Link>,
     pub signs: Vec<assets::Sign>,
     pub chests: Vec<assets::Chest>,
+    /// The NPCs of the file (`npcs.rs` gives them ids and sends them).
+    pub npcs: Vec<assets::Npc>,
     /// Unix time of the file, for `PLO_LEVELMODTIME` and cached-level checks.
     pub mod_time: u64,
 }
@@ -52,6 +54,7 @@ impl Level {
             links: Vec::new(),
             signs: Vec::new(),
             chests: Vec::new(),
+            npcs: Vec::new(),
             mod_time,
         }
     }
@@ -88,6 +91,7 @@ impl Level {
             links: level.links,
             signs: level.signs,
             chests: level.chests,
+            npcs: level.npcs,
             mod_time,
         })
     }
