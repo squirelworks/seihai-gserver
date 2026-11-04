@@ -8,7 +8,8 @@ mod common;
 
 use common::*;
 use seihai_core::net::{
-    levelwarp_message, levelwarpmod_message, login_gserver, random_key, wantfile_message,
+    levelwarp_message, levelwarpmod_message, login_gserver, random_key, walk_message_for,
+    wantfile_message,
 };
 use seihai_core::protocol::{ClientVersion, SessionState};
 use std::sync::mpsc::Receiver;
@@ -74,6 +75,14 @@ fn links_load_the_next_level() {
     .unwrap();
     assert_eq!(sb.links, ["onlinestartlocal.nw 30 63 2 1 30.5 2"]);
     assert_eq!(sb.active_level.as_deref(), Some("house.nw"));
+    // A props message queued before the warp still names the spot he left;
+    // it is dropped, and the next step in the house is an ordinary one.
+    b.conn
+        .send_messages(&[
+            walk_message_for(ClientVersion::V222, 30.0, 1.0, 2),
+            walk_message_for(ClientVersion::V222, 30.5, 59.5, 2),
+        ])
+        .unwrap();
     // Amy sees him leave her level; he no longer sees her.
     read_until(&ra, &mut sa, Duration::from_secs(10), |s| {
         s.others.is_empty()
@@ -157,5 +166,10 @@ fn links_load_the_next_level() {
     let _ = read_until(&rb, &mut sb, Duration::from_millis(500), |_| false);
     assert_eq!(sb.current_level_name().as_deref(), Some("house.nw"));
     assert!(sb.disconnect_message.is_none());
+    // The only rule broken is the link to nowhere: the honest links and
+    // the queued props after them are not violations.
+    let log = std::fs::read_to_string(w.join("logs/anticheat.log")).unwrap();
+    let kinds: Vec<_> = log.lines().map(|l| l.split('\t').nth(4)).collect();
+    assert_eq!(kinds, [Some("warp")], "{log}");
     let _ = std::fs::remove_dir_all(&w);
 }

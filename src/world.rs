@@ -348,6 +348,9 @@ struct Online {
     /// coordinates, and recent violations.
     walk: Walk,
     score: Score,
+    /// The spot the player warped from, until their first position after
+    /// the warp: a queued props message may still name it.
+    stale: Option<(f32, f32)>,
     outbox: Outbox,
 }
 
@@ -805,6 +808,9 @@ impl WorldTask {
             .then(|| self.gmaps.find(&level.name))
             .flatten();
         let old = std::mem::replace(&mut p.level, key.clone());
+        // The client may still send the spot it warped from once, with
+        // props it had queued: that position is not a step in the new level.
+        p.stale = p.props.x().zip(p.props.y());
         let moved = p.props.moved(w.x, w.y);
         let (cx, cy) = gmap.as_ref().map_or((0, 0), |g| g.cell);
         p.walk = Walk::at(
@@ -947,6 +953,7 @@ impl WorldTask {
                 flags: BTreeMap::new(),
                 walk: Walk::at(0.0, 0.0, Instant::now()),
                 score: Score::default(),
+                stale: None,
                 outbox,
             },
         );
@@ -1029,6 +1036,17 @@ impl WorldTask {
             (p.props.x().unwrap_or(0.0), p.props.y().unwrap_or(0.0)),
         );
         let mut change = p.props.apply(raw, p.version);
+        let stale = std::mem::take(&mut p.stale).filter(|&(sx, sy)| {
+            let (x, y) = (p.props.x().unwrap_or(0.0), p.props.y().unwrap_or(0.0));
+            Props::moves(&change) && (x - sx).abs() <= 0.5 && (y - sy).abs() <= 0.5
+        });
+        if stale.is_some() {
+            // Not passed on, not checked; the next position is.
+            p.props.put_back(&mut change, ox, oy, &[]);
+            p.stale = None;
+        } else if !Props::moves(&change) {
+            p.stale = stale;
+        }
         if Props::moves(&change) && self.anticheat.is_some() {
             let cell = was_cell.map_or((0, 0), |c| {
                 (
@@ -1656,6 +1674,7 @@ mod tests {
                     flags: BTreeMap::new(),
                     walk: Walk::at(0.0, 0.0, Instant::now()),
                     score: Score::default(),
+                    stale: None,
                     outbox: o.clone(),
                 },
             );

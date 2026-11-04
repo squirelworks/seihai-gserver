@@ -9,7 +9,9 @@
 //!   any other. A step longer than [`TELEPORT`] tiles is a teleport; else
 //!   the step is paid from a budget that fills at [`MAX_SPEED`] tiles a
 //!   second up to [`BURST`] tiles, so steps a client batches after a stall
-//!   pass. Moves the server makes (a warp's arrival, a login) start afresh.
+//!   pass. Moves the server makes (a warp's arrival, a login) start afresh,
+//!   and the first position after a warp that still names the spot left is
+//!   dropped (props the client queued before the warp).
 //! - **Warp** (`world.rs`): `PLI_LEVELWARP`/`PLI_LEVELWARPMOD` only for a
 //!   link in the player's level to that level, which the player stands on
 //!   (with [`LINK_SLACK`] tiles for a position a frame old), and to the
@@ -44,10 +46,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-/// Tiles a second the speed check allows: twice a walk, for slack.
-pub const MAX_SPEED: f32 = 20.0;
-/// The most the speed budget holds, in tiles.
-pub const BURST: f32 = 12.0;
+/// Tiles a second the speed check allows. A walk is half a tile every
+/// 50 ms tick, 10 tiles a second (14 on a diagonal), as read live in 2.05
+/// rev 2 (Seihai's `WALK_STEP_MS`); this leaves room over the diagonal.
+pub const MAX_SPEED: f32 = 24.0;
+/// The most the speed budget holds, in tiles: a few seconds of steps that
+/// the server reads together after a stall on either side.
+pub const BURST: f32 = 30.0;
 /// A longer step in one update is a teleport, in tiles.
 pub const TELEPORT: f32 = 16.0;
 /// How far from a link a warp through it may start, in tiles.
@@ -302,12 +307,12 @@ impl Walk {
         None
     }
 
-    /// Take the position after all (a violation that is only logged), with
-    /// the budget spent.
+    /// Take the position after all (a violation that is only logged). The
+    /// budget is left as it was, so steps the server reads in a backlog
+    /// after it are not all counted against an empty one.
     pub fn accept(&mut self, x: f32, y: f32) {
         self.x = x;
         self.y = y;
-        self.budget = 0.0;
     }
 
     pub fn pos(&self) -> (f32, f32) {
@@ -453,22 +458,28 @@ mod tests {
     fn walking_passes_and_jumps_do_not() {
         let t = Instant::now();
         let ms = |n| t + Duration::from_millis(n);
-        let mut w = Walk::at(30.0, 30.0, t);
-        // A real walk: half a tile every 100 ms, for 10 s.
-        for i in 1..=100u64 {
-            let x = 30.0 + i as f32 * 0.5;
-            assert_eq!(w.step(x.min(63.0), 30.0, ms(i * 100)), None, "step {i}");
+        let mut w = Walk::at(2.0, 2.0, t);
+        // A real diagonal walk, half a tile on each axis every 50 ms tick,
+        // sent every 100 ms, for 6 s.
+        for i in 1..=60u64 {
+            let v = 2.0 + i as f32;
+            assert_eq!(w.step(v, v, ms(i * 100)), None, "step {i}");
         }
-        // Steps batched after a 1 s stall: 5 tiles at once.
+        // Three seconds of steps the server reads at once after a stall.
         let (x, y) = w.pos();
-        assert_eq!(w.step(x - 5.0, y, ms(11_100)), None);
-        // Too far for the time: speed; the position stays.
+        for i in 1..=30 {
+            assert_eq!(w.step(x - i as f32, y, ms(9_000)), None, "backlog {i}");
+        }
+        // Steps too long for the time: speed, and the position stays.
         let (x, y) = w.pos();
         assert_eq!(
-            w.step(x - 12.0, y + 4.0, ms(11_150)).map(|v| v.0),
+            w.step(x + 14.0, y, ms(9_050)).map(|v| v.0),
             Some(Kind::Speed)
         );
         assert_eq!(w.pos(), (x, y));
+        // Logged only: taken, with the budget left as it was.
+        w.accept(x + 14.0, y);
+        assert_eq!(w.step(x + 14.5, y, ms(9_100)), None);
         // Across the map in one update: a teleport.
         assert_eq!(
             w.step(2.0, 2.0, ms(30_000)).map(|v| v.0),

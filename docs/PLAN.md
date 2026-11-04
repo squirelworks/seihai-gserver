@@ -152,8 +152,10 @@ Landed in stage 2.9 (`src/anticheat.rs`): the policy layer (`off`, `log`,
 `anticheat_rate`, `anticheat.speed|teleport|warp|rate`), the log, and the
 speed, teleport, warp and message-rate checks. Defaults: speed `log`, the
 rest `correct`, no kicks. Item, heart and gralat checks and bans are next.
-The speed limits (20 tiles a second, a 12-tile budget, 16 tiles for a
-teleport) are a first guess for the lab run to tune.
+The speed limits (24 tiles a second against a 10-tile walk, a 30-tile
+budget for steps read in a backlog, 16 tiles for a teleport) are a first
+guess for the lab run to tune. After a warp the client may send the spot it
+left once more; that position is dropped, not counted.
 
 ### Where it lives
 

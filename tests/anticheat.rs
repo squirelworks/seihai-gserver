@@ -64,17 +64,17 @@ fn cheats_are_caught() {
     })
     .unwrap();
 
-    // Two long steps at once: too fast, logged (the default for speed).
+    // Long steps at once: the third is too fast, and logged (the default
+    // for speed), so Amy still sees it.
     d.conn
         .send_messages(&[
-            walk_message_for(v, 41.0, 30.0, 2),
-            walk_message_for(v, 51.0, 30.0, 2),
+            walk_message_for(v, 45.0, 30.0, 2),
+            walk_message_for(v, 59.0, 30.0, 2),
+            walk_message_for(v, 45.0, 30.0, 2),
         ])
         .unwrap();
-    read_until(&ra, &mut sa, Duration::from_secs(10), |s| {
-        s.others.iter().any(|o| o.id == dee && o.x == 51.0)
-    })
-    .unwrap();
+    let _ = read_until(&ra, &mut sa, Duration::from_millis(500), |_| false);
+    assert!(sa.others.iter().any(|o| o.id == dee && o.x == 45.0));
 
     // A warp into the house from the middle of the level: no answer.
     d.conn
@@ -88,7 +88,7 @@ fn cheats_are_caught() {
 
     // A flood (standing still, so only the rate is broken): kicked.
     let flood: Vec<Vec<u8>> = (0..80)
-        .map(|_| walk_message_for(v, 51.0, 30.0, 2))
+        .map(|_| walk_message_for(v, 45.0, 30.0, 2))
         .collect();
     d.conn.send_messages(&flood).unwrap();
     let e = read_until(&rd, &mut sd, Duration::from_secs(10), |_| false).unwrap_err();
