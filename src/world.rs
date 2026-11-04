@@ -1190,7 +1190,7 @@ mod bench {
             let (o, r) = mpsc::unbounded_channel();
             rxs.push(r);
             let v = versions[i % versions.len()];
-            let id = w.join(&format!("p{i}"), v, o).unwrap();
+            let id = w.join(&format!("p{i}"), v, v.encryption(), o).unwrap();
             let a = crate::accounts::Account::new(&format!("p{i}"), "one.nw", 30.0, 30.0);
             let p = w.players.get_mut(&id).unwrap();
             p.level = "one.nw".into();
@@ -1233,7 +1233,8 @@ mod bench {
             flush_t += s.elapsed();
             let s = Instant::now();
             for (i, r) in rxs.iter_mut().enumerate() {
-                while let Ok(b) = r.try_recv() {
+                while let Ok(item) = r.try_recv() {
+                    let b = item.concat();
                     bytes += b.len();
                     let f = codecs[i].encode(&b).unwrap();
                     out_bytes += f.len();
