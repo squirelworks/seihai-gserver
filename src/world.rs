@@ -17,18 +17,21 @@
 //!    the same level on join (with 50 = 1, both ways), on each prop change,
 //!    and on logout (50 = 0, then 51). Only props in each receiver's
 //!    `props.other` set.
+//! 4. Links (`PLI_LEVELWARP` 0, `PLI_LEVELWARPMOD` 30): the player moves to
+//!    the link's arrival in the new level, which goes out with
+//!    `burst::level_answer` (no board, links, signs or mod time when the
+//!    client's mod time is current). The old level sees the player leave
+//!    (50 = 0) and the player sees its players leave; the new level meets
+//!    the player as on a join. A level that is not there gets no answer.
 //!
 //! To do, in order:
-//! 4. `PLI_LEVELWARP` (0) and `PLI_LEVELWARPMOD` (30): load the level, send
-//!    it (see Seihai `documentation/protocol.md`, "Level changes"); a current
-//!    mod time gets no board.
 //! 5. Gmaps: `PLI_ADJACENTLEVEL` (35), cell props 43/44 (`gmap-order.md`,
 //!    `bigmap-neighbours.md` in the seihai repo).
 //! 6. Flags (`PLI_FLAGSET`), chests, items on the ground.
 
 use crate::levels::Level;
 use crate::others::{self, Change, Props};
-use seihai_core::protocol::ClientVersion;
+use seihai_core::protocol::{ClientVersion, EncryptionGen};
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -55,19 +58,29 @@ pub enum WorldIn {
     /// `PLI_PLAYERPROPS` (2), as sent.
     Props { player: u16, raw: Vec<u8> },
     /// `PLI_LEVELWARP` (0) or `PLI_LEVELWARPMOD` (30).
-    LevelWarp {
-        player: u16,
-        level: String,
-        x: f32,
-        y: f32,
-        mod_time: Option<u64>,
-    },
+    LevelWarp(Warp),
     /// The connection closed.
     Left { player: u16 },
 }
 
-/// Message bodies for one player; the connection task frames and sends them.
-pub type Outbox = mpsc::UnboundedSender<Vec<u8>>;
+/// Frame bodies for one player. Each item is a run of frames the
+/// connection task writes back to back, with nothing of its own in
+/// between: a gen-2 level answer is two frames (the raw-data header, then
+/// the board), and a client takes whatever frame follows the header as the
+/// board.
+pub type Outbox = mpsc::UnboundedSender<Vec<Vec<u8>>>;
+
+/// A link request: the player walked into a link to `level`.
+#[derive(Debug, Clone)]
+pub struct Warp {
+    pub player: u16,
+    pub level: String,
+    /// The arrival, in tiles.
+    pub x: f32,
+    pub y: f32,
+    /// `PLI_LEVELWARPMOD`: the mod time of the client's cached copy.
+    pub mod_time: Option<u64>,
+}
 
 /// A login the world is asked to let in.
 #[derive(Debug, Clone)]
@@ -77,6 +90,8 @@ pub struct Joining {
     pub level: String,
     /// The client's build: what it reads of other players.
     pub version: ClientVersion,
+    /// The connection's generation, which shapes the level frames.
+    pub gen: EncryptionGen,
     /// The player's props from the account, in the 2.22 encoding
     /// (`burst::own_props(ClientVersion::V222, ..)`).
     pub props: Vec<u8>,
@@ -173,6 +188,11 @@ impl World {
         });
     }
 
+    /// A link request.
+    pub fn warp(&self, w: Warp) {
+        let _ = self.tx.send(WorldIn::LevelWarp(w));
+    }
+
     /// The player's connection closed.
     pub fn left(&self, player: u16) {
         let _ = self.tx.send(WorldIn::Left { player });
@@ -190,6 +210,7 @@ struct Online {
     /// Lower-case account name.
     account: String,
     version: ClientVersion,
+    gen: EncryptionGen,
     /// Lower-case name of the level the player is in.
     level: String,
     props: Props,
@@ -222,7 +243,7 @@ impl WorldTask {
         match ev {
             WorldIn::Joined { who, outbox, reply } => {
                 let key = who.account.to_ascii_lowercase();
-                let answer = self.join(&key, who.version, outbox).map(|id| {
+                let answer = self.join(&key, who.version, who.gen, outbox).map(|id| {
                     let level = self.level(&who.level);
                     if let Some(p) = self.players.get_mut(&id) {
                         p.level = level.name.to_ascii_lowercase();
@@ -246,8 +267,7 @@ impl WorldTask {
             }
             WorldIn::Left { player } => self.leave(player),
             WorldIn::Props { player, raw } => self.props(player, &raw),
-            // Read from item 4 (warps) on.
-            WorldIn::LevelWarp { .. } => {}
+            WorldIn::LevelWarp(w) => self.warp(w),
         }
     }
 
@@ -256,17 +276,8 @@ impl WorldTask {
     /// stage 1 board under the name asked for; that is not kept, so the
     /// file is read once it is there.
     fn level(&mut self, name: &str) -> Arc<Level> {
-        let key = name.to_ascii_lowercase();
-        if let Some(l) = self.loaded.get(&key) {
-            return l.clone();
-        }
-        match Level::load(&self.levels.dir, name) {
-            Ok(l) => {
-                let l = Arc::new(l);
-                self.loaded.insert(key, l.clone());
-                self.loaded.insert(l.name.to_ascii_lowercase(), l.clone());
-                l
-            }
+        match self.find_level(name) {
+            Ok(l) => l,
             Err(e) => {
                 eprintln!("level {name}: {e}; sending a blank board");
                 Arc::new(Level::blank(
@@ -278,7 +289,82 @@ impl WorldTask {
         }
     }
 
-    fn join(&mut self, key: &str, version: ClientVersion, outbox: Outbox) -> Result<u16, Refused> {
+    /// The level called `name`, read on first use and kept.
+    fn find_level(&mut self, name: &str) -> std::io::Result<Arc<Level>> {
+        let key = name.to_ascii_lowercase();
+        if let Some(l) = self.loaded.get(&key) {
+            return Ok(l.clone());
+        }
+        let l = Arc::new(Level::load(&self.levels.dir, name)?);
+        self.loaded.insert(key, l.clone());
+        self.loaded.insert(l.name.to_ascii_lowercase(), l.clone());
+        Ok(l)
+    }
+
+    /// A link request. The level must exist: a link to a missing level
+    /// gets no answer, so the client gives up its warp and stays where it
+    /// is. Otherwise the player moves to the arrival, the others in the old
+    /// level see them leave (50 = 0), and the level goes out
+    /// ([`crate::burst::level_answer`]); then the players there and the
+    /// newcomer see each other.
+    fn warp(&mut self, w: Warp) {
+        if !self.players.contains_key(&w.player) {
+            return;
+        }
+        let level = match self.find_level(&w.level) {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("player {} warp to {}: {e}; not answered", w.player, w.level);
+                return;
+            }
+        };
+        let key = level.name.to_ascii_lowercase();
+        let Some(p) = self.players.get_mut(&w.player) else {
+            return;
+        };
+        let old = std::mem::replace(&mut p.level, key.clone());
+        let moved = p.props.moved(w.x, w.y);
+        let cached = w.mod_time == Some(level.mod_time);
+        if old != key {
+            self.part(w.player, &old);
+        }
+        let Some(p) = self.players.get(&w.player) else {
+            return;
+        };
+        let _ = p
+            .outbox
+            .send(crate::burst::level_answer(p.version, p.gen, &level, cached));
+        if old == key {
+            self.tell_level(&key, w.player, &moved, &[]);
+        } else {
+            self.tell_level(&old, w.player, &Change::default(), &others::LEFT_LEVEL);
+            self.meet(w.player);
+        }
+    }
+
+    /// Player `id` is leaving `old`: everyone still there leaves the
+    /// player's view (`JOINLEAVELVL` 0), before the new level comes.
+    fn part(&self, id: u16, old: &str) {
+        let Some(me) = self.players.get(&id) else {
+            return;
+        };
+        for (&other, p) in &self.players {
+            if other != id && p.level == old {
+                let none = Change::default();
+                if let Some(m) = others::message(me.version, other, &none, &others::LEFT_LEVEL) {
+                    let _ = me.outbox.send(vec![m]);
+                }
+            }
+        }
+    }
+
+    fn join(
+        &mut self,
+        key: &str,
+        version: ClientVersion,
+        gen: EncryptionGen,
+        outbox: Outbox,
+    ) -> Result<u16, Refused> {
         if self.by_account.contains_key(key) {
             return Err(Refused::InUse);
         }
@@ -292,6 +378,7 @@ impl WorldTask {
             Online {
                 account: key.to_string(),
                 version,
+                gen,
                 level: String::new(),
                 props: Props::default(),
                 outbox,
@@ -320,10 +407,10 @@ impl WorldTask {
                 continue;
             }
             if let Some(m) = others::message(me.version, other, &p.props.all(), &others::JOINED) {
-                let _ = me.outbox.send(m);
+                let _ = me.outbox.send(vec![m]);
             }
             if let Some(m) = others::message(p.version, id, &mine, &others::JOINED) {
-                let _ = p.outbox.send(m);
+                let _ = p.outbox.send(vec![m]);
             }
         }
     }
@@ -345,7 +432,7 @@ impl WorldTask {
         for (&other, p) in &self.players {
             if other != id && p.level == level {
                 if let Some(m) = others::message(p.version, id, change, tail) {
-                    let _ = p.outbox.send(m);
+                    let _ = p.outbox.send(vec![m]);
                 }
             }
         }
@@ -379,7 +466,7 @@ mod tests {
     use super::*;
     use seihai_core::protocol::SessionState;
 
-    fn outbox() -> (Outbox, mpsc::UnboundedReceiver<Vec<u8>>) {
+    fn outbox() -> (Outbox, mpsc::UnboundedReceiver<Vec<Vec<u8>>>) {
         mpsc::unbounded_channel()
     }
 
@@ -396,6 +483,7 @@ mod tests {
             account: account.into(),
             level: level.into(),
             version: ClientVersion::V222,
+            gen: EncryptionGen::Gen5,
             props: Vec::new(),
         }
     }
@@ -404,6 +492,7 @@ mod tests {
         let a = crate::accounts::Account::new(account, level, 30.0, 30.0);
         Joining {
             version: v,
+            gen: v.encryption(),
             props: crate::burst::own_props(
                 ClientVersion::V222,
                 &crate::burst::Player { id: 0, account: &a },
@@ -413,10 +502,10 @@ mod tests {
     }
 
     /// What a client of build `v` makes of everything in its outbox.
-    fn seen(v: ClientVersion, rx: &mut mpsc::UnboundedReceiver<Vec<u8>>) -> SessionState {
+    fn seen(v: ClientVersion, rx: &mut mpsc::UnboundedReceiver<Vec<Vec<u8>>>) -> SessionState {
         let mut st = SessionState::for_version(v);
         while let Ok(m) = rx.try_recv() {
-            st.apply_body(&m);
+            m.iter().for_each(|f| st.apply_body(f));
         }
         assert!(st.ignored.is_empty(), "{v:?}");
         st
@@ -469,7 +558,7 @@ mod tests {
         let mut st = SessionState::for_version(ClientVersion::V205);
         let mut moved = false;
         while let Ok(m) = ra.try_recv() {
-            st.apply_body(&m);
+            m.iter().for_each(|f| st.apply_body(f));
             if st.others.first().is_some_and(|o| o.x == 12.5) {
                 moved = true;
             }
@@ -478,6 +567,148 @@ mod tests {
         assert!(st.others.is_empty(), "bob left");
         assert!(rb.try_recv().is_err(), "carol was in another level");
         let _ = carol;
+    }
+
+    #[tokio::test]
+    async fn a_link_moves_the_player_and_the_level_goes_out() {
+        let dir = std::env::temp_dir().join(format!("seihai-gserver-warp-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("one.nw"), "GLEVNW01\nLINK two.nw 0 0 1 1 30 30\n").unwrap();
+        std::fs::write(dir.join("two.nw"), "GLEVNW01\nLINK one.nw 63 0 1 1 1 30\n").unwrap();
+        let w = World::new(
+            8,
+            LevelSource {
+                dir: dir.clone(),
+                ..blank()
+            },
+        );
+        w.start();
+        let v = ClientVersion::V222;
+        let (a, mut ra) = outbox();
+        let (b, mut rb) = outbox();
+        let (c, mut rc) = outbox();
+        let amy = w
+            .join(joining("amy", "one.nw", v), a)
+            .await
+            .unwrap()
+            .unwrap()
+            .id;
+        let ben = w
+            .join(joining("ben", "one.nw", v), b)
+            .await
+            .unwrap()
+            .unwrap()
+            .id;
+        let cal = w
+            .join(joining("cal", "two.nw", v), c)
+            .await
+            .unwrap()
+            .unwrap()
+            .id;
+        let _ = (seen(v, &mut ra), seen(v, &mut rc));
+        let mut sb = seen(v, &mut rb);
+        assert_eq!(sb.others.iter().map(|o| o.id).collect::<Vec<_>>(), [amy]);
+
+        // Amy walks into the link to two.nw; then asks for a missing level.
+        w.warp(Warp {
+            player: amy,
+            level: "TWO.nw".into(),
+            x: 30.0,
+            y: 30.0,
+            mod_time: None,
+        });
+        w.warp(Warp {
+            player: amy,
+            level: "gone.nw".into(),
+            x: 1.0,
+            y: 1.0,
+            mod_time: None,
+        });
+        // A round trip so the warps are handled.
+        let (d, _rd) = outbox();
+        w.join(who("dave", "x.nw"), d).await.unwrap().unwrap();
+
+        let st = seen(v, &mut ra);
+        assert_eq!(st.current_level_name().as_deref(), Some("two.nw"));
+        assert_eq!(st.links, ["one.nw 63 0 1 1 1 30"]);
+        assert_eq!(st.others.iter().map(|o| o.id).collect::<Vec<_>>(), [cal]);
+        assert_eq!((st.others[0].x, st.others[0].y), (30.0, 30.0));
+        // Ben, left behind, saw Amy go; Cal saw her arrive at the link's
+        // arrival.
+        while let Ok(m) = rb.try_recv() {
+            m.iter().for_each(|f| sb.apply_body(f));
+        }
+        assert!(sb.others.is_empty(), "amy left ben's level");
+        let sc = seen(v, &mut rc);
+        assert_eq!(sc.others.iter().map(|o| o.id).collect::<Vec<_>>(), [amy]);
+        assert_eq!((sc.others[0].x, sc.others[0].y), (30.0, 30.0));
+        let _ = ben;
+
+        // Back to one.nw with its current mod time: no board this time.
+        let one = Level::load(&dir, "one.nw").unwrap();
+        w.warp(Warp {
+            player: amy,
+            level: "one.nw".into(),
+            x: 1.0,
+            y: 30.0,
+            mod_time: Some(one.mod_time),
+        });
+        let (e, _re) = outbox();
+        w.join(who("eve", "x.nw"), e).await.unwrap().unwrap();
+        let mut ids = Vec::new();
+        while let Ok(m) = ra.try_recv() {
+            ids.extend(
+                seihai_core::protocol::split_messages(&m.concat())
+                    .iter()
+                    .map(|m| m.id),
+            );
+        }
+        assert!(ids.contains(&6) && ids.contains(&156));
+        assert!(!ids.contains(&101), "{ids:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A gen-2 level answer is two frames (the raw-data header, then the
+    /// board) and goes to the connection as one item, so nothing the
+    /// connection sends itself can land between them (suite stress run,
+    /// 1.32 and 1.39 lost a `WANTFILE` answer to the board slot).
+    #[tokio::test]
+    async fn a_gen2_level_answer_is_one_item() {
+        let dir = std::env::temp_dir().join(format!("seihai-gserver-gen2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("two.nw"), "GLEVNW01\n").unwrap();
+        let w = World::new(
+            8,
+            LevelSource {
+                dir: dir.clone(),
+                ..blank()
+            },
+        );
+        w.start();
+        let v = ClientVersion::V139;
+        let (a, mut ra) = outbox();
+        let mut j = joining("old", "one.nw", v);
+        j.gen = EncryptionGen::Gen2;
+        let id = w.join(j, a).await.unwrap().unwrap().id;
+        w.warp(Warp {
+            player: id,
+            level: "two.nw".into(),
+            x: 30.0,
+            y: 30.0,
+            mod_time: None,
+        });
+        let (b, _rb) = outbox();
+        w.join(who("rt", "x.nw"), b).await.unwrap().unwrap();
+        let item = ra.try_recv().expect("the level answer");
+        assert!(item.len() >= 2, "header and board together");
+        assert!(item[0].ends_with(b"\n"));
+        let mut st = SessionState::for_version(v);
+        item.iter().for_each(|f| st.apply_body(f));
+        assert_eq!(st.current_level_name().as_deref(), Some("two.nw"));
+        assert!(st.board.is_some());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// `join` for tests that only look at the id.
@@ -578,13 +809,19 @@ mod tests {
         t.last_id = ID_LIMIT - 2;
         let (o, _r) = outbox();
         assert_eq!(
-            t.join("a", ClientVersion::V222, o.clone()),
+            t.join("a", ClientVersion::V222, EncryptionGen::Gen5, o.clone()),
             Ok(ID_LIMIT - 1)
         );
         // Past the 14-bit limit the ids start again at 1, skipping 0.
-        assert_eq!(t.join("b", ClientVersion::V222, o.clone()), Ok(1));
+        assert_eq!(
+            t.join("b", ClientVersion::V222, EncryptionGen::Gen5, o.clone()),
+            Ok(1)
+        );
         t.last_id = ID_LIMIT - 2;
-        assert_eq!(t.join("c", ClientVersion::V222, o.clone()), Ok(2));
+        assert_eq!(
+            t.join("c", ClientVersion::V222, EncryptionGen::Gen5, o.clone()),
+            Ok(2)
+        );
         // Every id taken: the world is full whatever max_players says.
         let mut full = World::new(usize::MAX, blank())
             .task
@@ -598,13 +835,17 @@ mod tests {
                 Online {
                     account: format!("p{id}"),
                     version: ClientVersion::V222,
+                    gen: EncryptionGen::Gen5,
                     level: String::new(),
                     props: Props::default(),
                     outbox: o.clone(),
                 },
             );
         }
-        assert_eq!(full.join("z", ClientVersion::V222, o), Err(Refused::Full));
+        assert_eq!(
+            full.join("z", ClientVersion::V222, EncryptionGen::Gen5, o),
+            Err(Refused::Full)
+        );
     }
 
     #[tokio::test]

@@ -84,6 +84,17 @@ impl Props {
         c
     }
 
+    /// A move the server made (a warp's arrival), as a change.
+    pub fn moved(&mut self, x: f32, y: f32) -> Change {
+        self.x = Some(x);
+        self.y = Some(y);
+        Change {
+            x: self.x,
+            y: self.y,
+            ..Change::default()
+        }
+    }
+
     /// Everything kept, as a change.
     pub fn all(&self) -> Change {
         Change {
@@ -145,6 +156,8 @@ pub fn message(
 
 /// The tail for a player who is now in the receiver's level.
 pub const JOINED: [(u8, &[u8]); 1] = [(JOINLEAVELVL, &[0x21])];
+/// The tail for a player who went to another level.
+pub const LEFT_LEVEL: [(u8, &[u8]); 1] = [(JOINLEAVELVL, &[0x20])];
 /// The tail for a player who logged out.
 pub const LOGGED_OUT: [(u8, &[u8]); 2] = [(JOINLEAVELVL, &[0x20]), (PCONNECTED, &[])];
 

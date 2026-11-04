@@ -15,11 +15,12 @@ How the server is put together, and where each later stage plugs in. Read
 | `src/accounts.rs` | `accounts/<name>.txt`, PBKDF2 passwords | 1 |
 | `src/login.rs` | the login line: type, key, token, account, password, tail | 1 |
 | `src/secure.rs` | the Seihai secure login (`SEI00001`): spots C1, answers S1, opens C2 and rebuilds the classic login frame | 1 |
+| `src/ratelimit.rs` | login scheduling: the cap on password checks at once (`password_checks`) and the per-address login rate (`login_rate`) | 1 |
 | `src/codec.rs` | frames per generation (gen 2 zlib, gen 3 LCG byte, gen 5 XOR) | 1 |
 | `src/wire.rs` | server-to-client message writers and the ids we use | 1 |
 | `src/burst.rs` | the login burst per generation, own player props | 1 |
 | `src/server.rs` | accept loop, one task per connection, the idle session | 1 |
-| `src/world.rs` | the world task: who is online and player ids, the levels read so far, other players in a level (done); warps, gmaps, the 50 ms tick (to do) | 2 |
+| `src/world.rs` | the world task: who is online and player ids, the levels read so far, other players in a level, links between levels (done); gmaps, the 50 ms tick (to do) | 2 |
 | `src/levels.rs` | level files (`.nw`, `.graal`, `.zelda`) through `seihai_core::assets`, the level name check, the link, sign and chest writers (done); gmaps (to do) | 2 |
 | `src/others.rs` | other players' props: kept in one form, sent as `PLO_OTHERPLPROPS` (8) per receiver's build; join (50 = 1), logout (50 = 0, 51) | 2 |
 | `src/files.rs` | `WANTFILE`/`UPDATEFILE` served from `<world>/files/` and the `.gmap` files in `levels/`: the name check, the case-insensitive index, `PLO_FILE` per build, large files | 2 |
@@ -131,12 +132,15 @@ Conn task ──Hub::joined / props / left──▶ Hub (Mutex: players + link s
   a wrong pinned key and `require_secure_login`. Helpers are in
   `tests/common/`; each test file is its own binary so the matrices do not
   compete for the CPU (they time out when run side by side on 4 cores).
-  Add a matrix test per stage (stage 2: walk to a link and get the next level).
+  Add a matrix test per stage.
 - `tests/world_levels.rs`: the start level from `levels/` (board, links,
   signs, chests) for 1.39, 2.05, 2.22 and 2.31, and the blank board when
   the file is missing.
 - `tests/other_players.rs`: a 2.05 and a 2.31 in one level see each other
   arrive, walk (X2/Y2 seen as half tiles) and log out.
+- `tests/level_warps.rs`: a 2.22 takes a link into another level and back,
+  then in again with its cached copy's mod time (name only); a 1.39 takes the
+  same link; a 2.05 left behind sees the player go and come back.
 - `tests/file_serving.rs`: 1.39, 2.05, 2.22 and 2.31 ask for a small file,
   a missing one, a `.gmap`, a 150 KB one and a name with `..`, and check
   copies with old and future times; every answer and every byte is checked.

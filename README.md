@@ -23,6 +23,8 @@ Stage 1 covers:
 * the login burst (props, warp, the start level from `levels/` with its
   links, signs and chests, mod time and the rest, in the order each
   generation needs; a generated board when the level file is missing);
+* other players in the level, and links between levels (`PLI_LEVELWARP`,
+  `PLI_LEVELWARPMOD`; a current cached copy gets the level name alone);
 * files: `WANTFILE`/`UPDATEFILE` served from `<world>/files/` (any depth)
   and the `.gmap` files in `levels/`, in each build's file layout, large
   files in chunks where the build takes them;
@@ -41,7 +43,7 @@ Stage 1 covers:
   listserver's key is pinned in `config/listserver.pin` on first contact, or
   given as `listserver_key`.
 
-Levels, other players, NPCs and RC are later stages.
+Gmaps, NPCs and RC are later stages.
 
 ## Build and run
 

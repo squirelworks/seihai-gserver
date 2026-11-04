@@ -46,6 +46,10 @@ pub struct Server {
     /// The listserver link (see `listlink`); `None` when `listserver` is
     /// empty. Set by `run`.
     pub listlink: Option<Arc<crate::listlink::ListLink>>,
+    /// Logins a minute per address (`login_rate`).
+    login_rate: crate::ratelimit::LoginRate,
+    /// The cap on password checks at once (`password_checks`).
+    password_checks: crate::ratelimit::PasswordChecks,
 }
 
 impl Server {
@@ -81,10 +85,14 @@ impl Server {
                 blank_mod_time: started_unix,
             },
         );
+        let login_rate = crate::ratelimit::LoginRate::new(cfg.login_rate, cfg.login_rate_loopback);
+        let password_checks = crate::ratelimit::PasswordChecks::new(cfg.password_check_slots());
         Server {
             files: crate::files::FileStore::new(&cfg.world),
             npc,
             world,
+            login_rate,
+            password_checks,
             cfg,
             allow,
             extra_tokens,
@@ -94,6 +102,11 @@ impl Server {
             identity: None,
             listlink: None,
         }
+    }
+
+    /// The most password checks that ran at once since the start.
+    pub fn peak_password_checks(&self) -> usize {
+        self.password_checks.peak()
     }
 
     /// Accounts online now, lower-case and sorted.
@@ -319,6 +332,18 @@ impl Conn {
         };
         let version = burst::shape_version(login.version, login.gen);
         let mut codec = Codec::new(login.gen, login.key, login.version);
+        if !self.server.login_rate.allow(self.peer.ip()) {
+            self.server.log(
+                &self.peer,
+                &format!("{}: too many logins from this address", login.account),
+            );
+            return self
+                .refuse(
+                    &mut codec,
+                    "Too many logins from your address; try again in a minute.",
+                )
+                .await;
+        }
         inbuf.long = login
             .version
             .is_some_and(|v| v.profile().protocol.gen5_long_frames);
@@ -377,6 +402,7 @@ impl Conn {
             account: key.clone(),
             level: start.to_string(),
             version,
+            gen: login.gen,
             // The world keeps props in the 2.22 encoding, as the
             // NPC-server link does; the id is in the message header.
             props: burst::own_props(
@@ -509,13 +535,13 @@ impl Conn {
                     self.server.log(&self.peer, "idle timeout");
                     return self.refuse(&mut codec, "Disconnected for being idle.").await;
                 }
-                Some(body) = from_world.recv() => {
-                    // Whatever else the world queued goes in the same frame.
-                    let mut out = body;
-                    while let Ok(more) = from_world.try_recv() {
-                        out.extend(more);
+                Some(frames) = from_world.recv() => {
+                    // The world decides the frames (gen 2 needs the board
+                    // in a frame of its own), and an item's frames go out
+                    // together: no reply of this task's lands between.
+                    for f in frames {
+                        self.send(&mut codec, &f).await?;
                     }
-                    self.send(&mut codec, &out).await?;
                 }
                 _ = list_ready(listlink.as_deref()) => {
                     let reply = session.link_out(&self.server);
@@ -541,9 +567,18 @@ impl Conn {
             .listlink
             .clone()
             .filter(|_| cfg.listserver_accounts);
-        // PBKDF2 is slow on purpose, and the listserver answer blocks:
-        // keep both off the network threads.
+        // PBKDF2 is slow on purpose (about 0.15 CPU-seconds), so a local
+        // check waits for one of the `password_checks` slots: a burst of
+        // logins queues instead of fanning out over the blocking pool. The
+        // listserver answer only waits on the network, so it takes none.
+        let slot = match link {
+            Some(_) => None,
+            None => Some(self.server.password_checks.slot().await),
+        };
+        // Both block: keep them off the network threads.
         tokio::task::spawn_blocking(move || {
+            // Held until the hash is done, even if the connection goes.
+            let _slot = slot;
             if let Some(link) = link {
                 // The listserver owns the password; the local file keeps
                 // the player's state and is made on first login.
@@ -701,7 +736,29 @@ impl Session {
                 // level entry, neighbour requests and walking off a level.
                 PLI_LANGUAGE | PLI_PACKETCOUNT | PLI_WEAPONADD | PLI_TAMPERCHECK
                 | PLI_PROCESSLIST | PLI_SHOWIMG | PLI_FLAGSET | PLI_ENTERLEVEL
-                | PLI_ADJACENTLEVEL | PLI_LEVELWARP | PLI_LEVELWARPMOD => {}
+                | PLI_ADJACENTLEVEL => {}
+                // A link the player walked into: `[GINT5 mod time,] GCHAR
+                // x*2, GCHAR y*2, name`. The world answers with the level.
+                PLI_LEVELWARP | PLI_LEVELWARPMOD => {
+                    let (mod_time, rest) = if id == PLI_LEVELWARPMOD {
+                        match payload.split_at_checked(5) {
+                            Some((t, rest)) => (Some(crate::wire::read_gint5(t)), rest),
+                            None => continue,
+                        }
+                    } else {
+                        (None, payload)
+                    };
+                    let [x, y, name @ ..] = rest else {
+                        continue;
+                    };
+                    server.world.warp(crate::world::Warp {
+                        player: self.id,
+                        level: seihai_core::protocol::latin1(name),
+                        x: x.wrapping_sub(0x20) as f32 / 2.0,
+                        y: y.wrapping_sub(0x20) as f32 / 2.0,
+                        mod_time,
+                    });
+                }
                 _ => {
                     if first_time && server.verbose {
                         server.log(peer, &format!("message {id} not handled in stage 1"));

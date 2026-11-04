@@ -192,8 +192,8 @@ them on, so a check that is wrong for some build never locks real players out.
   `FILEUPTODATE` (or `FILESENDFAILED` before 2.1); 1.21 reads neither and gets none.
   (Since 2.7 the world's files are served: `src/files.rs`.)
   Language, packet count (31), weapon upload (25), tamper check, process list,
-  show-image, flags, enter-level, neighbour and warp requests are read and not
-  answered yet. The world time (42) goes out every 5 s to builds that read it; an
+  show-image, flags, enter-level and neighbour requests are read and not
+  answered yet (warp requests are answered since 2.4). The world time (42) goes out every 5 s to builds that read it; an
   idle timeout is available and off by default.
 - **Not yet in core.** The server-to-client writers live in `src/wire.rs` and
   `src/burst.rs`, checked against `seihai-core`'s readers. They should move to
