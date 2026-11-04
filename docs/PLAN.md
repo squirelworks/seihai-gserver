@@ -31,6 +31,8 @@ behaviour against, never a code source (see `00-rules.md`).
 2. World for 1.33 to 2.31: levels (`.nw`, `.graal`, `.zelda`), gmaps (see
    `gmap-order.md`, `bigmap-neighbours.md`), links and warps, signs, chests, items
    on the ground, other players' props, flags, `WANTFILE`/`UPDATEFILE` file serving.
+   Played with real 1.39, 2.05 rev 2, 2.17.1, 2.22 and 2.31 under Wine
+   (`docs/lab/stage2-2026-11-04.md`).
 3. Client-side NPCs: NPC prop sync between players in a level (`npc-props-lab.md`),
    baddies (`baddies.md`), bombs, arrows, hurt and death.
 4. RC and NC endpoints for `seihai-rc`.
