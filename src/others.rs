@@ -50,6 +50,14 @@ impl Change {
     pub fn is_empty(&self) -> bool {
         self.values.is_empty() && self.x.is_none() && self.y.is_none()
     }
+
+    /// A one-`GCHAR` prop in the change (the gmap cell, 43 and 44).
+    pub fn byte(&self, id: u8) -> Option<u8> {
+        match self.values.get(&id)?.as_slice() {
+            [v] => Some(v.wrapping_sub(0x20)),
+            _ => None,
+        }
+    }
 }
 
 impl Props {

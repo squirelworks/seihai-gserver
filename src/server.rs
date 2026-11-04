@@ -382,8 +382,8 @@ impl Conn {
                 },
             ),
         };
-        let (id, level) = match self.server.world.join(joining, outbox).await {
-            Some(Ok(j)) => (j.id, j.level),
+        let (id, level, gmap) = match self.server.world.join(joining, outbox).await {
+            Some(Ok(j)) => (j.id, j.level, j.gmap),
             Some(Err(why)) => {
                 if why == crate::world::Refused::InUse {
                     self.server
@@ -437,6 +437,7 @@ impl Conn {
                 account: &account,
             },
             &level,
+            gmap.as_ref(),
             self.server.world_time(),
         );
         for f in frames {
@@ -666,10 +667,16 @@ impl Session {
                 // packet count (1.33 to 1.39, every 10 s; not a login),
                 // the 1.33 to 1.37 weapon upload, the tamper check (never
                 // required), the process list, image and flag updates,
-                // level entry, neighbour requests and walking off a level.
+                // level entry and walking off a level.
                 PLI_LANGUAGE | PLI_PACKETCOUNT | PLI_WEAPONADD | PLI_TAMPERCHECK
-                | PLI_PROCESSLIST | PLI_SHOWIMG | PLI_FLAGSET | PLI_ENTERLEVEL
-                | PLI_ADJACENTLEVEL => {}
+                | PLI_PROCESSLIST | PLI_SHOWIMG | PLI_FLAGSET | PLI_ENTERLEVEL => {}
+                // A gmap neighbour: `GINT5 mod time, name`.
+                PLI_ADJACENTLEVEL => {
+                    if let Some((t, name)) = payload.split_at_checked(5) {
+                        let name = seihai_core::protocol::latin1(name);
+                        server.world.adjacent(self.id, name, read_gint5(t));
+                    }
+                }
                 // A link the player walked into: `[GINT5 mod time,] GCHAR
                 // x*2, GCHAR y*2, name`. The world answers with the level.
                 PLI_LEVELWARP | PLI_LEVELWARPMOD => {
