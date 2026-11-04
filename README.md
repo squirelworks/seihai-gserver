@@ -28,7 +28,10 @@ Stage 1 covers:
 * gmaps: `.gmap` files in `levels/`, played as one world by the builds that
   play gmaps (neighbour requests, walking across seams), as plain levels by
   the rest;
-* the idle session: file requests answered, the world time as a heartbeat;
+* files: `WANTFILE`/`UPDATEFILE` served from `<world>/files/` (any depth)
+  and the `.gmap` files in `levels/`, in each build's file layout, large
+  files in chunks where the build takes them;
+* the idle session: the world time as a heartbeat;
 * the NPC-server link (`PROTOCOL.md`): `seihai-npcserver` logs in on its own
   loopback port and is told the level list and every player's props. With
   `npcserver = auto` in `config/server.txt` the gserver starts

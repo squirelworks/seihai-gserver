@@ -190,6 +190,7 @@ them on, so a check that is wrong for some build never locks real players out.
   chests; the generated board is only for a missing file).
 - **Idle session.** `WANTFILE` gets `FILESENDFAILED`, `UPDATEFILE` gets
   `FILEUPTODATE` (or `FILESENDFAILED` before 2.1); 1.21 reads neither and gets none.
+  (Since 2.7 the world's files are served: `src/files.rs`.)
   Language, packet count (31), weapon upload (25), tamper check, process list,
   show-image, flags, enter-level and neighbour requests are read and not
   answered yet (warp requests are answered since 2.4). The world time (42) goes out every 5 s to builds that read it; an
