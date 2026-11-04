@@ -18,10 +18,16 @@
 //! Each message goes out only if the client build handles its id (the
 //! profile's `plo` set), and each own prop only if its prop parser takes
 //! that id (`props.own`), since the first unknown prop ends the stream.
-//! Stage 1 has no level files: the board is generated, all one tile.
+//!
+//! The level comes from the world (`levels.rs`): its board, then its links
+//! and signs, the mod time, then its chests (the lab and public 2.22
+//! captures have the chests after `LEVELMODTIME`, and `SETACTIVELEVEL`
+//! after the chests). A world without the level's file gets the stage 1
+//! board, all one tile.
 
 use crate::accounts::Account;
 use crate::config::Config;
+use crate::levels::{chest_record, link_line, sign_record, Level};
 use crate::wire::{self, gchar, gint3, gint4, gint5, gshort, gstring, ids::*, latin1, msg};
 use seihai_core::protocol::{encode_pos_precise, ClientVersion, EncryptionGen, IdSet};
 
@@ -47,7 +53,7 @@ pub fn login_burst(
     version: ClientVersion,
     gen: EncryptionGen,
     p: &Player,
-    level_mod_time: u64,
+    level: &Level,
     world_time: u32,
 ) -> Vec<Vec<u8>> {
     let plo = &version.profile().protocol.plo;
@@ -57,17 +63,27 @@ pub fn login_burst(
         body: Vec::new(),
     };
     let a = p.account;
-    let level = if a.level.is_empty() {
-        cfg.start_level.as_str()
-    } else {
-        a.level.as_str()
-    };
+    let lvl = level;
+    let level = lvl.name.as_str();
     let props = own_props(version, p);
     let mut warp = vec![gchar((a.x * 2.0) as u8), gchar((a.y * 2.0) as u8)];
     warp.extend(latin1(level));
-    let board = board_payload(cfg.board_tile);
+    let board: Vec<u8> = lvl.board.iter().flat_map(|t| t.to_le_bytes()).collect();
     let mut mod_time = Vec::new();
-    gint5(level_mod_time, &mut mod_time);
+    gint5(lvl.mod_time, &mut mod_time);
+    let links_and_signs = |out: &mut Out| {
+        for l in &lvl.links {
+            out.put(PLO_LEVELLINK, &link_line(l));
+        }
+        for s in &lvl.signs {
+            out.put(PLO_LEVELSIGN, &sign_record(s));
+        }
+    };
+    let chests = |out: &mut Out| {
+        for c in lvl.chests.iter().filter_map(chest_record) {
+            out.put(PLO_LEVELCHEST, &c);
+        }
+    };
 
     if gen == EncryptionGen::Gen2 || gen == EncryptionGen::Gen1 {
         out.put(PLO_PLAYERPROPS, &props);
@@ -83,7 +99,9 @@ pub fn login_burst(
         let first = std::mem::take(&mut out.body);
         let second = block[split..].to_vec();
         out.put(PLO_LEVELNAME, &latin1(level));
+        links_and_signs(&mut out);
         out.put(PLO_LEVELMODTIME, &mod_time);
+        chests(&mut out);
         out.put(PLO_ISLEADER, b"");
         return vec![first, second, out.body];
     }
@@ -101,7 +119,9 @@ pub fn login_burst(
     out.put(PLO_PLAYERWARP, &warp);
     out.put(PLO_LEVELNAME, &latin1(level));
     out.body.extend(wire::raw_block(PLO_BOARDPACKET, &board));
+    links_and_signs(&mut out);
     out.put(PLO_LEVELMODTIME, &mod_time);
+    chests(&mut out);
     out.put(PLO_SETACTIVELEVEL, &latin1(level));
     out.put(PLO_ISLEADER, b"");
     let mut t = Vec::new();
@@ -122,11 +142,6 @@ impl Out<'_> {
             self.body.extend(msg(id, payload));
         }
     }
-}
-
-/// A 64 x 64 board of one tile, little-endian `u16`s.
-pub fn board_payload(tile: u16) -> Vec<u8> {
-    (0..64 * 64).flat_map(|_| tile.to_le_bytes()).collect()
 }
 
 /// The player's own props, as `PLO_PLAYERPROPS` carries them.
@@ -235,7 +250,8 @@ mod tests {
         let a = account();
         for &v in ClientVersion::all_versions() {
             let p = Player { id: 3, account: &a };
-            let frames = login_burst(&cfg, v, v.encryption(), &p, 1_700_000_000, 1234);
+            let level = Level::blank("onlinestartlocal.nw", cfg.board_tile, 1_700_000_000);
+            let frames = login_burst(&cfg, v, v.encryption(), &p, &level, 1234);
             let mut st = SessionState::for_version(v);
             for f in &frames {
                 st.apply_body(f);
@@ -253,6 +269,63 @@ mod tests {
         }
     }
 
+    /// A level from a file: every build that reads links, signs and chests
+    /// gets all of them, in the client's own reader, and nothing it drops.
+    #[test]
+    fn burst_carries_links_signs_and_chests() {
+        let cfg = Config::defaults(Path::new("w"));
+        let a = account();
+        let file = seihai_core::assets::Level::parse(
+            "GLEVNW01\n\
+             LINK next.nw 0 10 1 4 62 playery\n\
+             SIGN 20 21\nHello #A!\nSIGNEND\n\
+             CHEST 30 36 greenrupee -1\n\
+             CHEST 10 12 bow 0\n",
+        )
+        .unwrap();
+        let mut board = vec![0x1FF; 4096];
+        board[65] = 0x22;
+        let level = Level {
+            name: "lab.nw".into(),
+            board: board.clone(),
+            links: file.links,
+            signs: file.signs,
+            chests: file.chests,
+            mod_time: 1_700_000_123,
+        };
+        for &v in ClientVersion::all_versions() {
+            let p = Player { id: 3, account: &a };
+            let frames = login_burst(&cfg, v, v.encryption(), &p, &level, 1234);
+            let mut st = SessionState::for_version(v);
+            for f in &frames {
+                st.apply_body(f);
+            }
+            assert_eq!(st.current_level_name().as_deref(), Some("lab.nw"), "{v:?}");
+            assert_eq!(st.board.as_deref(), Some(&board[..]), "{v:?}");
+            assert!(st.ignored.is_empty(), "{v:?} drops {:?}", st.ignored);
+            let plo = &v.profile().protocol.plo;
+            let n = |id: u8, k: usize| if plo.contains(id) { k } else { 0 };
+            assert_eq!(st.links.len(), n(PLO_LEVELLINK, 1), "{v:?}");
+            assert_eq!(st.signs.len(), n(PLO_LEVELSIGN, 1), "{v:?}");
+            assert_eq!(st.chests.len(), n(PLO_LEVELCHEST, 2), "{v:?}");
+        }
+        // 2.22: name, board, link, sign, mod time, chests, active level.
+        let f = login_burst(
+            &cfg,
+            ClientVersion::V222,
+            EncryptionGen::Gen3,
+            &Player { id: 1, account: &a },
+            &level,
+            0,
+        );
+        let ids: Vec<u8> = seihai_core::protocol::split_messages(&f[0])
+            .iter()
+            .map(|m| m.id)
+            .filter(|id| [6, 101, 1, 5, 39, 4, 156].contains(id))
+            .collect();
+        assert_eq!(ids, [6, 101, 1, 5, 39, 4, 4, 156]);
+    }
+
     #[test]
     fn gen2_order_puts_the_name_after_the_board() {
         let cfg = Config::defaults(Path::new("w"));
@@ -262,7 +335,7 @@ mod tests {
             ClientVersion::V131,
             EncryptionGen::Gen2,
             &Player { id: 1, account: &a },
-            0,
+            &Level::blank("start.nw", 0, 0),
             0,
         );
         assert_eq!(frames.len(), 3);
@@ -283,7 +356,7 @@ mod tests {
             ClientVersion::V205,
             EncryptionGen::Gen3,
             &Player { id: 1, account: &a },
-            0,
+            &Level::blank("start.nw", 0, 0),
             0,
         );
         let m = seihai_core::protocol::split_messages(&f[0]);
@@ -297,7 +370,7 @@ mod tests {
             ClientVersion::V231,
             EncryptionGen::Gen5,
             &Player { id: 1, account: &a },
-            0,
+            &Level::blank("start.nw", 0, 0),
             0,
         );
         let m = seihai_core::protocol::split_messages(&f[0]);

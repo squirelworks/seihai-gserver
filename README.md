@@ -20,8 +20,9 @@ Stage 1 covers:
   2.17) and gen 5 (2.22 to 6.x), with `seihai-core`'s codecs;
 * the version allow-list (`config/allowedversions.txt`);
 * flat-file accounts (`accounts/<name>.txt`, PBKDF2 password hashes);
-* the login burst (props, warp, level name, a generated board, mod time and
-  the rest, in the order each generation needs);
+* the login burst (props, warp, the start level from `levels/` with its
+  links, signs and chests, mod time and the rest, in the order each
+  generation needs; a generated board when the level file is missing);
 * the idle session: file requests answered, the world time as a heartbeat;
 * the NPC-server link (`PROTOCOL.md`): `seihai-npcserver` logs in on its own
   loopback port and is told the level list and every player's props. With

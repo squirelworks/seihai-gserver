@@ -8,10 +8,13 @@
 //! 1. The world owns who is online: [`World::join`] takes the account and
 //!    returns the player id, or the refusal ("Account already in use.",
 //!    "The server is full."). [`World::left`] frees the id.
+//! 2. The world holds the levels: a join names the level the account is
+//!    in, and the world answers with it, read from `<world>/levels/` the
+//!    first time (`levels.rs`), or the stage 1 board when there is no such
+//!    file. The connection builds the burst from it (`burst::login_burst`),
+//!    since the burst's frames depend on the client's generation.
 //!
 //! To do, in order:
-//! 2. Build the burst here with the level from `levels.rs` instead of the
-//!    generated board (`burst::login_burst` takes the board as an argument).
 //! 3. Other players: `PLO_OTHERPLPROPS` (8) on join, prop changes, leave.
 //!    Only props in each receiver's `props.other` set.
 //! 4. `PLI_LEVELWARP` (0) and `PLI_LEVELWARPMOD` (30): load the level, send
@@ -21,8 +24,10 @@
 //!    `bigmap-neighbours.md` in the seihai repo).
 //! 6. Flags (`PLI_FLAGSET`), chests, items on the ground.
 
+use crate::levels::Level;
 use std::collections::{BTreeMap, HashMap};
-use std::sync::Mutex;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot, watch};
 
@@ -40,8 +45,10 @@ pub enum WorldIn {
     /// answers with the player id or the reason to refuse.
     Joined {
         account: String,
+        /// The level the account was in, or the start level.
+        level: String,
         outbox: Outbox,
-        reply: oneshot::Sender<Result<u16, Refused>>,
+        reply: oneshot::Sender<Result<Joined, Refused>>,
     },
     /// `PLI_PLAYERPROPS` (2), as sent.
     Props { player: u16, raw: Vec<u8> },
@@ -59,6 +66,25 @@ pub enum WorldIn {
 
 /// Message bodies for one player; the connection task frames and sends them.
 pub type Outbox = mpsc::UnboundedSender<Vec<u8>>;
+
+/// The world's answer to a login it lets in.
+#[derive(Debug, Clone)]
+pub struct Joined {
+    pub id: u16,
+    /// The level the player starts in.
+    pub level: Arc<Level>,
+}
+
+/// Where the world finds its levels, and what it sends without one.
+#[derive(Debug, Clone)]
+pub struct LevelSource {
+    /// `<world>/levels/`.
+    pub dir: PathBuf,
+    /// The tile of the stage 1 board.
+    pub blank_tile: u16,
+    /// The mod time the stage 1 board gets (the server's start).
+    pub blank_mod_time: u64,
+}
 
 /// Why the world turned a login away.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,7 +116,7 @@ pub struct World {
 impl World {
     /// A world for at most `max_players`. Nothing runs until
     /// [`World::start`], so this can be made outside a tokio runtime.
-    pub fn new(max_players: usize) -> Self {
+    pub fn new(max_players: usize, levels: LevelSource) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
         let (online_tx, online) = watch::channel(Vec::new());
         World {
@@ -100,6 +126,8 @@ impl World {
                 rx,
                 online: online_tx,
                 max_players,
+                levels,
+                loaded: HashMap::new(),
                 players: BTreeMap::new(),
                 by_account: HashMap::new(),
                 last_id: 0,
@@ -114,13 +142,19 @@ impl World {
         }
     }
 
-    /// Register a logged-in account. `None` when the world task is gone
-    /// (the server is shutting down).
-    pub async fn join(&self, account: &str, outbox: Outbox) -> Option<Result<u16, Refused>> {
+    /// Register a logged-in account that starts in `level`. `None` when
+    /// the world task is gone (the server is shutting down).
+    pub async fn join(
+        &self,
+        account: &str,
+        level: &str,
+        outbox: Outbox,
+    ) -> Option<Result<Joined, Refused>> {
         let (reply, answer) = oneshot::channel();
         self.tx
             .send(WorldIn::Joined {
                 account: account.to_string(),
+                level: level.to_string(),
                 outbox,
                 reply,
             })
@@ -161,6 +195,9 @@ pub struct WorldTask {
     rx: mpsc::UnboundedReceiver<WorldIn>,
     online: watch::Sender<Vec<String>>,
     max_players: usize,
+    levels: LevelSource,
+    /// Levels read so far, by lower-case name.
+    loaded: HashMap<String, Arc<Level>>,
     players: BTreeMap<u16, Online>,
     /// Lower-case account name to player id.
     by_account: HashMap<String, u16>,
@@ -179,22 +216,51 @@ impl WorldTask {
         match ev {
             WorldIn::Joined {
                 account,
+                level,
                 outbox,
                 reply,
             } => {
                 let key = account.to_ascii_lowercase();
-                let answer = self.join(&key, outbox);
+                let answer = self.join(&key, outbox).map(|id| Joined {
+                    id,
+                    level: self.level(&level),
+                });
                 // The connection may have closed while it waited; then the
                 // id goes straight back.
-                if reply.send(answer).is_err() {
-                    if let Ok(id) = answer {
-                        self.leave(id);
-                    }
+                if let Err(Ok(j)) = reply.send(answer) {
+                    self.leave(j.id);
                 }
             }
             WorldIn::Left { player } => self.leave(player),
             // Read from item 3 (other players) and item 4 (warps) on.
             WorldIn::Props { .. } | WorldIn::LevelWarp { .. } => {}
+        }
+    }
+
+    /// The level called `name`, read on first use. A name that does not
+    /// pass the check, or a file that is missing or does not read, gets the
+    /// stage 1 board under the name asked for; that is not kept, so the
+    /// file is read once it is there.
+    fn level(&mut self, name: &str) -> Arc<Level> {
+        let key = name.to_ascii_lowercase();
+        if let Some(l) = self.loaded.get(&key) {
+            return l.clone();
+        }
+        match Level::load(&self.levels.dir, name) {
+            Ok(l) => {
+                let l = Arc::new(l);
+                self.loaded.insert(key, l.clone());
+                self.loaded.insert(l.name.to_ascii_lowercase(), l.clone());
+                l
+            }
+            Err(e) => {
+                eprintln!("level {name}: {e}; sending a blank board");
+                Arc::new(Level::blank(
+                    name,
+                    self.levels.blank_tile,
+                    self.levels.blank_mod_time,
+                ))
+            }
         }
     }
 
@@ -256,59 +322,108 @@ mod tests {
         mpsc::unbounded_channel()
     }
 
+    fn blank() -> LevelSource {
+        LevelSource {
+            dir: PathBuf::from("no-such-world/levels"),
+            blank_tile: 0x1FF,
+            blank_mod_time: 5,
+        }
+    }
+
+    /// `join` for tests that only look at the id.
+    async fn id(w: &World, account: &str, o: Outbox) -> Option<Result<u16, Refused>> {
+        w.join(account, "start.nw", o)
+            .await
+            .map(|r| r.map(|j| j.id))
+    }
+
+    #[tokio::test]
+    async fn join_hands_out_the_level_from_the_folder() {
+        let dir = std::env::temp_dir().join(format!("seihai-gserver-world-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("Lab.nw"), "GLEVNW01\nLINK b.nw 0 0 1 1 30 30\n").unwrap();
+        let w = World::new(
+            8,
+            LevelSource {
+                dir: dir.clone(),
+                ..blank()
+            },
+        );
+        w.start();
+        let (a, _ra) = outbox();
+        let j = w.join("alice", "lab.nw", a).await.unwrap().unwrap();
+        assert_eq!(j.level.name, "Lab.nw");
+        assert_eq!(j.level.links.len(), 1);
+        // Read once: the second player gets the same level.
+        let (b, _rb) = outbox();
+        let k = w.join("bob", "LAB.NW", b).await.unwrap().unwrap();
+        assert!(Arc::ptr_eq(&j.level, &k.level));
+        // No file, or a name that may not name one: the stage 1 board.
+        for name in ["gone.nw", "../Lab.nw"] {
+            let (c, _rc) = outbox();
+            let l = w.join(name, name, c).await.unwrap().unwrap().level;
+            assert_eq!(l.name, name);
+            assert!(l.board.iter().all(|&t| t == 0x1FF));
+            assert_eq!(l.mod_time, 5);
+            assert!(l.links.is_empty());
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[tokio::test]
     async fn join_gives_ids_and_refuses_a_second_login() {
-        let w = World::new(8);
+        let w = World::new(8, blank());
         w.start();
         let (a, _ra) = outbox();
         let (b, _rb) = outbox();
         let (c, _rc) = outbox();
-        assert_eq!(w.join("Alice", a).await, Some(Ok(1)));
-        assert_eq!(w.join("bob", b).await, Some(Ok(2)));
+        assert_eq!(id(&w, "Alice", a).await, Some(Ok(1)));
+        assert_eq!(id(&w, "bob", b).await, Some(Ok(2)));
         // Account names are compared without case.
-        assert_eq!(w.join("ALICE", c).await, Some(Err(Refused::InUse)));
+        assert_eq!(id(&w, "ALICE", c).await, Some(Err(Refused::InUse)));
         assert_eq!(w.online_accounts(), ["alice", "bob"]);
         assert_eq!(Refused::InUse.text(), "Account already in use.");
     }
 
     #[tokio::test]
     async fn leaving_frees_the_account_but_not_the_id_at_once() {
-        let w = World::new(8);
+        let w = World::new(8, blank());
         w.start();
         let (a, _ra) = outbox();
-        assert_eq!(w.join("alice", a).await, Some(Ok(1)));
+        assert_eq!(id(&w, "alice", a).await, Some(Ok(1)));
         w.left(1);
         let (a2, _ra2) = outbox();
         // Events are handled in order, so the leave is in before this.
-        assert_eq!(w.join("alice", a2).await, Some(Ok(2)));
+        assert_eq!(id(&w, "alice", a2).await, Some(Ok(2)));
         assert_eq!(w.online_accounts(), ["alice"]);
         w.left(2);
         // Leaving twice, or with an id nobody has, does nothing.
         w.left(2);
         w.left(77);
         let (b, _rb) = outbox();
-        assert_eq!(w.join("bob", b).await, Some(Ok(3)));
+        assert_eq!(id(&w, "bob", b).await, Some(Ok(3)));
         assert_eq!(w.online_accounts(), ["bob"]);
     }
 
     #[tokio::test]
     async fn full_world_refuses() {
-        let w = World::new(2);
+        let w = World::new(2, blank());
         w.start();
         for (i, name) in ["a", "b"].into_iter().enumerate() {
             let (o, _r) = outbox();
-            assert_eq!(w.join(name, o).await, Some(Ok(i as u16 + 1)));
+            assert_eq!(id(&w, name, o).await, Some(Ok(i as u16 + 1)));
         }
         let (o, _r) = outbox();
-        assert_eq!(w.join("c", o).await, Some(Err(Refused::Full)));
+        assert_eq!(id(&w, "c", o).await, Some(Err(Refused::Full)));
         w.left(1);
         let (o, _r) = outbox();
-        assert_eq!(w.join("c", o).await, Some(Ok(3)));
+        assert_eq!(id(&w, "c", o).await, Some(Ok(3)));
     }
 
     #[test]
     fn ids_wrap_and_skip_taken_ones() {
-        let w = World::new(usize::MAX);
+        let w = World::new(usize::MAX, blank());
         let mut t = w.task.lock().unwrap().take().unwrap();
         t.last_id = ID_LIMIT - 2;
         let (o, _r) = outbox();
@@ -318,7 +433,12 @@ mod tests {
         t.last_id = ID_LIMIT - 2;
         assert_eq!(t.join("c", o.clone()), Ok(2));
         // Every id taken: the world is full whatever max_players says.
-        let mut full = World::new(usize::MAX).task.lock().unwrap().take().unwrap();
+        let mut full = World::new(usize::MAX, blank())
+            .task
+            .lock()
+            .unwrap()
+            .take()
+            .unwrap();
         for id in 1..ID_LIMIT {
             full.players.insert(
                 id,
@@ -333,13 +453,14 @@ mod tests {
 
     #[tokio::test]
     async fn a_join_nobody_waits_for_is_undone() {
-        let w = World::new(8);
+        let w = World::new(8, blank());
         let mut t = w.task.lock().unwrap().take().unwrap();
         let (o, _r) = outbox();
         let (reply, answer) = oneshot::channel();
         drop(answer);
         t.handle(WorldIn::Joined {
             account: "alice".into(),
+            level: "start.nw".into(),
             outbox: o,
             reply,
         });

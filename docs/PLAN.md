@@ -185,7 +185,9 @@ them on, so a check that is wrong for some build never locks real players out.
   1.31 order). Later: signature, start message, status list, props, default
   weapons 8 then 7, warp, name, board, mod time, 156, leader, world time, 182.
   Each message only if the build handles its id; each prop only if the build's
-  prop parser takes it. The board is generated (one tile) until stage 2 loads levels.
+  prop parser takes it. The board is generated (one tile) until stage 2 loads levels
+  (done in 2.2: the start level comes from `levels/`, with its links, signs and
+  chests; the generated board is only for a missing file).
 - **Idle session.** `WANTFILE` gets `FILESENDFAILED`, `UPDATEFILE` gets
   `FILEUPTODATE` (or `FILESENDFAILED` before 2.1); 1.21 reads neither and gets none.
   Language, packet count (31), weapon upload (25), tamper check, process list,
