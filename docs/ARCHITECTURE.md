@@ -20,7 +20,7 @@ How the server is put together, and where each later stage plugs in. Read
 | `src/wire.rs` | server-to-client message writers and the ids we use | 1 |
 | `src/burst.rs` | the login burst per generation, own player props | 1 |
 | `src/server.rs` | accept loop, one task per connection, the idle session | 1 |
-| `src/world.rs` | the world task: who is online and player ids, the levels read so far, other players in a level, links between levels, gmap cells and crossings, opened chests and player flags, the account save on logout (done); the 50 ms tick (to do) | 2 |
+| `src/world.rs` | the world task: who is online and player ids, the levels read so far, other players in a level, links between levels, gmap cells and crossings, opened chests and player flags, items on the floor, the account save on logout (done); the 50 ms tick (to do) | 2 |
 | `src/levels.rs` | level files (`.nw`, `.graal`, `.zelda`) through `seihai_core::assets`, the level name check, the link, sign and chest writers | 2 |
 | `src/gmaps.rs` | `.gmap` files in `levels/` (`seihai_core::gmap::Gmap`), which builds play gmaps, a level's cell | 2 |
 | `src/others.rs` | other players' props: kept in one form, sent as `PLO_OTHERPLPROPS` (8) per receiver's build; join (50 = 1), logout (50 = 0, 51); chest items given as own props (`PLO_PLAYERPROPS` 9) | 2 |

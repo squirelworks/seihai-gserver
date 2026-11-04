@@ -29,6 +29,14 @@
 //!    neighbour (`burst::gmap_level`); own props 43/44 with a new cell move
 //!    the player into that cell's level, as a link does. Players see the
 //!    players of their own cell only.
+//! 6. Accounts, chests, flags and floor items: on logout the player's
+//!    level, position, counted props, opened chests and flags go back to
+//!    the account file (the [`Saver`]). `PLI_OPENCHEST` (20) gives the
+//!    chest's item and every level then shows it opened for that account;
+//!    `PLI_FLAGSET`/`PLI_FLAGDEL` (18/19) keep the flags. `PLI_ITEMADD`
+//!    (12) items lie in the level for the others and late arrivals,
+//!    `PLI_ITEMTAKE` (32) gives one to the first taker only and
+//!    `PLI_ITEMDEL` (13) clears it.
 //!
 //! Prop changes are batched on the [`TICK`] (2.8, issue #20): each
 //! player's changes are merged until the tick, latest value per prop, and
@@ -36,17 +44,19 @@
 //! frame. Before a join or a leave the batch goes out first, so a client
 //! never hears of a move after the mover left.
 //!
-//! To do, in order:
-//! 6. Flags (`PLI_FLAGSET`), chests, items on the ground.
+//! To do: the anti-cheat checks of stage 7 that guard these (movement,
+//! warps, items and counted props), see `docs/PLAN.md`.
 
 use crate::gmaps::{plays_gmaps, Gmaps, Place, GMAPLEVELX, GMAPLEVELY};
 use crate::levels::Level;
 use crate::others::{self, Change, Props};
+use crate::wire::gchar;
+use crate::wire::ids::{PLO_ITEMADD, PLO_ITEMDEL};
 use seihai_core::protocol::{ClientVersion, EncryptionGen};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot, watch};
 
 /// `name=value` as name and value; a bare `name` has an empty value.
@@ -82,6 +92,15 @@ pub enum WorldIn {
     Props { player: u16, raw: Vec<u8> },
     /// `PLI_LEVELWARP` (0) or `PLI_LEVELWARPMOD` (30).
     LevelWarp(Warp),
+    /// An item on the floor: `PLI_ITEMADD` (12), `PLI_ITEMDEL` (13) or
+    /// `PLI_ITEMTAKE` (32), with the position in half tiles.
+    Item {
+        player: u16,
+        op: ItemOp,
+        x2: u8,
+        y2: u8,
+        item: u8,
+    },
     /// `PLI_OPENCHEST` (20): the chest at tile `x`, `y` of the player's level.
     OpenChest { player: u16, x: u8, y: u8 },
     /// `PLI_FLAGSET` (18, `name` or `name=value`) and `PLI_FLAGDEL` (19,
@@ -212,6 +231,7 @@ impl World {
                 by_account: HashMap::new(),
                 last_id: 0,
                 saver: None,
+                floor: HashMap::new(),
                 pending: BTreeMap::new(),
             })),
         }
@@ -223,6 +243,18 @@ impl World {
         if let Some(t) = self.task.lock().unwrap().as_mut() {
             t.saver = Some(saver);
         }
+    }
+
+    /// `PLI_ITEMADD`, `PLI_ITEMDEL` or `PLI_ITEMTAKE` (`item` is 0 for a
+    /// delete).
+    pub fn item(&self, player: u16, op: ItemOp, x2: u8, y2: u8, item: u8) {
+        let _ = self.tx.send(WorldIn::Item {
+            player,
+            op,
+            x2,
+            y2,
+            item,
+        });
     }
 
     /// `PLI_OPENCHEST`.
@@ -361,6 +393,34 @@ impl Leaving {
     }
 }
 
+/// What a player did with an item on the floor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ItemOp {
+    /// `PLI_ITEMADD` (12): rolled from a bush or laid (1.38 on).
+    Add,
+    /// `PLI_ITEMDEL` (13): gone from the floor (taken by a build before
+    /// 1.38, which gives itself the item).
+    Del,
+    /// `PLI_ITEMTAKE` (32): taken; the server gives the item.
+    Take,
+}
+
+/// An item lying in a level.
+#[derive(Debug, Clone)]
+struct FloorItem {
+    x2: u8,
+    y2: u8,
+    item: u8,
+    /// When the clients have dropped it, with some slack for a late take.
+    until: Instant,
+}
+
+/// How long an item lies: the clients' 164 ticks of 50 ms, and 2 s more
+/// for a take that crosses the timeout on the wire.
+fn item_life() -> Duration {
+    TICK * seihai_core::items::ITEM_LIFE as u32 + Duration::from_secs(2)
+}
+
 /// Where the world hands a player's state when they log out.
 pub type Saver = Box<dyn Fn(Leaving) + Send>;
 
@@ -380,6 +440,8 @@ pub struct WorldTask {
     /// Prop changes since the last tick, merged per player.
     pending: BTreeMap<u16, Change>,
     saver: Option<Saver>,
+    /// Items lying in each level (lower-case name).
+    floor: HashMap<String, Vec<FloorItem>>,
 }
 
 impl WorldTask {
@@ -441,6 +503,13 @@ impl WorldTask {
             WorldIn::Props { player, raw } => self.props(player, &raw),
             WorldIn::LevelWarp(w) => self.warp(w),
             WorldIn::OpenChest { player, x, y } => self.open_chest(player, x, y),
+            WorldIn::Item {
+                player,
+                op,
+                x2,
+                y2,
+                item,
+            } => self.item(player, op, x2, y2, item),
             WorldIn::Flag { player, text, set } => {
                 if let Some(p) = self.players.get_mut(&player) {
                     let (name, value) = split_flag(&text);
@@ -512,6 +581,67 @@ impl WorldTask {
         let changed = others::give_item(&mut p.props, item);
         if let Some(m) = others::own_message(p.version, &changed) {
             let _ = p.outbox.send(vec![m]);
+        }
+    }
+
+    /// An item put down, removed or taken in the player's level. Adds and
+    /// removals go to the others in the level (`PLO_ITEMADD` 22,
+    /// `PLO_ITEMDEL` 23); a take of an item that is still there gives it to
+    /// the taker, and a take of one that is gone (someone else was first,
+    /// or it timed out) gives nothing.
+    fn item(&mut self, id: u16, op: ItemOp, x2: u8, y2: u8, item: u8) {
+        let Some(level) = self.players.get(&id).map(|p| p.level.clone()) else {
+            return;
+        };
+        let now = Instant::now();
+        let items = self.floor.entry(level.clone()).or_default();
+        items.retain(|i| i.until > now);
+        let at = |i: &FloorItem| i.x2 == x2 && i.y2 == y2;
+        let tell = match op {
+            ItemOp::Add => {
+                if !seihai_core::items::is_floor_item(item) {
+                    return;
+                }
+                items.retain(|i| !at(i));
+                items.push(FloorItem {
+                    x2,
+                    y2,
+                    item,
+                    until: now + item_life(),
+                });
+                crate::wire::msg(PLO_ITEMADD, &[gchar(x2), gchar(y2), gchar(item)])
+            }
+            ItemOp::Del | ItemOp::Take => {
+                let Some(n) = items
+                    .iter()
+                    .position(|i| at(i) && (op == ItemOp::Del || i.item == item))
+                else {
+                    return;
+                };
+                items.remove(n);
+                if op == ItemOp::Take {
+                    if let Some(p) = self.players.get_mut(&id) {
+                        let changed = others::give_item(&mut p.props, item);
+                        if let Some(m) = others::own_message(p.version, &changed) {
+                            let _ = p.outbox.send(vec![m]);
+                        }
+                    }
+                }
+                crate::wire::msg(PLO_ITEMDEL, &[gchar(x2), gchar(y2)])
+            }
+        };
+        if self.floor.get(&level).is_some_and(Vec::is_empty) {
+            self.floor.remove(&level);
+        }
+        let id_of = if op == ItemOp::Add {
+            PLO_ITEMADD
+        } else {
+            PLO_ITEMDEL
+        };
+        for (&other, p) in &self.players {
+            if other != id && p.level == level && p.version.profile().protocol.plo.contains(id_of) {
+                let _ = p.outbox.send(vec![tell.clone()]);
+            }
         }
     }
 
@@ -768,6 +898,17 @@ impl WorldTask {
             return;
         };
         let mine = me.props.all();
+        // The items lying there.
+        if me.version.profile().protocol.plo.contains(PLO_ITEMADD) {
+            let now = Instant::now();
+            for i in self.floor.get(&me.level).into_iter().flatten() {
+                if i.until > now {
+                    let m =
+                        crate::wire::msg(PLO_ITEMADD, &[gchar(i.x2), gchar(i.y2), gchar(i.item)]);
+                    let _ = me.outbox.send(vec![m]);
+                }
+            }
+        }
         for (&other, p) in &self.players {
             if other == id || p.level != me.level {
                 continue;

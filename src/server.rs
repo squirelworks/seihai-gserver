@@ -771,6 +771,24 @@ impl Session {
                     let text = seihai_core::protocol::latin1(payload);
                     server.world.flag(self.id, text, id == PLI_FLAGSET);
                 }
+                // Items on the floor: `GCHAR x*2, GCHAR y*2[, GCHAR item]`.
+                PLI_ITEMADD | PLI_ITEMDEL | PLI_ITEMTAKE => {
+                    let op = match id {
+                        PLI_ITEMADD => crate::world::ItemOp::Add,
+                        PLI_ITEMDEL => crate::world::ItemOp::Del,
+                        _ => crate::world::ItemOp::Take,
+                    };
+                    let g = |b: &u8| b.wrapping_sub(0x20);
+                    match (op, payload) {
+                        (crate::world::ItemOp::Del, [x, y, ..]) => {
+                            server.world.item(self.id, op, g(x), g(y), 0)
+                        }
+                        (_, [x, y, item, ..]) => {
+                            server.world.item(self.id, op, g(x), g(y), g(item))
+                        }
+                        _ => {}
+                    }
+                }
                 // A chest the player opened: `GCHAR x, GCHAR y` in tiles.
                 PLI_OPENCHEST => {
                     if let [x, y, ..] = payload {
