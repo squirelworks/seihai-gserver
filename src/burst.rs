@@ -133,8 +133,8 @@ pub fn login_burst(
 
 /// The server's answer to a link request into `level` (`PLI_LEVELWARP` or
 /// `PLI_LEVELWARPMOD`), as frame bodies. It has no `PLO_PLAYERWARP`: the
-/// client puts the player at the link's arrival itself (Seihai
-/// `gserver-v2-beta4-notes.md`, "Warps"). With `cached` (the client's copy
+/// client puts the player at the link's arrival itself (Seihai's lab notes
+/// on the beta4 server, "Warps"). With `cached` (the client's copy
 /// has the level's mod time) there is no board, mod time, links or signs,
 /// as in the lab (Seihai `protocol.md`, "Level changes").
 ///
