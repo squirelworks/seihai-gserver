@@ -889,8 +889,8 @@ impl Session {
                     server.world.warp(crate::world::Warp {
                         player: self.id,
                         level: seihai_core::protocol::latin1(name),
-                        x: x.wrapping_sub(0x20) as f32 / 2.0,
-                        y: y.wrapping_sub(0x20) as f32 / 2.0,
+                        x: crate::others::classic_pos(*x),
+                        y: crate::others::classic_pos(*y),
                         mod_time,
                     });
                 }
