@@ -18,6 +18,12 @@
 //!    and on logout (50 = 0, then 51). Only props in each receiver's
 //!    `props.other` set.
 //!
+//! Prop changes are batched on the [`TICK`] (2.8, issue #20): each
+//! player's changes are merged until the tick, latest value per prop, and
+//! each receiver then gets every change in its level in one body, so one
+//! frame. Before a join or a leave the batch goes out first, so a client
+//! never hears of a move after the mover left.
+//!
 //! To do, in order:
 //! 4. `PLI_LEVELWARP` (0) and `PLI_LEVELWARPMOD` (30): load the level, send
 //!    it (see Seihai `documentation/protocol.md`, "Level changes"); a current
@@ -146,6 +152,7 @@ impl World {
                 players: BTreeMap::new(),
                 by_account: HashMap::new(),
                 last_id: 0,
+                pending: BTreeMap::new(),
             })),
         }
     }
@@ -208,17 +215,32 @@ pub struct WorldTask {
     /// Lower-case account name to player id.
     by_account: HashMap<String, u16>,
     last_id: u16,
+    /// Prop changes since the last tick, merged per player.
+    pending: BTreeMap<u16, Change>,
 }
 
 impl WorldTask {
     /// Handle events until every [`World`] handle is gone.
     pub async fn run(mut self) {
-        while let Some(ev) = self.rx.recv().await {
-            self.handle(ev);
+        let mut tick = tokio::time::interval(TICK);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tokio::select! {
+                ev = self.rx.recv() => match ev {
+                    Some(ev) => self.handle(ev),
+                    None => break,
+                },
+                _ = tick.tick() => self.flush(),
+            }
         }
     }
 
     fn handle(&mut self, ev: WorldIn) {
+        // Who is in which level changes below: what moved so far goes out
+        // to the receivers it was meant for, first.
+        if !matches!(ev, WorldIn::Props { .. }) {
+            self.flush();
+        }
         match ev {
             WorldIn::Joined { who, outbox, reply } => {
                 let key = who.account.to_ascii_lowercase();
@@ -335,8 +357,38 @@ impl WorldTask {
         };
         let change = p.props.apply(raw, p.version);
         if !change.is_empty() {
-            let level = p.level.clone();
-            self.tell_level(&level, id, &change, &[]);
+            self.pending.entry(id).or_default().merge(change);
+        }
+    }
+
+    /// The tick: every receiver gets the batched changes of the others in
+    /// its level, in one body.
+    fn flush(&mut self) {
+        if self.pending.is_empty() {
+            return;
+        }
+        let pending = std::mem::take(&mut self.pending);
+        let mut by_level: HashMap<&str, Vec<(u16, &Change)>> = HashMap::new();
+        for (id, change) in &pending {
+            if let Some(p) = self.players.get(id) {
+                by_level.entry(&p.level).or_default().push((*id, change));
+            }
+        }
+        for (&rid, r) in &self.players {
+            let Some(moved) = by_level.get(r.level.as_str()) else {
+                continue;
+            };
+            let mut body = Vec::new();
+            for &(id, change) in moved {
+                if id != rid {
+                    if let Some(m) = others::message(r.version, id, change, &[]) {
+                        body.extend(m);
+                    }
+                }
+            }
+            if !body.is_empty() {
+                let _ = r.outbox.send(body);
+            }
         }
     }
 
@@ -478,6 +530,58 @@ mod tests {
         assert!(st.others.is_empty(), "bob left");
         assert!(rb.try_recv().is_err(), "carol was in another level");
         let _ = carol;
+    }
+
+    /// Many moves in one tick reach each receiver as one body, with only the
+    /// latest position of each mover.
+    #[tokio::test(start_paused = true)]
+    async fn moves_in_a_tick_go_out_as_one_body() {
+        let w = World::new(8, blank());
+        w.start();
+        let mut ids = Vec::new();
+        let mut rxs = Vec::new();
+        for name in ["amy", "ben", "cat"] {
+            let (o, r) = outbox();
+            let id = w
+                .join(joining(name, "one.nw", ClientVersion::V231), o)
+                .await
+                .unwrap()
+                .unwrap()
+                .id;
+            ids.push(id);
+            rxs.push(r);
+        }
+        // Let the joins go out, then drop what they sent. Half a tick
+        // off, so the moves below are all in before the next tick is due.
+        tokio::time::sleep(TICK * 2 + TICK / 2).await;
+        for r in &mut rxs {
+            while r.try_recv().is_ok() {}
+        }
+        let walk = |x: f32| {
+            let mut raw = vec![crate::wire::gchar(78)];
+            crate::wire::gshort(seihai_core::protocol::encode_pos_precise(x), &mut raw);
+            raw
+        };
+        // Ben and Cat each walk five steps within one tick.
+        for step in 1..=5 {
+            w.props(ids[1], &walk(10.0 + step as f32));
+            w.props(ids[2], &walk(20.0 + step as f32));
+        }
+        tokio::time::sleep(TICK * 2).await;
+        // Amy gets one body: one message per mover, at the last step.
+        let body = rxs[0].try_recv().expect("a batch");
+        assert!(rxs[0].try_recv().is_err(), "one body per tick");
+        assert_eq!(body.iter().filter(|&&b| b == b'\n').count(), 2);
+        let mut st = SessionState::for_version(ClientVersion::V231);
+        st.apply_body(&body);
+        let x = |id| st.others.iter().find(|o| o.id == id).map(|o| o.x);
+        assert_eq!((x(ids[1]), x(ids[2])), (Some(15.0), Some(25.0)));
+        // Ben hears only of Cat, not of himself.
+        let body = rxs[1].try_recv().expect("a batch");
+        assert_eq!(body.iter().filter(|&&b| b == b'\n').count(), 1);
+        // A quiet tick sends nothing.
+        tokio::time::sleep(TICK * 2).await;
+        assert!(rxs[0].try_recv().is_err());
     }
 
     /// `join` for tests that only look at the id.
