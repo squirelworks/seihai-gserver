@@ -72,6 +72,13 @@ impl Change {
     }
 }
 
+/// A classic `X`/`Y` byte in tiles. A byte under 0x20 is a step off
+/// the level's left or top edge: a 2.05 walking past the edge where no
+/// link is writes -0.5 as 0x1F, which must not read as 127.5.
+pub fn classic_pos(b: u8) -> f32 {
+    (i16::from(b) - 0x20) as f32 / 2.0
+}
+
 impl Props {
     /// Apply a prop stream as `sender`'s build writes it; returns what
     /// changed.
@@ -80,8 +87,8 @@ impl Props {
         let mut c = Change::default();
         for p in parse_player_props_with(raw, bow) {
             match p.id {
-                X => c.x = p.gchar().map(|v| v as f32 / 2.0),
-                Y => c.y = p.gchar().map(|v| v as f32 / 2.0),
+                X => c.x = p.raw.first().map(|&b| classic_pos(b)),
+                Y => c.y = p.raw.first().map(|&b| classic_pos(b)),
                 X2 => c.x = read_gshort(&p.raw).map(decode_pos_precise),
                 Y2 => c.y = read_gshort(&p.raw).map(decode_pos_precise),
                 10 if bow => {}
@@ -393,6 +400,17 @@ mod tests {
             let len: usize = props.iter().map(|p| 1 + p.raw.len()).sum();
             assert_eq!(len, m.len() - 4, "{v:?}");
         }
+    }
+
+    #[test]
+    fn a_step_off_the_top_edge_is_negative() {
+        let mut p = alice();
+        let c = p.apply(&[gchar(X), gchar(66), gchar(Y), 0x1F], ClientVersion::V205);
+        assert_eq!((c.x, c.y), (Some(33.0), Some(-0.5)));
+        let c = p.apply(&[gchar(Y), 0x20], ClientVersion::V205);
+        assert_eq!(c.y, Some(0.0));
+        let c = p.apply(&[gchar(Y), 0xFF], ClientVersion::V205);
+        assert_eq!(c.y, Some(111.5));
     }
 
     #[test]
