@@ -19,8 +19,8 @@ How the server is put together, and where each later stage plugs in. Read
 | `src/wire.rs` | server-to-client message writers and the ids we use | 1 |
 | `src/burst.rs` | the login burst per generation, own player props | 1 |
 | `src/server.rs` | accept loop, one task per connection, the idle session | 1 |
-| `src/world.rs` | the world task: who is online and player ids (done); levels, other players, the 50 ms tick (to do) | 2 |
-| `src/levels.rs` | level files (`.nw`, `.graal`, `.zelda`), gmaps, links, signs, chests (skeleton) | 2 |
+| `src/world.rs` | the world task: who is online and player ids, the levels read so far (done); other players, warps, the 50 ms tick (to do) | 2 |
+| `src/levels.rs` | level files (`.nw`, `.graal`, `.zelda`) through `seihai_core::assets`, the level name check, the link, sign and chest writers (done); gmaps (to do) | 2 |
 | `src/files.rs` | `WANTFILE`/`UPDATEFILE` file serving from the world folder (skeleton) | 2 |
 | `src/listlink.rs` | the listserver link over the encrypted channel (`SVLINK01`): register, player count with nickname and props, account check (`VERIACC2`), pong (`SVO_PING` 16), private messages, file start; two plain threads, reconnects every 15 s | link |
 | `src/rc.rs` | RC and NC logins for `seihai-rc` (skeleton) | 4 |
@@ -92,9 +92,10 @@ Conn task ◀──Outbox (mpsc of message bodies)──────────
 - A connection keeps its `Codec` and only encodes what the world sends it, so
   generation differences stay in the connection task and the world speaks in
   messages.
-- The burst moves into the world: `Joined` returns the level the player is in,
-  the board from `levels.rs` instead of the generated one, and the other
-  players in it.
+- `Joined` returns the level the player is in, read once by the world from
+  `levels.rs` (the generated board only when the file is missing). The
+  connection builds the burst from it, since its frames differ per
+  generation. The other players in the level come with item 3.
 
 ## The NPC-server link
 
@@ -128,6 +129,9 @@ Conn task ──Hub::joined / props / left──▶ Hub (Mutex: players + link s
   `tests/common/`; each test file is its own binary so the matrices do not
   compete for the CPU (they time out when run side by side on 4 cores).
   Add a matrix test per stage (stage 2: walk to a link and get the next level).
+- `tests/world_levels.rs`: the start level from `levels/` (board, links,
+  signs, chests) for 1.39, 2.05, 2.22 and 2.31, and the blank board when
+  the file is missing.
 - `tests/npc_link.rs`: this gserver, the real NPC-server session code and real
   client logins (2.22, 2.05) on loopback.
 - `tools/lab-matrix.sh`: the real `seihai-mae` binary for every profile.

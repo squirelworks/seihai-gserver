@@ -38,7 +38,6 @@ pub struct Server {
     /// The NPC-server link's shared state (see `npclink`).
     pub npc: Arc<crate::npclink::Hub>,
     started: Instant,
-    started_unix: u64,
     pub verbose: bool,
     /// The secure-login key (`SEI00001`); `None` when secure logins are off.
     pub identity: Option<seihai_core::protocol::seclogin::ServerIdentity>,
@@ -72,7 +71,14 @@ impl Server {
             &cfg.name,
             &cfg.levels_dir(),
         ));
-        let world = crate::world::World::new(cfg.max_players);
+        let world = crate::world::World::new(
+            cfg.max_players,
+            crate::world::LevelSource {
+                dir: cfg.levels_dir(),
+                blank_tile: cfg.board_tile,
+                blank_mod_time: started_unix,
+            },
+        );
         Server {
             npc,
             world,
@@ -81,7 +87,6 @@ impl Server {
             extra_tokens,
             store,
             started: Instant::now(),
-            started_unix,
             verbose: false,
             identity: None,
             listlink: None,
@@ -357,8 +362,13 @@ impl Conn {
         let key = login.account.to_ascii_lowercase();
         // What the world sends this player; framed and sent below.
         let (outbox, mut from_world) = tokio::sync::mpsc::unbounded_channel();
-        let id = match self.server.world.join(&key, outbox).await {
-            Some(Ok(id)) => id,
+        let start = if account.level.is_empty() {
+            cfg.start_level.as_str()
+        } else {
+            account.level.as_str()
+        };
+        let (id, level) = match self.server.world.join(&key, start, outbox).await {
+            Some(Ok(j)) => (j.id, j.level),
             Some(Err(why)) => {
                 if why == crate::world::Refused::InUse {
                     self.server
@@ -375,11 +385,7 @@ impl Conn {
         self.account = Some(key);
         self.player = Some(id);
         {
-            let level = if account.level.is_empty() {
-                cfg.start_level.as_str()
-            } else {
-                account.level.as_str()
-            };
+            let level = level.name.as_str();
             // The link carries props in the 2.22 encoding.
             let props = burst::own_props(
                 ClientVersion::V222,
@@ -415,7 +421,7 @@ impl Conn {
                 id,
                 account: &account,
             },
-            self.server.started_unix,
+            &level,
             self.server.world_time(),
         );
         for f in frames {

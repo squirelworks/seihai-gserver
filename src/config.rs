@@ -43,8 +43,8 @@ pub struct Config {
     pub idle_timeout: Duration,
     /// How long a new connection gets to send its login frame.
     pub login_timeout: Duration,
-    /// Tile number the generated start board is filled with (stage 1 has
-    /// no level files yet).
+    /// Tile number the generated board is filled with, sent when the
+    /// level's file is missing from `levels/`.
     pub board_tile: u16,
     pub max_players: usize,
     /// The Seihai secure login (`SEI00001`, Seihai's
