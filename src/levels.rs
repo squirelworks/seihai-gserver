@@ -106,24 +106,26 @@ pub fn valid_level_name(name: &str) -> bool {
             .any(|c| matches!(c, '/' | '\\' | ':') || c.is_control())
 }
 
-/// The file in `dir` named `name`, compared without case. An exact match
-/// wins.
+/// The file in `dir` named `name`, compared without case, under its name
+/// as the folder lists it. An exact match wins. The folder is always
+/// listed, so the name is the same on case-blind file systems (macOS,
+/// Windows) as on Linux.
 fn find_file(dir: &Path, name: &str) -> io::Result<String> {
-    if dir.join(name).is_file() {
-        return Ok(name.to_string());
-    }
+    let mut found = None;
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
-        if let Some(n) = entry.file_name().to_str() {
-            if n.eq_ignore_ascii_case(name) && entry.path().is_file() {
-                return Ok(n.to_string());
-            }
+        let Some(n) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        if !n.eq_ignore_ascii_case(name) || !entry.path().is_file() {
+            continue;
         }
+        if n == name {
+            return Ok(n);
+        }
+        found.get_or_insert(n);
     }
-    Err(io::Error::new(
-        io::ErrorKind::NotFound,
-        format!("no level {name}"),
-    ))
+    found.ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("no level {name}")))
 }
 
 /// `PLO_LEVELLINK` (1): `dest x y w h newx newy`. A link that keeps the
