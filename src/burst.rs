@@ -131,6 +131,67 @@ pub fn login_burst(
     vec![out.body]
 }
 
+/// The server's answer to a link request into `level` (`PLI_LEVELWARP` or
+/// `PLI_LEVELWARPMOD`), as frame bodies. It has no `PLO_PLAYERWARP`: the
+/// client puts the player at the link's arrival itself (Seihai
+/// `gserver-v2-beta4-notes.md`, "Warps"). With `cached` (the client's copy
+/// has the level's mod time) there is no board, mod time, links or signs,
+/// as in the lab (Seihai `protocol.md`, "Level changes").
+///
+/// The level name comes first in every generation: a client drops the old
+/// level's board, links and signs when it is told a new name. Gen 2 keeps
+/// the burst's frames otherwise (the raw-data header ends a frame, the board
+/// is a frame of its own); whether a real gen-2 client needs that on a warp
+/// is not in any capture yet.
+pub fn level_answer(
+    version: ClientVersion,
+    gen: EncryptionGen,
+    level: &Level,
+    cached: bool,
+) -> Vec<Vec<u8>> {
+    let plo = &version.profile().protocol.plo;
+    let has = |id: u8| plo.contains(id);
+    let mut out = Out {
+        has: &has,
+        body: Vec::new(),
+    };
+    let name = latin1(&level.name);
+    let gen2 = matches!(gen, EncryptionGen::Gen1 | EncryptionGen::Gen2);
+    let mut frames = Vec::new();
+    out.put(PLO_LEVELNAME, &name);
+    if !cached {
+        let board: Vec<u8> = level.board.iter().flat_map(|t| t.to_le_bytes()).collect();
+        let block = wire::raw_block(PLO_BOARDPACKET, &board);
+        if gen2 {
+            let split = block
+                .iter()
+                .position(|&b| b == b'\n')
+                .expect("raw header ends in a newline")
+                + 1;
+            out.body.extend_from_slice(&block[..split]);
+            frames.push(std::mem::take(&mut out.body));
+            frames.push(block[split..].to_vec());
+        } else {
+            out.body.extend(block);
+        }
+        for l in &level.links {
+            out.put(PLO_LEVELLINK, &link_line(l));
+        }
+        for s in &level.signs {
+            out.put(PLO_LEVELSIGN, &sign_record(s));
+        }
+        let mut mod_time = Vec::new();
+        gint5(level.mod_time, &mut mod_time);
+        out.put(PLO_LEVELMODTIME, &mod_time);
+    }
+    for c in level.chests.iter().filter_map(chest_record) {
+        out.put(PLO_LEVELCHEST, &c);
+    }
+    out.put(PLO_SETACTIVELEVEL, &name);
+    frames.push(out.body);
+    frames
+}
+
 struct Out<'a> {
     has: &'a dyn Fn(u8) -> bool,
     body: Vec<u8>,
@@ -324,6 +385,64 @@ mod tests {
             .filter(|id| [6, 101, 1, 5, 39, 4, 156].contains(id))
             .collect();
         assert_eq!(ids, [6, 101, 1, 5, 39, 4, 4, 156]);
+    }
+
+    /// A link's answer, fed to each build's own reader: the new level
+    /// with its board and links, or for a current cached copy only the
+    /// name, chests and active level.
+    #[test]
+    fn level_answer_loads_the_level_for_every_build() {
+        let file = seihai_core::assets::Level::parse(
+            "GLEVNW01\nLINK back.nw 0 10 1 4 62 playery\nCHEST 30 36 greenrupee -1\n",
+        )
+        .unwrap();
+        let mut board = vec![0x1FF; 4096];
+        board[7] = 0x33;
+        let level = Level {
+            name: "house.nw".into(),
+            board: board.clone(),
+            links: file.links,
+            signs: Vec::new(),
+            chests: file.chests,
+            mod_time: 1_700_000_456,
+        };
+        for &v in ClientVersion::all_versions() {
+            let plo = v.profile().protocol.plo;
+            let mut st = SessionState::for_version(v);
+            for f in level_answer(v, v.encryption(), &level, false) {
+                st.apply_body(&f);
+            }
+            assert_eq!(
+                st.current_level_name().as_deref(),
+                Some("house.nw"),
+                "{v:?}"
+            );
+            assert_eq!(st.board.as_deref(), Some(&board[..]), "{v:?}");
+            assert!(st.ignored.is_empty(), "{v:?} drops {:?}", st.ignored);
+            if plo.contains(PLO_LEVELLINK) {
+                assert_eq!(st.links, ["back.nw 0 10 1 4 62 playery"], "{v:?}");
+            }
+            let cached = level_answer(v, v.encryption(), &level, true);
+            assert_eq!(cached.len(), 1, "{v:?}");
+            let ids: Vec<u8> = seihai_core::protocol::split_messages(&cached[0])
+                .iter()
+                .map(|m| m.id)
+                .collect();
+            assert!(ids.contains(&PLO_LEVELNAME), "{v:?}");
+            for id in [
+                PLO_BOARDPACKET,
+                PLO_RAWDATA,
+                PLO_LEVELLINK,
+                PLO_LEVELMODTIME,
+            ] {
+                assert!(!ids.contains(&id), "{v:?} cached answer has {id}");
+            }
+        }
+        // Gen 2 keeps the board in a frame of its own, after the name.
+        let f = level_answer(ClientVersion::V131, EncryptionGen::Gen2, &level, false);
+        assert_eq!(f.len(), 3);
+        assert_eq!(f[0][0], gchar(PLO_LEVELNAME));
+        assert_eq!(f[1][0], gchar(PLO_BOARDPACKET));
     }
 
     #[test]

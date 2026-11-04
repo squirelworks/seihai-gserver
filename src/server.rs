@@ -371,6 +371,7 @@ impl Conn {
             account: key.clone(),
             level: start.to_string(),
             version,
+            gen: login.gen,
             // The world keeps props in the 2.22 encoding, as the
             // NPC-server link does; the id is in the message header.
             props: burst::own_props(
@@ -505,12 +506,9 @@ impl Conn {
                     return self.refuse(&mut codec, "Disconnected for being idle.").await;
                 }
                 Some(body) = from_world.recv() => {
-                    // Whatever else the world queued goes in the same frame.
-                    let mut out = body;
-                    while let Ok(more) = from_world.try_recv() {
-                        out.extend(more);
-                    }
-                    self.send(&mut codec, &out).await?;
+                    // One frame per item: the world decides the frames
+                    // (gen 2 needs the board in a frame of its own).
+                    self.send(&mut codec, &body).await?;
                 }
                 _ = list_ready(listlink.as_deref()) => {
                     let reply = session.link_out(&self.server);
@@ -671,7 +669,29 @@ impl Session {
                 // level entry, neighbour requests and walking off a level.
                 PLI_LANGUAGE | PLI_PACKETCOUNT | PLI_WEAPONADD | PLI_TAMPERCHECK
                 | PLI_PROCESSLIST | PLI_SHOWIMG | PLI_FLAGSET | PLI_ENTERLEVEL
-                | PLI_ADJACENTLEVEL | PLI_LEVELWARP | PLI_LEVELWARPMOD => {}
+                | PLI_ADJACENTLEVEL => {}
+                // A link the player walked into: `[GINT5 mod time,] GCHAR
+                // x*2, GCHAR y*2, name`. The world answers with the level.
+                PLI_LEVELWARP | PLI_LEVELWARPMOD => {
+                    let (mod_time, rest) = if id == PLI_LEVELWARPMOD {
+                        match payload.split_at_checked(5) {
+                            Some((t, rest)) => (Some(read_gint5(t)), rest),
+                            None => continue,
+                        }
+                    } else {
+                        (None, payload)
+                    };
+                    let [x, y, name @ ..] = rest else {
+                        continue;
+                    };
+                    server.world.warp(crate::world::Warp {
+                        player: self.id,
+                        level: seihai_core::protocol::latin1(name),
+                        x: x.wrapping_sub(0x20) as f32 / 2.0,
+                        y: y.wrapping_sub(0x20) as f32 / 2.0,
+                        mod_time,
+                    });
+                }
                 _ => {
                     if first_time && server.verbose {
                         server.log(peer, &format!("message {id} not handled in stage 1"));
@@ -743,6 +763,13 @@ impl Session {
         }
         out
     }
+}
+
+/// A GINT5: five bytes of seven bits each, high first, each plus 32.
+fn read_gint5(b: &[u8]) -> u64 {
+    b.iter().fold(0u64, |v, &c| {
+        (v << 7) | u64::from(c.wrapping_sub(0x20) & 0x7F)
+    })
 }
 
 /// A quoted field: `"` doubled, nothing else escaped.
