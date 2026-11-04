@@ -147,6 +147,14 @@ anticheat.rate = kick at 200 per second
 Defaults are `log` and `correct` only: no kicks or bans until an admin turns
 them on, so a check that is wrong for some build never locks real players out.
 
+Landed in stage 2.9 (`src/anticheat.rs`): the policy layer (`off`, `log`,
+`correct`, `kick after N in S`; settings `anticheat`, `anticheat_log`,
+`anticheat_rate`, `anticheat.speed|teleport|warp|rate`), the log, and the
+speed, teleport, warp and message-rate checks. Defaults: speed `log`, the
+rest `correct`, no kicks. Item, heart and gralat checks and bans are next.
+The speed limits (20 tiles a second, a 12-tile budget, 16 tiles for a
+teleport) are a first guess for the lab run to tune.
+
 ### Where it lives
 
 - `src/anticheat.rs`: the `Violation` type, the per-player score, and the

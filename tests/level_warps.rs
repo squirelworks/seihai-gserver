@@ -46,6 +46,12 @@ fn links_load_the_next_level() {
     std::fs::create_dir_all(w.join("levels")).unwrap();
     std::fs::write(w.join("levels/onlinestartlocal.nw"), START).unwrap();
     std::fs::write(w.join("levels/house.nw"), HOUSE).unwrap();
+    // Players start on the link into the house: the anti-cheat answers a
+    // warp only through a link the player stands on.
+    let cfg = w.join("config/server.txt");
+    let mut text = std::fs::read_to_string(&cfg).unwrap();
+    text.push_str("start_y = 1\n");
+    std::fs::write(&cfg, text).unwrap();
     let house = seihai_core::assets::Level::parse(HOUSE).unwrap().tile_ids();
     let start_board = seihai_core::assets::Level::parse(START).unwrap().tile_ids();
     let (addr, _server) = start(&w);

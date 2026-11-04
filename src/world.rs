@@ -47,6 +47,7 @@
 //! To do: the anti-cheat checks of stage 7 that guard these (movement,
 //! warps, items and counted props), see `docs/PLAN.md`.
 
+use crate::anticheat::{AntiCheat, Kind, Score, Walk, LINK_SLACK};
 use crate::gmaps::{plays_gmaps, Gmaps, Place, GMAPLEVELX, GMAPLEVELY};
 use crate::levels::Level;
 use crate::others::{self, Change, Props};
@@ -227,6 +228,7 @@ impl World {
                 by_account: HashMap::new(),
                 last_id: 0,
                 saver: None,
+                anticheat: None,
                 floor: HashMap::new(),
                 pending: BTreeMap::new(),
             })),
@@ -251,6 +253,14 @@ impl World {
             y2,
             item,
         });
+    }
+
+    /// The anti-cheat checks to run. Call before [`World::start`]; later
+    /// calls do nothing.
+    pub fn set_anticheat(&self, ac: Arc<AntiCheat>) {
+        if let Some(t) = self.task.lock().unwrap().as_mut() {
+            t.anticheat = Some(ac);
+        }
     }
 
     /// `PLI_OPENCHEST`.
@@ -330,7 +340,22 @@ struct Online {
     opened: HashSet<(String, u8, u8)>,
     /// Player flags by name; the value is empty for a bare flag.
     flags: BTreeMap<String, String>,
+    /// The anti-cheat's view: the last accepted position in gmap
+    /// coordinates, and recent violations.
+    walk: Walk,
+    score: Score,
     outbox: Outbox,
+}
+
+impl Online {
+    /// The position in gmap coordinates (the level's own off a gmap).
+    fn global(&self) -> (f32, f32) {
+        let (cx, cy) = self.gmap.as_ref().map_or((0, 0), |g| g.cell);
+        (
+            f32::from(cx) * 64.0 + self.props.x().unwrap_or(0.0),
+            f32::from(cy) * 64.0 + self.props.y().unwrap_or(0.0),
+        )
+    }
 }
 
 /// What the world knows of a player who logged out, for the account file.
@@ -436,6 +461,8 @@ pub struct WorldTask {
     /// Prop changes since the last tick, merged per player.
     pending: BTreeMap<u16, Change>,
     saver: Option<Saver>,
+    /// The anti-cheat policy and log; no checks without it.
+    anticheat: Option<Arc<AntiCheat>>,
     /// Items lying in each level (lower-case name).
     floor: HashMap<String, Vec<FloorItem>>,
 }
@@ -477,6 +504,7 @@ impl WorldTask {
                         }
                         p.opened = who.chests.iter().cloned().collect();
                         p.flags = who.flags.iter().map(|f| split_flag(f)).collect();
+                        p.walk = Walk::at(p.global().0, p.global().1, Instant::now());
                     }
                     let level = self.view(id, &level);
                     Joined { id, level, gmap }
@@ -753,6 +781,11 @@ impl WorldTask {
         if !self.players.contains_key(&w.player) {
             return;
         }
+        if let Some(what) = self.unlinked(&w) {
+            if self.report(w.player, Kind::Warp, what) {
+                return;
+            }
+        }
         let level = match self.find_level(&w.level) {
             Ok(l) => l,
             Err(e) => {
@@ -769,6 +802,12 @@ impl WorldTask {
             .flatten();
         let old = std::mem::replace(&mut p.level, key.clone());
         let moved = p.props.moved(w.x, w.y);
+        let (cx, cy) = gmap.as_ref().map_or((0, 0), |g| g.cell);
+        p.walk = Walk::at(
+            f32::from(cx) * 64.0 + w.x,
+            f32::from(cy) * 64.0 + w.y,
+            Instant::now(),
+        );
         let cached = w.mod_time == Some(level.mod_time);
         p.gmap = gmap.clone();
         if gmap.is_some() {
@@ -805,6 +844,58 @@ impl WorldTask {
             self.tell_level(&old, w.player, &Change::default(), &others::LEFT_LEVEL);
             self.meet(w.player);
         }
+    }
+
+    /// Why a warp is not through a link the player stands on, if it is not:
+    /// the level they are in must have a link to `w.level`, the player
+    /// must be on it (give or take [`LINK_SLACK`] tiles) and the arrival
+    /// must be the link's.
+    fn unlinked(&self, w: &Warp) -> Option<String> {
+        let p = self.players.get(&w.player)?;
+        let (px, py) = (p.props.x().unwrap_or(0.0), p.props.y().unwrap_or(0.0));
+        let what = || format!("to {} {} {} from {px} {py}", w.level, w.x, w.y);
+        let Some(level) = self.loaded.get(&p.level) else {
+            return Some(what());
+        };
+        // The player's middle, as the clients take links and items.
+        let (mx, my) = (px + 1.5, py + 2.0);
+        let near = |at: i32, len: i32, m: f32| {
+            m >= at as f32 - LINK_SLACK && m <= (at + len) as f32 + LINK_SLACK
+        };
+        let arrives = |want: Option<f32>, got: f32| want.is_none_or(|v| (v - got).abs() <= 1.0);
+        let ok = level.links.iter().any(|l| {
+            l.dest.trim().eq_ignore_ascii_case(w.level.trim())
+                && near(l.x, l.width, mx)
+                && near(l.y, l.height, my)
+                && arrives(l.new_x, w.x)
+                && arrives(l.new_y, w.y)
+        });
+        (!ok).then(what)
+    }
+
+    /// A violation by player `id`: logged, and the player kicked, as the
+    /// policy says. Returns whether to correct it.
+    fn report(&mut self, id: u16, kind: Kind, what: String) -> bool {
+        let Some(ac) = self.anticheat.clone() else {
+            return false;
+        };
+        let Some(p) = self.players.get_mut(&id) else {
+            return false;
+        };
+        let v = p.score.report(&ac.policy, kind, Instant::now());
+        if v.log {
+            let what = if v.kick {
+                format!("{what}; kicked")
+            } else {
+                what
+            };
+            ac.log(&p.account, p.version.label(), &p.level, kind, &what);
+        }
+        if v.kick {
+            // An empty item: the connection closes.
+            let _ = p.outbox.send(Vec::new());
+        }
+        v.correct
     }
 
     /// Player `id` is leaving `old`: everyone still there leaves the
@@ -850,6 +941,8 @@ impl WorldTask {
                 props: Props::default(),
                 opened: HashSet::new(),
                 flags: BTreeMap::new(),
+                walk: Walk::at(0.0, 0.0, Instant::now()),
+                score: Score::default(),
                 outbox,
             },
         );
@@ -923,7 +1016,48 @@ impl WorldTask {
         let Some(p) = self.players.get_mut(&id) else {
             return;
         };
-        let change = p.props.apply(raw, p.version);
+        let before: Vec<(u8, Option<Vec<u8>>)> = [GMAPLEVELX, GMAPLEVELY]
+            .iter()
+            .map(|&i| (i, p.props.values().get(&i).cloned()))
+            .collect();
+        let (was_cell, (ox, oy)) = (
+            p.gmap.as_ref().map(|g| g.cell),
+            (p.props.x().unwrap_or(0.0), p.props.y().unwrap_or(0.0)),
+        );
+        let mut change = p.props.apply(raw, p.version);
+        if Props::moves(&change) && self.anticheat.is_some() {
+            let cell = was_cell.map_or((0, 0), |c| {
+                (
+                    change.byte(GMAPLEVELX).unwrap_or(c.0),
+                    change.byte(GMAPLEVELY).unwrap_or(c.1),
+                )
+            });
+            let (x, y) = (p.props.x().unwrap_or(0.0), p.props.y().unwrap_or(0.0));
+            let (gx, gy) = (f32::from(cell.0) * 64.0 + x, f32::from(cell.1) * 64.0 + y);
+            if let Some((kind, d)) = p.walk.step(gx, gy, Instant::now()) {
+                let what = format!("{d:.1} tiles to {gx} {gy}");
+                if self.report(id, kind, what) {
+                    let Some(p) = self.players.get_mut(&id) else {
+                        return;
+                    };
+                    p.props.put_back(&mut change, ox, oy, &before);
+                    let mut back = others::own_position(ox, oy);
+                    for (i, v) in &before {
+                        if let Some(v) = v {
+                            back.push((*i, v.clone()));
+                        }
+                    }
+                    if let Some(m) = others::own_message(p.version, &back) {
+                        let _ = p.outbox.send(vec![m]);
+                    }
+                } else if let Some(p) = self.players.get_mut(&id) {
+                    p.walk.accept(gx, gy);
+                }
+            }
+        }
+        let Some(p) = self.players.get_mut(&id) else {
+            return;
+        };
         let cell = p.gmap.as_ref().map(|g| {
             (
                 g.cell,
@@ -1502,6 +1636,8 @@ mod tests {
                     props: Props::default(),
                     opened: HashSet::new(),
                     flags: BTreeMap::new(),
+                    walk: Walk::at(0.0, 0.0, Instant::now()),
+                    score: Score::default(),
                     outbox: o.clone(),
                 },
             );

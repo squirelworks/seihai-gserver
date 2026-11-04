@@ -27,6 +27,13 @@ fn a_gmap_is_one_world() {
     std::fs::write(w.join("levels/world.gmap"), GRID).unwrap();
     std::fs::write(w.join("levels/onlinestartlocal.nw"), WEST).unwrap();
     std::fs::write(w.join("levels/east.nw"), EAST).unwrap();
+    // Players start by the seam, so the crossing below is a step: the
+    // anti-cheat follows positions in gmap coordinates, and a crossing from
+    // the middle of the level would be a 34-tile teleport.
+    let cfg = w.join("config/server.txt");
+    let mut text = std::fs::read_to_string(&cfg).unwrap();
+    text.push_str("start_x = 62\n");
+    std::fs::write(&cfg, text).unwrap();
     let tiles = |t: &str| seihai_core::assets::Level::parse(t).unwrap().tile_ids();
     let (west, east) = (tiles(WEST), tiles(EAST));
     let (addr, _server) = start(&w);

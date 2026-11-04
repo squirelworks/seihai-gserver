@@ -40,6 +40,9 @@ Stage 1 covers:
   others in the level and for players who arrive while they lie there;
   `PLI_ITEMTAKE` gives the item to the first taker only, and `PLI_ITEMDEL`
   clears it for everyone;
+* anti-cheat on the server: speed, teleports, warps with no link under the
+  player and message floods are logged and put back (`anticheat.*` in
+  `config/server.txt`; kicks only where the admin turns them on);
 * the idle session: the world time as a heartbeat;
 * the NPC-server link (`PROTOCOL.md`): `seihai-npcserver` logs in on its own
   loopback port and is told the level list and every player's props. With
