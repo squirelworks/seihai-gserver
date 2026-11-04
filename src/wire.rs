@@ -95,6 +95,8 @@ pub mod ids {
     pub const PLO_LEVELLINK: u8 = 1;
     pub const PLO_LEVELCHEST: u8 = 4;
     pub const PLO_LEVELSIGN: u8 = 5;
+    pub const PLO_ITEMADD: u8 = 22;
+    pub const PLO_ITEMDEL: u8 = 23;
     pub const PLO_OTHERPLPROPS: u8 = 8;
     pub const PLO_PLAYERPROPS: u8 = 9;
     pub const PLO_LEVELNAME: u8 = 6;
@@ -124,6 +126,8 @@ pub mod ids {
     // Client to server.
     pub const PLI_LEVELWARP: u8 = 0;
     pub const PLI_PLAYERPROPS: u8 = 2;
+    pub const PLI_ITEMADD: u8 = 12;
+    pub const PLI_ITEMDEL: u8 = 13;
     pub const PLI_FLAGSET: u8 = 18;
     pub const PLI_FLAGDEL: u8 = 19;
     pub const PLI_OPENCHEST: u8 = 20;
@@ -132,6 +136,7 @@ pub mod ids {
     pub const PLI_WEAPONADD: u8 = 25;
     pub const PLI_LEVELWARPMOD: u8 = 30;
     pub const PLI_PACKETCOUNT: u8 = 31;
+    pub const PLI_ITEMTAKE: u8 = 32;
     pub const PLI_UPDATEFILE: u8 = 34;
     pub const PLI_ADJACENTLEVEL: u8 = 35;
     pub const PLI_LANGUAGE: u8 = 37;

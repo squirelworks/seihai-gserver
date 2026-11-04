@@ -36,6 +36,10 @@ Stage 1 covers:
   with the chests they opened (sent opened from then on; a chest's rupees,
   bombs, darts or hearts are given) and their player flags (`PLI_FLAGSET`,
   `PLI_FLAGDEL`; sent back as `PLO_FLAGSET` at login);
+* items on the floor: rolled or laid items (`PLI_ITEMADD`) show for the
+  others in the level and for players who arrive while they lie there;
+  `PLI_ITEMTAKE` gives the item to the first taker only, and `PLI_ITEMDEL`
+  clears it for everyone;
 * the idle session: the world time as a heartbeat;
 * the NPC-server link (`PROTOCOL.md`): `seihai-npcserver` logs in on its own
   loopback port and is told the level list and every player's props. With
