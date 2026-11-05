@@ -54,7 +54,7 @@ use crate::levels::Level;
 use crate::npcs::Npc;
 use crate::others::{self, Change, Props};
 use crate::wire::gchar;
-use crate::wire::ids::{PLO_ITEMADD, PLO_ITEMDEL};
+use crate::wire::ids::{PLO_ITEMADD, PLO_ITEMDEL, PLO_SETACTIVELEVEL};
 use seihai_core::protocol::{ClientVersion, EncryptionGen};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
@@ -1054,9 +1054,19 @@ impl WorldTask {
             return;
         };
         let mine = me.props.all();
-        // The level's NPCs, as they are now.
-        for n in self.npcs.get(&me.level).into_iter().flatten() {
-            if let Some(m) = n.message(me.version) {
+        // The level's NPCs, as they are now. A gmap client takes them
+        // under the gmap's name, with the level's cell (beta4 lab
+        // capture, 2026-11-05); the level is made active again after.
+        let npcs: Vec<_> = self
+            .npcs
+            .get(&me.level)
+            .into_iter()
+            .flatten()
+            .filter_map(|n| n.message_on(me.version, me.gmap.as_ref().map(|g| g.cell)))
+            .collect();
+        if !npcs.is_empty() {
+            let name = self.loaded.get(&me.level).map_or(&me.level, |l| &l.name);
+            for m in under_gmap(me.gmap.as_ref(), name, npcs) {
                 let _ = me.outbox.send(vec![m]);
             }
         }
@@ -1107,10 +1117,13 @@ impl WorldTask {
         if changed.is_empty() {
             return;
         }
+        let name = self.loaded.get(&p.level).map_or(&p.level, |l| &l.name);
         for (&other, o) in &self.players {
             if other != id && o.level == p.level {
                 if let Some(m) = crate::npcs::message(npc_id, &changed, o.version) {
-                    let _ = o.outbox.send(vec![m]);
+                    for m in under_gmap(o.gmap.as_ref(), name, vec![m]) {
+                        let _ = o.outbox.send(vec![m]);
+                    }
                 }
             }
         }
@@ -1795,6 +1808,23 @@ mod tests {
         assert!(t.by_account.is_empty());
         assert!(w.online_accounts().is_empty());
     }
+}
+
+/// NPC messages for a player in `level`. A gmap client keeps NPCs under
+/// the gmap's name, so for one the messages go between a
+/// `PLO_SETACTIVELEVEL` naming the gmap and one naming the level again (the
+/// level is what the login burst made active). Real 2.22 neither draws nor
+/// moves a gmap level's NPC sent under the level's own name (Wine lab,
+/// 2026-11-05).
+fn under_gmap(gmap: Option<&Place>, level: &str, msgs: Vec<Vec<u8>>) -> Vec<Vec<u8>> {
+    let Some(g) = gmap else {
+        return msgs;
+    };
+    let active = |name: &str| crate::wire::msg(PLO_SETACTIVELEVEL, &crate::wire::latin1(name));
+    let mut out = vec![active(&g.gmap)];
+    out.extend(msgs);
+    out.push(active(level));
+    out
 }
 
 #[cfg(test)]

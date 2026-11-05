@@ -38,11 +38,15 @@ pub const MESSAGE: u8 = 15;
 pub const ID: u8 = 17;
 pub const SPRITE: u8 = 18;
 /// One byte, `ff` on every record GServer-v2 sends.
+/// The cell of the NPC's level on a gmap (`GCHAR`), sent to a player who
+/// plays that level as part of the gmap.
+pub const GMAPLEVELX: u8 = 41;
+pub const GMAPLEVELY: u8 = 42;
 pub const UNKNOWN43: u8 = 43;
 pub const CURLEVEL: u8 = 52;
 
 /// Props a client's update may not change.
-const SERVER_ONLY: [u8; 3] = [SCRIPT, ID, CURLEVEL];
+const SERVER_ONLY: [u8; 5] = [SCRIPT, GMAPLEVELX, GMAPLEVELY, ID, CURLEVEL];
 
 /// The longest script a `GSHORT` length holds.
 pub const MAX_SCRIPT: usize = (1 << 14) - 1;
@@ -76,8 +80,7 @@ impl Npc {
         // The rest of the record a level NPC gets from GServer-v2 beta4
         // (lab capture, 2026-11-04): shown, no message, its own id, sprite
         // 2, and 43 as `ff`. (X2/Y2/Z2 are left out: client updates move
-        // X/Y.) A real 2.22 still does not draw the NPC from this server
-        // while it draws the same record from GServer-v2: open, see the PR.
+        // X/Y.) Real 2.05 and 2.22 draw it (Wine lab, 2026-11-05).
         props.insert(VISFLAGS, vec![gchar(VIS_SHOWN)]);
         props.insert(MESSAGE, vec![gchar(0)]);
         let mut idv = Vec::new();
@@ -106,7 +109,20 @@ impl Npc {
 
     /// The whole NPC for `to`'s build.
     pub fn message(&self, to: ClientVersion) -> Option<Vec<u8>> {
-        let all: Vec<_> = self.props.iter().map(|(k, v)| (*k, v.clone())).collect();
+        self.message_on(to, None)
+    }
+
+    /// The NPC for `to`, which plays its level as `cell` of a gmap when
+    /// one is given. A gmap client keeps the NPCs of every cell under the
+    /// gmap's name and places each by its cell (props 41 and 42) and its
+    /// X/Y in that cell; without them the NPC is not drawn.
+    pub fn message_on(&self, to: ClientVersion, cell: Option<(u8, u8)>) -> Option<Vec<u8>> {
+        let mut all: Vec<_> = self.props.iter().map(|(k, v)| (*k, v.clone())).collect();
+        if let Some((cx, cy)) = cell {
+            all.push((GMAPLEVELX, vec![gchar(cx)]));
+            all.push((GMAPLEVELY, vec![gchar(cy)]));
+            all.sort_by_key(|(k, _)| *k);
+        }
         message(self.id, &all, to)
     }
 }
@@ -296,6 +312,36 @@ mod tests {
         assert!(message(1, &props, ClientVersion::V222)
             .unwrap()
             .ends_with(b"abc\n"));
+    }
+
+    #[test]
+    fn a_gmap_receiver_gets_the_cell() {
+        let n = Npc {
+            id: 1,
+            props: [(X, vec![gchar(60)]), (UNKNOWN43, vec![0xFF])].into(),
+        };
+        let m = n.message_on(ClientVersion::V222, Some((1, 2))).unwrap();
+        assert_eq!(
+            payload(&m),
+            [
+                gchar(0),
+                gchar(0),
+                gchar(1),
+                gchar(X),
+                gchar(60),
+                gchar(GMAPLEVELX),
+                gchar(1),
+                gchar(GMAPLEVELY),
+                gchar(2),
+                gchar(UNKNOWN43),
+                0xFF
+            ]
+        );
+        // A client may not move an NPC to another cell.
+        let mut n = n;
+        assert!(n
+            .update(&[gchar(GMAPLEVELX), gchar(3)], ClientVersion::V222)
+            .is_empty());
     }
 
     #[test]

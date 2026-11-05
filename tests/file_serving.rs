@@ -35,7 +35,7 @@ fn files_come_from_the_world_folder() {
             .unwrap_or_else(|e| panic!("{v:?}: {e}"));
         let rx = sess.conn.spawn_reader().unwrap();
         let mut st = SessionState::for_version(v);
-        st.file_has_modtime = v.file_has_modtime();
+        st.file_has_modtime = seihai_gserver::files::has_modtime(v);
         read_until(&rx, &mut st, Duration::from_secs(10), |s| s.board.is_some())
             .unwrap_or_else(|e| panic!("{v:?}: {e}"));
         let checks = sess.conn.can_send(34);

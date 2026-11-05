@@ -170,9 +170,19 @@ impl FileStore {
     }
 }
 
+/// Whether `PLO_FILE` carries the GINT5 mod time (and the closing line
+/// end) for `version`: 2.1 on, as the profile says, and also 2.05. Real
+/// 2.05 rev 2 takes a file only in that shape; sent without it, the file
+/// is dropped and an NPC with that image is not drawn (Wine lab,
+/// 2026-11-05; the efb5b90 lab gserver sends it so too). Other builds
+/// before 2.1 are not checked yet and keep the profile's answer.
+pub fn has_modtime(version: ClientVersion) -> bool {
+    version.profile().files.modtime || version == ClientVersion::V205
+}
+
 /// `RAWDATA` + `PLO_FILE` for one file or chunk, as `version` reads it.
 fn file_message(version: ClientVersion, name: &str, mod_time: u64, data: &[u8]) -> Vec<u8> {
-    let modtime = version.profile().files.modtime;
+    let modtime = has_modtime(version);
     let mut body = vec![crate::wire::gchar(PLO_FILE)];
     if modtime {
         gint5(mod_time, &mut body);
@@ -301,6 +311,27 @@ mod tests {
         let _ = std::fs::remove_dir_all(&w);
     }
 
+    /// 2.05 gets the mod time and the closing line end, as 2.1 does; 2.04
+    /// and 1.39 do not.
+    #[test]
+    fn two_point_oh_five_gets_the_mod_time() {
+        let f = Found {
+            name: "a.png".into(),
+            data: b"PNG".to_vec(),
+            mod_time: 1_700_000_000,
+        };
+        for (v, len) in [
+            (ClientVersion::V205, 1 + 5 + 1 + 5 + 3 + 1),
+            (ClientVersion::V204, 1 + 1 + 5 + 3),
+            (ClientVersion::V139, 1 + 1 + 5 + 3),
+        ] {
+            let m = send_file(v, &f).unwrap().concat();
+            let body = &m[m.iter().position(|&b| b == b'\n').unwrap() + 1..];
+            assert_eq!(body.len(), len, "{v:?}");
+            assert_eq!(body.ends_with(b"PNG\n"), v == ClientVersion::V205, "{v:?}");
+        }
+    }
+
     /// Every build that reads `PLO_FILE` gets the file whole, small or
     /// large, in frames no bigger than [`CHUNK`] and a header.
     #[test]
@@ -322,7 +353,7 @@ mod tests {
                 };
                 assert!(frames.iter().all(|b| b.len() <= CHUNK + 256), "{v:?}");
                 let mut st = SessionState::for_version(v);
-                st.file_has_modtime = v.profile().files.modtime;
+                st.file_has_modtime = has_modtime(v);
                 for b in &frames {
                     st.apply_body(b);
                 }

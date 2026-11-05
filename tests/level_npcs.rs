@@ -115,3 +115,118 @@ fn level_npcs_are_shared() {
     }
     let _ = std::fs::remove_dir_all(&w);
 }
+
+/// The messages in frame bodies, as (id, payload); a `PLO_RAWDATA` block
+/// is skipped whole.
+fn messages(frames: &[Vec<u8>]) -> Vec<(u8, Vec<u8>)> {
+    let mut out = Vec::new();
+    for b in frames {
+        let mut i = 0;
+        while i < b.len() {
+            let id = b[i].wrapping_sub(32);
+            let j = b[i..]
+                .iter()
+                .position(|&c| c == b'\n')
+                .map_or(b.len(), |p| i + p);
+            if id == 100 {
+                let n = b[i + 1..i + 4]
+                    .iter()
+                    .fold(0usize, |a, c| a << 7 | usize::from(c - 32));
+                i = j + 1 + n;
+                continue;
+            }
+            out.push((id, b[i + 1..j].to_vec()));
+            i = j + 1;
+        }
+    }
+    out
+}
+
+/// On a gmap, a 2.22 takes a cell's NPCs under the gmap's name, with the
+/// cell (props 41 and 42), and later pushes under the gmap's name too; the
+/// level is made active again after. A 2.05 on the same level, which does
+/// not play gmaps, gets them as a plain level's.
+#[test]
+fn a_gmap_client_takes_npcs_under_the_gmap() {
+    let w = world("npcs-gmap", "*\n");
+    std::fs::create_dir_all(w.join("levels")).unwrap();
+    std::fs::write(
+        w.join("levels/world.gmap"),
+        "GRMAP001\nWIDTH 2\nHEIGHT 1\nLEVELNAMES\n\"west.nw\",\"onlinestartlocal.nw\",\nLEVELNAMESEND\n",
+    )
+    .unwrap();
+    std::fs::write(w.join("levels/west.nw"), "GLEVNW01\n").unwrap();
+    std::fs::write(w.join("levels/onlinestartlocal.nw"), START).unwrap();
+    let (addr, _server) = start(&w);
+
+    let (mut a, _ra, sa) = join(&addr, ClientVersion::V205, "ann");
+    let v = ClientVersion::V222;
+    let mut g = login_gserver(&addr, v, random_key(), "gia", PASSWORD, false).unwrap();
+    let rg = g.conn.spawn_reader().unwrap();
+    let mut frames = Vec::new();
+    let until = std::time::Instant::now() + Duration::from_secs(10);
+    let npc_count = |f: &[Vec<u8>]| messages(f).iter().filter(|(id, _)| *id == 3).count();
+    // Whatever follows the awaited messages within a moment.
+    let settle = |frames: &mut Vec<Vec<u8>>| {
+        while let Ok(Ok(b)) = rg.recv_timeout(Duration::from_millis(300)) {
+            frames.push(b);
+        }
+    };
+    while npc_count(&frames) < 2 && std::time::Instant::now() < until {
+        if let Ok(Ok(b)) = rg.recv_timeout(Duration::from_millis(100)) {
+            frames.push(b);
+        }
+    }
+    settle(&mut frames);
+    let (block, _) = npc(&sa, "block.png");
+    let mut id3 = Vec::new();
+    seihai_gserver::wire::gint3(block, &mut id3);
+    let check = |m: &[(u8, Vec<u8>)]| {
+        let at = m
+            .iter()
+            .position(|(id, p)| *id == 3 && p.starts_with(&id3))
+            .expect("the block reaches the 2.22");
+        let before = m[..at]
+            .iter()
+            .rev()
+            .find(|(id, _)| *id == 156)
+            .expect("an active level");
+        assert_eq!(before.1, b"world.gmap");
+        let after = m[at..]
+            .iter()
+            .find(|(id, _)| *id == 156)
+            .expect("the level again");
+        assert_eq!(after.1, b"onlinestartlocal.nw");
+        m[at].1.clone()
+    };
+    let first = check(&messages(&frames));
+    // Prop 41 is 1 (the east cell) and 42 is 0.
+    assert!(
+        first
+            .windows(4)
+            .any(|w| w == [41 + 32, 1 + 32, 42 + 32, 32]),
+        "{first:?}"
+    );
+    assert_eq!(
+        sa.server_npcs[&block].0.as_deref(),
+        Some("onlinestartlocal.nw")
+    );
+
+    a.conn
+        .send_messages(&[npc_props_message(
+            block,
+            &[(NPCPROP_X, PropValue::Byte(62))],
+        )])
+        .unwrap();
+    let start_at = frames.len();
+    let until = std::time::Instant::now() + Duration::from_secs(10);
+    while npc_count(&frames[start_at..]) < 1 && std::time::Instant::now() < until {
+        if let Ok(Ok(b)) = rg.recv_timeout(Duration::from_millis(100)) {
+            frames.push(b);
+        }
+    }
+    settle(&mut frames);
+    let push = check(&messages(&frames[start_at..]));
+    assert_eq!(&push[3..], &[NPCPROP_X + 32, 62 + 32]);
+    let _ = std::fs::remove_dir_all(&w);
+}
