@@ -436,6 +436,7 @@ impl Conn {
                 },
             ),
             chests: account.chests.clone(),
+            kills: account.kills,
             flags: account.flags.clone(),
         };
         let (id, level, gmap, leader) = match self.server.world.join(joining, outbox).await {
@@ -807,6 +808,8 @@ impl Session {
                 PLI_NPCPROPS => server.world.npc_props(self.id, payload),
                 PLI_BADDYPROPS => server.world.baddy_props(self.id, payload),
                 PLI_BADDYHURT => server.world.baddy_hurt(self.id, payload),
+                PLI_HURTPLAYER => server.world.hurt_player(self.id, payload),
+                PLI_CLAIMPKER => server.world.claim_pker(self.id, payload),
                 PLI_BOMBADD => server.world.relay(self.id, PLO_BOMBADD, true, payload),
                 PLI_BOMBDEL => server.world.relay(self.id, PLO_BOMBDEL, false, payload),
                 PLI_ARROWADD => server.world.relay(self.id, PLO_ARROWADD, true, payload),

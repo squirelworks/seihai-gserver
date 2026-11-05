@@ -116,6 +116,7 @@ pub mod ids {
     pub const PLO_FILESENDFAILED: u8 = 30;
     pub const PLO_EXPLOSION: u8 = 36;
     pub const PLO_PRIVATEMESSAGE: u8 = 37;
+    pub const PLO_HURTPLAYER: u8 = 40;
     pub const PLO_LEVELMODTIME: u8 = 39;
     pub const PLO_STARTMESSAGE: u8 = 41;
     pub const PLO_NEWWORLDTIME: u8 = 42;
@@ -140,6 +141,7 @@ pub mod ids {
     pub const PLI_ARROWADD: u8 = 9;
     pub const PLI_FIRESPY: u8 = 10;
     pub const PLI_ITEMADD: u8 = 12;
+    pub const PLI_CLAIMPKER: u8 = 14;
     pub const PLI_ITEMDEL: u8 = 13;
     pub const PLI_BADDYPROPS: u8 = 15;
     pub const PLI_BADDYHURT: u8 = 16;
@@ -149,6 +151,7 @@ pub mod ids {
     pub const PLI_WANTFILE: u8 = 23;
     pub const PLI_SHOWIMG: u8 = 24;
     pub const PLI_WEAPONADD: u8 = 25;
+    pub const PLI_HURTPLAYER: u8 = 26;
     pub const PLI_EXPLOSION: u8 = 27;
     pub const PLI_LEVELWARPMOD: u8 = 30;
     pub const PLI_PACKETCOUNT: u8 = 31;

@@ -65,6 +65,9 @@ pub struct Account {
     pub status: u8,
     /// Alignment points (player prop 32), 0 to 100. Default 0.
     pub alignment: u8,
+    /// Players this account killed (`KILLS`), counted from the victims'
+    /// claims (`PLI_CLAIMPKER`).
+    pub kills: u32,
     /// Chests this account has opened: level (lower case), x, y.
     pub chests: Vec<(String, u8, u8)>,
     /// Player flags as the client set them: `name` or `name=value`.
@@ -97,6 +100,7 @@ impl Account {
             colors: [2, 0, 10, 4, 18],
             status: 20,
             alignment: 0,
+            kills: 0,
             chests: Vec::new(),
             flags: Vec::new(),
             other: Vec::new(),
@@ -136,6 +140,7 @@ impl Account {
                 }
                 "STATUS" => a.status = v.parse().unwrap_or(0),
                 "ALIGN" => a.alignment = v.parse::<u8>().unwrap_or(0).min(100),
+                "KILLS" => a.kills = v.parse().unwrap_or(0),
                 "CHEST" => {
                     let mut w = v.split_whitespace();
                     let level = w.next().map(str::to_ascii_lowercase);
@@ -181,6 +186,9 @@ impl Account {
         kv("COLORS", self.colors.map(|c| c.to_string()).join(","));
         kv("STATUS", self.status.to_string());
         kv("ALIGN", self.alignment.to_string());
+        if self.kills > 0 {
+            kv("KILLS", self.kills.to_string());
+        }
         for (level, x, y) in &self.chests {
             kv("CHEST", format!("{level} {x} {y}"));
         }

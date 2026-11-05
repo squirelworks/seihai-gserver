@@ -329,6 +329,7 @@ pub fn own_props(version: ClientVersion, p: &Player) -> Vec<u8> {
     put(16, &[gchar((a.y * 2.0) as u8)]);
     put(17, &[gchar(a.sprite)]);
     put(18, &[gchar(a.status & !0x02)]);
+    put(32, &[gchar(a.alignment.min(100))]);
     put(34, &s(&a.name));
     put(35, &s(&a.body));
     if prof.props.precise_pos {
