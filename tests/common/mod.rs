@@ -4,6 +4,8 @@
 
 #![allow(dead_code)]
 
+pub mod raw;
+
 use seihai_core::net::{
     login_gserver, login_gserver_secure, random_key, updatefile_message, wantfile_message,
     Connection, SecureLogin,

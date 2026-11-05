@@ -103,13 +103,18 @@ pub mod ids {
     pub const PLO_PLAYERPROPS: u8 = 9;
     pub const PLO_LEVELNAME: u8 = 6;
     pub const PLO_ISLEADER: u8 = 10;
+    pub const PLO_BOMBADD: u8 = 11;
+    pub const PLO_BOMBDEL: u8 = 12;
     pub const PLO_PLAYERWARP: u8 = 14;
+    pub const PLO_ARROWADD: u8 = 19;
+    pub const PLO_FIRESPY: u8 = 20;
     pub const PLO_PLAYERWARP2: u8 = 49;
     pub const PLO_DISCMESSAGE: u8 = 16;
     pub const PLO_SIGNATURE: u8 = 25;
     pub const PLO_BADDYHURT: u8 = 27;
     pub const PLO_FLAGSET: u8 = 28;
     pub const PLO_FILESENDFAILED: u8 = 30;
+    pub const PLO_EXPLOSION: u8 = 36;
     pub const PLO_PRIVATEMESSAGE: u8 = 37;
     pub const PLO_LEVELMODTIME: u8 = 39;
     pub const PLO_STARTMESSAGE: u8 = 41;
@@ -130,6 +135,10 @@ pub mod ids {
     pub const PLI_LEVELWARP: u8 = 0;
     pub const PLI_PLAYERPROPS: u8 = 2;
     pub const PLI_NPCPROPS: u8 = 3;
+    pub const PLI_BOMBADD: u8 = 4;
+    pub const PLI_BOMBDEL: u8 = 5;
+    pub const PLI_ARROWADD: u8 = 9;
+    pub const PLI_FIRESPY: u8 = 10;
     pub const PLI_ITEMADD: u8 = 12;
     pub const PLI_ITEMDEL: u8 = 13;
     pub const PLI_BADDYPROPS: u8 = 15;
@@ -140,6 +149,7 @@ pub mod ids {
     pub const PLI_WANTFILE: u8 = 23;
     pub const PLI_SHOWIMG: u8 = 24;
     pub const PLI_WEAPONADD: u8 = 25;
+    pub const PLI_EXPLOSION: u8 = 27;
     pub const PLI_LEVELWARPMOD: u8 = 30;
     pub const PLI_PACKETCOUNT: u8 = 31;
     pub const PLI_ITEMTAKE: u8 = 32;

@@ -132,6 +132,14 @@ pub enum WorldIn {
     BaddyProps { player: u16, raw: Vec<u8> },
     /// `PLI_BADDYHURT` (16): a follower's hit on a baddy, for the leader.
     BaddyHurt { player: u16, raw: Vec<u8> },
+    /// A message passed on to the others in the player's level as `out`,
+    /// with the player's id first when `named` (bombs, shots, blasts).
+    Relay {
+        player: u16,
+        out: u8,
+        named: bool,
+        raw: Vec<u8>,
+    },
     /// The server is stopping: save everyone online, then answer.
     SaveAll { reply: oneshot::Sender<usize> },
 }
@@ -324,6 +332,22 @@ impl World {
     pub fn baddy_props(&self, player: u16, raw: &[u8]) {
         let _ = self.tx.send(WorldIn::BaddyProps {
             player,
+            raw: raw.to_vec(),
+        });
+    }
+
+    /// Pass `raw` on to the others in the player's level as `out`: a bomb
+    /// (`PLI_BOMBADD` 4 to `PLO_BOMBADD` 11, `PLI_BOMBDEL` 5 to
+    /// `PLO_BOMBDEL` 12), a shot (`PLI_ARROWADD` 9 to `PLO_ARROWADD` 19),
+    /// fire (`PLI_FIRESPY` 10 to `PLO_FIRESPY` 20) or a blast
+    /// (`PLI_EXPLOSION` 27 to `PLO_EXPLOSION` 36). Every one but the bomb
+    /// removal goes with the sender's id first (`GSHORT`), as GServer-v2
+    /// beta4 passes them on in the lab (2026-11-05).
+    pub fn relay(&self, player: u16, out: u8, named: bool, raw: &[u8]) {
+        let _ = self.tx.send(WorldIn::Relay {
+            player,
+            out,
+            named,
             raw: raw.to_vec(),
         });
     }
@@ -646,6 +670,12 @@ impl WorldTask {
             WorldIn::NpcProps { player, raw } => self.npc_props(player, &raw),
             WorldIn::BaddyProps { player, raw } => self.baddy_props(player, &raw),
             WorldIn::BaddyHurt { player, raw } => self.baddy_hurt(player, &raw),
+            WorldIn::Relay {
+                player,
+                out,
+                named,
+                raw,
+            } => self.relay(player, out, named, &raw),
             WorldIn::LevelWarp(w) => self.warp(w),
             WorldIn::OpenChest { player, x, y } => self.open_chest(player, x, y),
             WorldIn::Item {
@@ -1254,6 +1284,25 @@ impl WorldTask {
         let leader = self.leader_of(&p.level).and_then(|l| self.players.get(&l));
         if let (true, Some(l), Some(m)) = (known, leader, crate::baddies::hurt_message(raw)) {
             let _ = l.outbox.send(vec![m]);
+        }
+    }
+
+    /// A bomb, shot or blast, passed on to the others in the level whose
+    /// build reads `out`.
+    fn relay(&self, id: u16, out: u8, named: bool, raw: &[u8]) {
+        let Some(p) = self.players.get(&id) else {
+            return;
+        };
+        let mut payload = Vec::with_capacity(raw.len() + 2);
+        if named {
+            crate::wire::gshort(id, &mut payload);
+        }
+        payload.extend_from_slice(raw);
+        let m = crate::wire::msg(out, &payload);
+        for (&other, o) in &self.players {
+            if other != id && o.level == p.level && o.version.profile().protocol.plo.contains(out) {
+                let _ = o.outbox.send(vec![m.clone()]);
+            }
         }
     }
 
