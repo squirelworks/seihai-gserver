@@ -56,7 +56,7 @@ use crate::npcs::Npc;
 use crate::others::{self, Change, Props};
 use crate::wire::gchar;
 use crate::wire::ids::{
-    PLO_BADDYPROPS, PLO_ISLEADER, PLO_ITEMADD, PLO_ITEMDEL, PLO_SETACTIVELEVEL,
+    PLO_BADDYPROPS, PLO_HURTPLAYER, PLO_ISLEADER, PLO_ITEMADD, PLO_ITEMDEL, PLO_SETACTIVELEVEL,
 };
 use seihai_core::protocol::{ClientVersion, EncryptionGen};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -132,6 +132,10 @@ pub enum WorldIn {
     BaddyProps { player: u16, raw: Vec<u8> },
     /// `PLI_BADDYHURT` (16): a follower's hit on a baddy, for the leader.
     BaddyHurt { player: u16, raw: Vec<u8> },
+    /// `PLI_HURTPLAYER` (26): `GSHORT victim`, dx, dy, power.
+    HurtPlayer { player: u16, raw: Vec<u8> },
+    /// `PLI_CLAIMPKER` (14): `GSHORT killer`, from the player who died.
+    ClaimPker { player: u16, raw: Vec<u8> },
     /// A message passed on to the others in the player's level as `out`,
     /// with the player's id first when `named` (bombs, shots, blasts).
     Relay {
@@ -180,6 +184,8 @@ pub struct Joining {
     pub chests: Vec<(String, u8, u8)>,
     /// The account's player flags (`name` or `name=value`).
     pub flags: Vec<String>,
+    /// Players the account killed so far.
+    pub kills: u32,
 }
 
 /// The world's answer to a login it lets in.
@@ -352,6 +358,22 @@ impl World {
         });
     }
 
+    /// `PLI_HURTPLAYER`, as sent.
+    pub fn hurt_player(&self, player: u16, raw: &[u8]) {
+        let _ = self.tx.send(WorldIn::HurtPlayer {
+            player,
+            raw: raw.to_vec(),
+        });
+    }
+
+    /// `PLI_CLAIMPKER`, as sent.
+    pub fn claim_pker(&self, player: u16, raw: &[u8]) {
+        let _ = self.tx.send(WorldIn::ClaimPker {
+            player,
+            raw: raw.to_vec(),
+        });
+    }
+
     /// `PLI_BADDYHURT`, as sent.
     pub fn baddy_hurt(&self, player: u16, raw: &[u8]) {
         let _ = self.tx.send(WorldIn::BaddyHurt {
@@ -423,6 +445,8 @@ struct Online {
     opened: HashSet<(String, u8, u8)>,
     /// Player flags by name; the value is empty for a bare flag.
     flags: BTreeMap<String, String>,
+    /// Players killed, the account's count included.
+    kills: u32,
     /// The anti-cheat's view: the last accepted position in gmap
     /// coordinates, and recent violations.
     walk: Walk,
@@ -444,6 +468,7 @@ impl Online {
             x: self.props.x(),
             y: self.props.y(),
             props: self.props.values().clone(),
+            kills: self.kills,
             chests,
             flags: self
                 .flags
@@ -482,6 +507,8 @@ pub struct Leaving {
     pub props: BTreeMap<u8, Vec<u8>>,
     pub chests: Vec<(String, u8, u8)>,
     pub flags: Vec<String>,
+    /// Players killed, the account's count included.
+    pub kills: u32,
 }
 
 impl Leaving {
@@ -520,6 +547,10 @@ impl Leaving {
         if let Some(v) = byte(6) {
             a.glove = v;
         }
+        if let Some(v) = byte(ALIGNMENT) {
+            a.alignment = v.min(100);
+        }
+        a.kills = self.kills;
         a.chests = self.chests.clone();
         a.flags = self.flags.clone();
     }
@@ -625,6 +656,7 @@ impl WorldTask {
                             p.entered.insert(p.level.clone());
                         }
                         p.opened = who.chests.iter().cloned().collect();
+                        p.kills = who.kills;
                         p.flags = who.flags.iter().map(|f| split_flag(f)).collect();
                         p.walk = Walk::at(p.global().0, p.global().1, Instant::now());
                     }
@@ -670,6 +702,8 @@ impl WorldTask {
             WorldIn::NpcProps { player, raw } => self.npc_props(player, &raw),
             WorldIn::BaddyProps { player, raw } => self.baddy_props(player, &raw),
             WorldIn::BaddyHurt { player, raw } => self.baddy_hurt(player, &raw),
+            WorldIn::HurtPlayer { player, raw } => self.hurt_player(player, &raw),
+            WorldIn::ClaimPker { player, raw } => self.claim_pker(player, &raw),
             WorldIn::Relay {
                 player,
                 out,
@@ -1118,6 +1152,7 @@ impl WorldTask {
                 props: Props::default(),
                 opened: HashSet::new(),
                 flags: BTreeMap::new(),
+                kills: 0,
                 walk: Walk::at(0.0, 0.0, Instant::now()),
                 score: Score::default(),
                 stale: None,
@@ -1304,6 +1339,65 @@ impl WorldTask {
                 let _ = o.outbox.send(vec![m.clone()]);
             }
         }
+    }
+
+    /// A hit on another player in the level: the victim gets
+    /// `PLO_HURTPLAYER` (40) with the attacker's id, the hit as sent, and
+    /// `ff ff ff` after it, as GServer-v2 beta4 sends it in the lab
+    /// (2026-11-05). The victim's client decides whether it takes it.
+    fn hurt_player(&self, id: u16, raw: &[u8]) {
+        let (Some(p), Some(hit)) = (self.players.get(&id), raw.get(2..5)) else {
+            return;
+        };
+        let Some(victim) = seihai_core::protocol::read_gshort(&raw[..2]) else {
+            return;
+        };
+        if victim == id {
+            return;
+        }
+        let Some(v) = self.players.get(&victim) else {
+            return;
+        };
+        if v.level != p.level || !v.version.profile().protocol.plo.contains(PLO_HURTPLAYER) {
+            return;
+        }
+        let mut m = Vec::with_capacity(8);
+        crate::wire::gshort(id, &mut m);
+        m.extend_from_slice(hit);
+        m.extend_from_slice(&[0xFF, 0xFF, 0xFF]);
+        let _ = v.outbox.send(vec![crate::wire::msg(PLO_HURTPLAYER, &m)]);
+    }
+
+    /// A player died and names their killer. The killer's count goes up
+    /// and their alignment down by [`ap_cost`]; they and the others in
+    /// their level are told the new alignment (prop 32).
+    fn claim_pker(&mut self, id: u16, raw: &[u8]) {
+        let Some(head) = raw.get(..2) else {
+            return;
+        };
+        let Some(killer) = seihai_core::protocol::read_gshort(head) else {
+            return;
+        };
+        if killer == id || !self.players.contains_key(&id) {
+            return;
+        }
+        let Some(k) = self.players.get_mut(&killer) else {
+            return;
+        };
+        k.kills = k.kills.saturating_add(1);
+        let ap = match k.props.values().get(&ALIGNMENT).map(Vec::as_slice) {
+            Some([v, ..]) => v.wrapping_sub(0x20).min(100),
+            _ => 0,
+        };
+        let new = ap.saturating_sub(ap_cost(ap));
+        let change = k
+            .props
+            .apply(&[gchar(ALIGNMENT), gchar(new)], ClientVersion::V222);
+        if let Some(m) = others::own_message(k.version, &[(ALIGNMENT, vec![gchar(new)])]) {
+            let _ = k.outbox.send(vec![m]);
+        }
+        let level = k.level.clone();
+        self.tell_level(&level, killer, &change, &[]);
     }
 
     /// Deaths that are over, and dead baddies that are back.
@@ -1568,6 +1662,7 @@ mod tests {
             props: Vec::new(),
             chests: Vec::new(),
             flags: Vec::new(),
+            kills: 0,
         }
     }
 
@@ -1598,6 +1693,25 @@ mod tests {
         st
     }
 
+    /// The AP cost of a kill at each AP the lab measured.
+    #[test]
+    fn a_kill_costs_ap_as_beta4_takes_it() {
+        for (ap, cost) in [
+            (100, 12),
+            (88, 10),
+            (78, 8),
+            (62, 8),
+            (54, 6),
+            (42, 6),
+            (37, 4),
+            (21, 4),
+            (17, 2),
+            (3, 2),
+        ] {
+            assert_eq!(ap_cost(ap), cost, "{ap}");
+        }
+    }
+
     #[test]
     fn leaving_goes_into_the_account() {
         let mut was = crate::accounts::Account::new("cora", "start.nw", 30.0, 30.0);
@@ -1626,11 +1740,13 @@ mod tests {
             props: p.values().clone(),
             chests: vec![("house.nw".into(), 1, 2)],
             flags: vec!["quest=2".into()],
+            kills: 3,
         };
         let mut a = was.clone();
         l.apply_to(&mut a);
         assert_eq!((a.level.as_str(), a.x, a.y), ("house.nw", 12.5, 40.0));
         assert_eq!(a.rupees, 37);
+        assert_eq!(a.kills, 3);
         assert_eq!(
             (a.max_hp, a.hp),
             (was.max_hp + 1, f32::from(was.max_hp + 1))
@@ -2031,6 +2147,7 @@ mod tests {
                     props: Props::default(),
                     opened: HashSet::new(),
                     flags: BTreeMap::new(),
+                    kills: 0,
                     walk: Walk::at(0.0, 0.0, Instant::now()),
                     score: Score::default(),
                     stale: None,
@@ -2060,6 +2177,17 @@ mod tests {
         assert!(t.by_account.is_empty());
         assert!(w.online_accounts().is_empty());
     }
+}
+
+/// Player prop 32: alignment points (AP), 0 to 100.
+const ALIGNMENT: u8 = 32;
+
+/// The AP a kill costs the killer: 2, plus 2 for every full 20 AP they
+/// have. GServer-v2 beta4 in the lab (2026-11-05) took 12 at 100, 10 at
+/// 88, 8 from 62 to 78, 6 from 42 to 54, 4 from 21 to 37 and 2 from 3 to
+/// 17, with the victim's AP left as it was.
+fn ap_cost(ap: u8) -> u8 {
+    2 * (1 + ap / 20)
 }
 
 /// NPC messages for a player in `level`. A gmap client keeps NPCs under
