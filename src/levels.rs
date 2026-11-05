@@ -40,6 +40,8 @@ pub struct Level {
     pub chests: Vec<assets::Chest>,
     /// The NPCs of the file (`npcs.rs` gives them ids and sends them).
     pub npcs: Vec<assets::Npc>,
+    /// The baddies of the file (`baddies.rs` numbers and sends them).
+    pub baddies: Vec<assets::Baddy>,
     /// Unix time of the file, for `PLO_LEVELMODTIME` and cached-level checks.
     pub mod_time: u64,
 }
@@ -55,6 +57,7 @@ impl Level {
             signs: Vec::new(),
             chests: Vec::new(),
             npcs: Vec::new(),
+            baddies: Vec::new(),
             mod_time,
         }
     }
@@ -92,6 +95,7 @@ impl Level {
             signs: level.signs,
             chests: level.chests,
             npcs: level.npcs,
+            baddies: level.baddies,
             mod_time,
         })
     }
