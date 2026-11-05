@@ -49,12 +49,15 @@
 //! warps, items and counted props), see `docs/PLAN.md`.
 
 use crate::anticheat::{AntiCheat, Kind, Score, Walk, LINK_SLACK};
+use crate::baddies::Baddy;
 use crate::gmaps::{plays_gmaps, Gmaps, Place, GMAPLEVELX, GMAPLEVELY};
 use crate::levels::Level;
 use crate::npcs::Npc;
 use crate::others::{self, Change, Props};
 use crate::wire::gchar;
-use crate::wire::ids::{PLO_ITEMADD, PLO_ITEMDEL, PLO_SETACTIVELEVEL};
+use crate::wire::ids::{
+    PLO_BADDYPROPS, PLO_ISLEADER, PLO_ITEMADD, PLO_ITEMDEL, PLO_SETACTIVELEVEL,
+};
 use seihai_core::protocol::{ClientVersion, EncryptionGen};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
@@ -125,6 +128,10 @@ pub enum WorldIn {
     /// `PLI_NPCPROPS` (3): `GINT3 id`, then the props a client script
     /// changed.
     NpcProps { player: u16, raw: Vec<u8> },
+    /// `PLI_BADDYPROPS` (15): a baddy id, then the props that changed.
+    BaddyProps { player: u16, raw: Vec<u8> },
+    /// `PLI_BADDYHURT` (16): a follower's hit on a baddy, for the leader.
+    BaddyHurt { player: u16, raw: Vec<u8> },
     /// The server is stopping: save everyone online, then answer.
     SaveAll { reply: oneshot::Sender<usize> },
 }
@@ -175,6 +182,8 @@ pub struct Joined {
     pub level: Arc<Level>,
     /// The gmap that level is a cell of, for a build that plays gmaps.
     pub gmap: Option<Place>,
+    /// The player leads the level: the burst says so (`PLO_ISLEADER`).
+    pub leader: bool,
 }
 
 /// Where the world finds its levels, and what it sends without one.
@@ -243,6 +252,8 @@ impl World {
                 floor: HashMap::new(),
                 npcs: HashMap::new(),
                 last_npc: 0,
+                baddies: HashMap::new(),
+                leaders: HashMap::new(),
                 pending: BTreeMap::new(),
             })),
         }
@@ -304,6 +315,22 @@ impl World {
     /// A player's prop update, as the client sent it.
     pub fn props(&self, player: u16, raw: &[u8]) {
         let _ = self.tx.send(WorldIn::Props {
+            player,
+            raw: raw.to_vec(),
+        });
+    }
+
+    /// `PLI_BADDYPROPS`, as sent.
+    pub fn baddy_props(&self, player: u16, raw: &[u8]) {
+        let _ = self.tx.send(WorldIn::BaddyProps {
+            player,
+            raw: raw.to_vec(),
+        });
+    }
+
+    /// `PLI_BADDYHURT`, as sent.
+    pub fn baddy_hurt(&self, player: u16, raw: &[u8]) {
+        let _ = self.tx.send(WorldIn::BaddyHurt {
             player,
             raw: raw.to_vec(),
         });
@@ -528,6 +555,11 @@ pub struct WorldTask {
     /// The NPCs of each level read so far (lower-case name).
     npcs: HashMap<String, Vec<Npc>>,
     last_npc: u32,
+    /// The baddies of each level read so far (lower-case name).
+    baddies: HashMap<String, Vec<Baddy>>,
+    /// Who leads each level (lower-case name): their client runs its
+    /// baddies. An entry whose player has left the level is stale.
+    leaders: HashMap<String, u16>,
 }
 
 impl WorldTask {
@@ -541,7 +573,10 @@ impl WorldTask {
                     Some(ev) => self.handle(ev),
                     None => break,
                 },
-                _ = tick.tick() => self.flush(),
+                _ = tick.tick() => {
+                    self.flush();
+                    self.baddy_timers(Instant::now());
+                }
             }
         }
     }
@@ -569,8 +604,18 @@ impl WorldTask {
                         p.flags = who.flags.iter().map(|f| split_flag(f)).collect();
                         p.walk = Walk::at(p.global().0, p.global().1, Instant::now());
                     }
+                    let key = level.name.to_ascii_lowercase();
+                    let leader = self.leader_of(&key).is_none_or(|l| l == id);
+                    if leader {
+                        self.leaders.insert(key, id);
+                    }
                     let level = self.view(id, &level);
-                    Joined { id, level, gmap }
+                    Joined {
+                        id,
+                        level,
+                        gmap,
+                        leader,
+                    }
                 });
                 let new_id = answer.as_ref().ok().map(|j| j.id);
                 match (reply.send(answer), new_id) {
@@ -599,6 +644,8 @@ impl WorldTask {
             }
             WorldIn::Props { player, raw } => self.props(player, &raw),
             WorldIn::NpcProps { player, raw } => self.npc_props(player, &raw),
+            WorldIn::BaddyProps { player, raw } => self.baddy_props(player, &raw),
+            WorldIn::BaddyHurt { player, raw } => self.baddy_hurt(player, &raw),
             WorldIn::LevelWarp(w) => self.warp(w),
             WorldIn::OpenChest { player, x, y } => self.open_chest(player, x, y),
             WorldIn::Item {
@@ -812,6 +859,7 @@ impl WorldTask {
             let _ = p.outbox.send(vec![f]);
         }
         self.tell_level(&old, id, &Change::default(), &others::LEFT_LEVEL);
+        self.hand_off(&old);
         self.meet(id);
     }
 
@@ -849,6 +897,18 @@ impl WorldTask {
             })
             .collect();
         self.npcs.insert(l.name.to_ascii_lowercase(), npcs);
+        let baddies = l
+            .baddies
+            .iter()
+            .filter_map({
+                let mut n = 0u8;
+                move |b| {
+                    n = n.checked_add(1)?;
+                    Baddy::from_level(n, b)
+                }
+            })
+            .collect();
+        self.baddies.insert(l.name.to_ascii_lowercase(), baddies);
         self.loaded.insert(key, l.clone());
         self.loaded.insert(l.name.to_ascii_lowercase(), l.clone());
         Ok(l)
@@ -928,6 +988,7 @@ impl WorldTask {
             self.tell_level(&key, w.player, &moved, &[]);
         } else {
             self.tell_level(&old, w.player, &Change::default(), &others::LEFT_LEVEL);
+            self.hand_off(&old);
             self.meet(w.player);
         }
     }
@@ -1045,6 +1106,7 @@ impl WorldTask {
             self.by_account.remove(&p.account);
             self.publish();
             self.tell_level(&p.level, id, &Change::default(), &others::LOGGED_OUT);
+            self.hand_off(&p.level);
         }
     }
 
@@ -1070,6 +1132,26 @@ impl WorldTask {
                 let _ = me.outbox.send(vec![m]);
             }
         }
+        // The level's leader, if it has none, and its baddies.
+        if self.leader_of(&me.level).is_none() {
+            self.leaders.insert(me.level.clone(), id);
+            let _ = me.outbox.send(vec![crate::wire::msg(PLO_ISLEADER, b"")]);
+        }
+        if me.version.profile().protocol.plo.contains(PLO_BADDYPROPS) {
+            let msgs: Vec<_> = self
+                .baddies
+                .get(&me.level)
+                .into_iter()
+                .flatten()
+                .map(|b| b.message(me.version))
+                .collect();
+            if !msgs.is_empty() {
+                let name = self.loaded.get(&me.level).map_or(&me.level, |l| &l.name);
+                for m in under_gmap(me.gmap.as_ref(), name, msgs) {
+                    let _ = me.outbox.send(vec![m]);
+                }
+            }
+        }
         // The items lying there.
         if me.version.profile().protocol.plo.contains(PLO_ITEMADD) {
             let now = Instant::now();
@@ -1090,6 +1172,122 @@ impl WorldTask {
             }
             if let Some(m) = others::message(p.version, id, &mine, &others::JOINED) {
                 let _ = p.outbox.send(vec![m]);
+            }
+        }
+    }
+
+    /// Who leads `level`, if they are still in it.
+    fn leader_of(&self, level: &str) -> Option<u16> {
+        let id = *self.leaders.get(level)?;
+        self.players
+            .get(&id)
+            .is_some_and(|p| p.level == level)
+            .then_some(id)
+    }
+
+    /// The leader may have left `level`: the next player still there (the
+    /// lowest id, one off a gmap first) leads it now and is told so.
+    fn hand_off(&mut self, level: &str) {
+        if self.leader_of(level).is_some() {
+            return;
+        }
+        self.leaders.remove(level);
+        // A player who plays the level as a gmap cell comes last: real
+        // 2.22 on a gmap draws the baddies and runs them, but sends none
+        // of their changes (Wine lab, 2026-11-05).
+        let next = self
+            .players
+            .iter()
+            .filter(|(_, p)| p.level == level)
+            .min_by_key(|(&id, p)| (p.gmap.is_some(), id))
+            .map(|(&id, p)| (id, p.outbox.clone()));
+        if let Some((id, outbox)) = next {
+            self.leaders.insert(level.to_string(), id);
+            let _ = outbox.send(vec![crate::wire::msg(PLO_ISLEADER, b"")]);
+        }
+    }
+
+    /// A baddy change from a client (the leader's AI, or a follower's hit):
+    /// kept, and passed on to the others in the level.
+    fn baddy_props(&mut self, id: u16, raw: &[u8]) {
+        let Some(p) = self.players.get(&id) else {
+            return;
+        };
+        let Some((bid, rest)) = crate::baddies::id_of(raw) else {
+            return;
+        };
+        let Some(b) = self
+            .baddies
+            .get_mut(&p.level)
+            .and_then(|l| l.iter_mut().find(|b| b.id == bid))
+        else {
+            return;
+        };
+        let changed = b.update(rest, Instant::now());
+        if changed.is_empty() {
+            return;
+        }
+        for (&other, o) in &self.players {
+            if other != id
+                && o.level == p.level
+                && o.version.profile().protocol.plo.contains(PLO_BADDYPROPS)
+            {
+                let _ = o
+                    .outbox
+                    .send(vec![crate::baddies::message(bid, &changed, o.version)]);
+            }
+        }
+    }
+
+    /// A hit on a baddy of the player's level, for the leader to apply.
+    fn baddy_hurt(&mut self, id: u16, raw: &[u8]) {
+        let Some(p) = self.players.get(&id) else {
+            return;
+        };
+        let Some((bid, _)) = crate::baddies::id_of(raw) else {
+            return;
+        };
+        let known = self
+            .baddies
+            .get(&p.level)
+            .is_some_and(|l| l.iter().any(|b| b.id == bid));
+        let leader = self.leader_of(&p.level).and_then(|l| self.players.get(&l));
+        if let (true, Some(l), Some(m)) = (known, leader, crate::baddies::hurt_message(raw)) {
+            let _ = l.outbox.send(vec![m]);
+        }
+    }
+
+    /// Deaths that are over, and dead baddies that are back.
+    fn baddy_timers(&mut self, now: Instant) {
+        // (level, baddy, the props that changed, or none for the whole baddy)
+        type Due = (String, u8, Option<Vec<(u8, Vec<u8>)>>);
+        let mut out: Vec<Due> = Vec::new();
+        for (level, list) in self.baddies.iter_mut() {
+            for b in list.iter_mut() {
+                if b.dead_at.is_some_and(|t| t <= now) {
+                    out.push((level.clone(), b.id, Some(b.die(now))));
+                } else if b.back_at.is_some_and(|t| t <= now) {
+                    b.respawn();
+                    out.push((level.clone(), b.id, None));
+                }
+            }
+        }
+        for (level, bid, changed) in out {
+            let Some(b) = self
+                .baddies
+                .get(&level)
+                .and_then(|l| l.iter().find(|b| b.id == bid))
+            else {
+                continue;
+            };
+            for o in self.players.values() {
+                if o.level == level && o.version.profile().protocol.plo.contains(PLO_BADDYPROPS) {
+                    let m = match &changed {
+                        Some(c) => crate::baddies::message(bid, c, o.version),
+                        None => b.message(o.version),
+                    };
+                    let _ = o.outbox.send(vec![m]);
+                }
             }
         }
     }
@@ -1331,7 +1529,11 @@ mod tests {
             gen: v.encryption(),
             props: crate::burst::own_props(
                 ClientVersion::V222,
-                &crate::burst::Player { id: 0, account: &a },
+                &crate::burst::Player {
+                    id: 0,
+                    account: &a,
+                    leader: false,
+                },
             ),
             ..who(account, level)
         }
@@ -1358,6 +1560,7 @@ mod tests {
                 &crate::burst::Player {
                     id: 1,
                     account: &was,
+                    leader: false,
                 },
             ),
             ClientVersion::V222,
@@ -1870,7 +2073,11 @@ mod bench {
             p.props.apply(
                 &crate::burst::own_props(
                     ClientVersion::V222,
-                    &crate::burst::Player { id, account: &a },
+                    &crate::burst::Player {
+                        id,
+                        account: &a,
+                        leader: false,
+                    },
                 ),
                 ClientVersion::V222,
             );

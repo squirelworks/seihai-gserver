@@ -46,6 +46,8 @@ pub fn shape_version(version: Option<ClientVersion>, gen: EncryptionGen) -> Clie
 pub struct Player<'a> {
     pub id: u16,
     pub account: &'a Account,
+    /// The player leads the level (`PLO_ISLEADER` in the burst).
+    pub leader: bool,
 }
 
 /// The burst as frame bodies, in order.
@@ -58,6 +60,7 @@ pub fn login_burst(
     gmap: Option<&Place>,
     world_time: u32,
 ) -> Vec<Vec<u8>> {
+    let leader = p.leader;
     let plo = &version.profile().protocol.plo;
     let has = |id: u8| plo.contains(id);
     let mut out = Out {
@@ -111,7 +114,9 @@ pub fn login_burst(
         out.put(PLO_LEVELMODTIME, &mod_time);
         chests(&mut out);
         flags(&mut out);
-        out.put(PLO_ISLEADER, b"");
+        if leader {
+            out.put(PLO_ISLEADER, b"");
+        }
         return vec![first, second, out.body];
     }
 
@@ -139,7 +144,9 @@ pub fn login_burst(
         out.put(PLO_LEVELNAME, &latin1(&g.gmap));
     }
     out.put(PLO_SETACTIVELEVEL, &latin1(level));
-    out.put(PLO_ISLEADER, b"");
+    if leader {
+        out.put(PLO_ISLEADER, b"");
+    }
     let mut t = Vec::new();
     gint4(world_time, &mut t);
     out.put(PLO_NEWWORLDTIME, &t);
@@ -380,7 +387,11 @@ mod tests {
                 continue;
             }
             seen += 1;
-            let p = Player { id: 1, account: &a };
+            let p = Player {
+                id: 1,
+                account: &a,
+                leader: true,
+            };
             let mut st = SessionState::for_version(v);
             for f in login_burst(&cfg, v, v.encryption(), &p, &west, Some(&place), 0) {
                 st.apply_body(&f);
@@ -412,7 +423,11 @@ mod tests {
     fn own_props_parse_whole_for_every_build() {
         let a = account();
         for &v in ClientVersion::all_versions() {
-            let p = Player { id: 7, account: &a };
+            let p = Player {
+                id: 7,
+                account: &a,
+                leader: true,
+            };
             let bytes = own_props(v, &p);
             let prof = v.profile();
             let parsed =
@@ -430,7 +445,11 @@ mod tests {
         let cfg = Config::defaults(Path::new("w"));
         let a = account();
         for &v in ClientVersion::all_versions() {
-            let p = Player { id: 3, account: &a };
+            let p = Player {
+                id: 3,
+                account: &a,
+                leader: true,
+            };
             let level = Level::blank("onlinestartlocal.nw", cfg.board_tile, 1_700_000_000);
             let frames = login_burst(&cfg, v, v.encryption(), &p, &level, None, 1234);
             let mut st = SessionState::for_version(v);
@@ -473,10 +492,15 @@ mod tests {
             signs: file.signs,
             chests: file.chests,
             npcs: Vec::new(),
+            baddies: Vec::new(),
             mod_time: 1_700_000_123,
         };
         for &v in ClientVersion::all_versions() {
-            let p = Player { id: 3, account: &a };
+            let p = Player {
+                id: 3,
+                account: &a,
+                leader: true,
+            };
             let frames = login_burst(&cfg, v, v.encryption(), &p, &level, None, 1234);
             let mut st = SessionState::for_version(v);
             for f in &frames {
@@ -496,7 +520,11 @@ mod tests {
             &cfg,
             ClientVersion::V222,
             EncryptionGen::Gen3,
-            &Player { id: 1, account: &a },
+            &Player {
+                id: 1,
+                account: &a,
+                leader: true,
+            },
             &level,
             None,
             0,
@@ -527,6 +555,7 @@ mod tests {
             signs: Vec::new(),
             chests: file.chests,
             npcs: Vec::new(),
+            baddies: Vec::new(),
             mod_time: 1_700_000_456,
         };
         for &v in ClientVersion::all_versions() {
@@ -576,7 +605,11 @@ mod tests {
             &cfg,
             ClientVersion::V131,
             EncryptionGen::Gen2,
-            &Player { id: 1, account: &a },
+            &Player {
+                id: 1,
+                account: &a,
+                leader: true,
+            },
             &Level::blank("start.nw", 0, 0),
             None,
             0,
@@ -598,7 +631,11 @@ mod tests {
             &cfg,
             ClientVersion::V205,
             EncryptionGen::Gen3,
-            &Player { id: 1, account: &a },
+            &Player {
+                id: 1,
+                account: &a,
+                leader: true,
+            },
             &Level::blank("start.nw", 0, 0),
             None,
             0,
@@ -613,7 +650,11 @@ mod tests {
             &cfg,
             ClientVersion::V231,
             EncryptionGen::Gen5,
-            &Player { id: 1, account: &a },
+            &Player {
+                id: 1,
+                account: &a,
+                leader: true,
+            },
             &Level::blank("start.nw", 0, 0),
             None,
             0,

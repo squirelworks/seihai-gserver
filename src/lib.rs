@@ -9,6 +9,7 @@
 pub mod accounts;
 pub mod allow;
 pub mod anticheat;
+pub mod baddies;
 pub mod burst;
 pub mod codec;
 pub mod config;

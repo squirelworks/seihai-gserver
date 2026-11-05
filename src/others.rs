@@ -360,7 +360,14 @@ mod tests {
         a.nick = "Alice".into();
         let mut p = Props::default();
         p.apply(
-            &own_props(ClientVersion::V222, &Player { id: 1, account: &a }),
+            &own_props(
+                ClientVersion::V222,
+                &Player {
+                    id: 1,
+                    account: &a,
+                    leader: false,
+                },
+            ),
             ClientVersion::V222,
         );
         p

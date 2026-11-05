@@ -432,13 +432,14 @@ impl Conn {
                 &Player {
                     id: 0,
                     account: &account,
+                    leader: false,
                 },
             ),
             chests: account.chests.clone(),
             flags: account.flags.clone(),
         };
-        let (id, level, gmap) = match self.server.world.join(joining, outbox).await {
-            Some(Ok(j)) => (j.id, j.level, j.gmap),
+        let (id, level, gmap, leader) = match self.server.world.join(joining, outbox).await {
+            Some(Ok(j)) => (j.id, j.level, j.gmap, j.leader),
             Some(Err(why)) => {
                 if why == crate::world::Refused::InUse {
                     self.server
@@ -462,6 +463,7 @@ impl Conn {
                 &Player {
                     id,
                     account: &account,
+                    leader,
                 },
             );
             self.server.npc.joined(id, &account.name, level, &props);
@@ -490,6 +492,7 @@ impl Conn {
             &Player {
                 id,
                 account: &account,
+                leader,
             },
             &level,
             gmap.as_ref(),
@@ -802,6 +805,8 @@ impl Session {
                     }
                 }
                 PLI_NPCPROPS => server.world.npc_props(self.id, payload),
+                PLI_BADDYPROPS => server.world.baddy_props(self.id, payload),
+                PLI_BADDYHURT => server.world.baddy_hurt(self.id, payload),
                 PLI_PLAYERPROPS => {
                     let bow = self.version.profile().props.bow_prop10;
                     server.world.props(self.id, payload);

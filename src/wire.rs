@@ -93,6 +93,7 @@ pub mod ids {
     // Server to client.
     pub const PLO_LEVELBOARD: u8 = 0;
     pub const PLO_LEVELLINK: u8 = 1;
+    pub const PLO_BADDYPROPS: u8 = 2;
     pub const PLO_NPCPROPS: u8 = 3;
     pub const PLO_LEVELCHEST: u8 = 4;
     pub const PLO_LEVELSIGN: u8 = 5;
@@ -106,6 +107,7 @@ pub mod ids {
     pub const PLO_PLAYERWARP2: u8 = 49;
     pub const PLO_DISCMESSAGE: u8 = 16;
     pub const PLO_SIGNATURE: u8 = 25;
+    pub const PLO_BADDYHURT: u8 = 27;
     pub const PLO_FLAGSET: u8 = 28;
     pub const PLO_FILESENDFAILED: u8 = 30;
     pub const PLO_PRIVATEMESSAGE: u8 = 37;
@@ -130,6 +132,8 @@ pub mod ids {
     pub const PLI_NPCPROPS: u8 = 3;
     pub const PLI_ITEMADD: u8 = 12;
     pub const PLI_ITEMDEL: u8 = 13;
+    pub const PLI_BADDYPROPS: u8 = 15;
+    pub const PLI_BADDYHURT: u8 = 16;
     pub const PLI_FLAGSET: u8 = 18;
     pub const PLI_FLAGDEL: u8 = 19;
     pub const PLI_OPENCHEST: u8 = 20;
