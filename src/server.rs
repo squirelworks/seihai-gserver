@@ -807,6 +807,11 @@ impl Session {
                 PLI_NPCPROPS => server.world.npc_props(self.id, payload),
                 PLI_BADDYPROPS => server.world.baddy_props(self.id, payload),
                 PLI_BADDYHURT => server.world.baddy_hurt(self.id, payload),
+                PLI_BOMBADD => server.world.relay(self.id, PLO_BOMBADD, true, payload),
+                PLI_BOMBDEL => server.world.relay(self.id, PLO_BOMBDEL, false, payload),
+                PLI_ARROWADD => server.world.relay(self.id, PLO_ARROWADD, true, payload),
+                PLI_FIRESPY => server.world.relay(self.id, PLO_FIRESPY, true, payload),
+                PLI_EXPLOSION => server.world.relay(self.id, PLO_EXPLOSION, true, payload),
                 PLI_PLAYERPROPS => {
                     let bow = self.version.profile().props.bow_prop10;
                     server.world.props(self.id, payload);
