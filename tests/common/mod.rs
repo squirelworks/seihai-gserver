@@ -97,7 +97,7 @@ pub fn run_one(
     .map_err(|e| e.to_string())?;
     let rx = sess.conn.spawn_reader().map_err(|e| e.to_string())?;
     let mut st = SessionState::for_version(v);
-    st.file_has_modtime = v.file_has_modtime();
+    st.file_has_modtime = seihai_gserver::files::has_modtime(v);
     read_until(&rx, &mut st, Duration::from_secs(10), |s| {
         s.board.is_some() && s.current_level_name().is_some()
     })?;

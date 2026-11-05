@@ -801,6 +801,7 @@ impl Session {
                         server.log(peer, &format!("file {name}: {what}"));
                     }
                 }
+                PLI_NPCPROPS => server.world.npc_props(self.id, payload),
                 PLI_PLAYERPROPS => {
                     let bow = self.version.profile().props.bow_prop10;
                     server.world.props(self.id, payload);

@@ -93,6 +93,7 @@ pub mod ids {
     // Server to client.
     pub const PLO_LEVELBOARD: u8 = 0;
     pub const PLO_LEVELLINK: u8 = 1;
+    pub const PLO_NPCPROPS: u8 = 3;
     pub const PLO_LEVELCHEST: u8 = 4;
     pub const PLO_LEVELSIGN: u8 = 5;
     pub const PLO_ITEMADD: u8 = 22;
@@ -126,6 +127,7 @@ pub mod ids {
     // Client to server.
     pub const PLI_LEVELWARP: u8 = 0;
     pub const PLI_PLAYERPROPS: u8 = 2;
+    pub const PLI_NPCPROPS: u8 = 3;
     pub const PLI_ITEMADD: u8 = 12;
     pub const PLI_ITEMDEL: u8 = 13;
     pub const PLI_FLAGSET: u8 = 18;

@@ -437,7 +437,7 @@ fn list_link_props_private_message_and_file_start() {
     .unwrap();
     let rx = sess.conn.spawn_reader().unwrap();
     let mut st = seihai_core::protocol::SessionState::for_version(v);
-    st.file_has_modtime = v.file_has_modtime();
+    st.file_has_modtime = seihai_gserver::files::has_modtime(v);
     read_until(&rx, &mut st, Duration::from_secs(10), |s| s.board.is_some()).unwrap();
 
     let add = next_msg(&seen, 14);

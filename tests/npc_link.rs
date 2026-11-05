@@ -96,7 +96,7 @@ fn client(
     let mut sess = login_gserver(addr, v, random_key(), account, PASSWORD, true).unwrap();
     let rx = sess.conn.spawn_reader().unwrap();
     let mut st = SessionState::for_version(v);
-    st.file_has_modtime = v.file_has_modtime();
+    st.file_has_modtime = seihai_gserver::files::has_modtime(v);
     let end = Instant::now() + Duration::from_secs(10);
     while st.current_level_name().is_none() {
         let body = rx

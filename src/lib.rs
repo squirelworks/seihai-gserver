@@ -18,6 +18,7 @@ pub mod levels;
 pub mod listlink;
 pub mod login;
 pub mod npclink;
+pub mod npcs;
 pub mod others;
 pub mod ratelimit;
 pub mod rc;

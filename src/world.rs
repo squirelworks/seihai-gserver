@@ -51,9 +51,10 @@
 use crate::anticheat::{AntiCheat, Kind, Score, Walk, LINK_SLACK};
 use crate::gmaps::{plays_gmaps, Gmaps, Place, GMAPLEVELX, GMAPLEVELY};
 use crate::levels::Level;
+use crate::npcs::Npc;
 use crate::others::{self, Change, Props};
 use crate::wire::gchar;
-use crate::wire::ids::{PLO_ITEMADD, PLO_ITEMDEL};
+use crate::wire::ids::{PLO_ITEMADD, PLO_ITEMDEL, PLO_SETACTIVELEVEL};
 use seihai_core::protocol::{ClientVersion, EncryptionGen};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
@@ -121,6 +122,9 @@ pub enum WorldIn {
     },
     /// The connection closed.
     Left { player: u16 },
+    /// `PLI_NPCPROPS` (3): `GINT3 id`, then the props a client script
+    /// changed.
+    NpcProps { player: u16, raw: Vec<u8> },
     /// The server is stopping: save everyone online, then answer.
     SaveAll { reply: oneshot::Sender<usize> },
 }
@@ -237,6 +241,8 @@ impl World {
                 saver: None,
                 anticheat: None,
                 floor: HashMap::new(),
+                npcs: HashMap::new(),
+                last_npc: 0,
                 pending: BTreeMap::new(),
             })),
         }
@@ -298,6 +304,14 @@ impl World {
     /// A player's prop update, as the client sent it.
     pub fn props(&self, player: u16, raw: &[u8]) {
         let _ = self.tx.send(WorldIn::Props {
+            player,
+            raw: raw.to_vec(),
+        });
+    }
+
+    /// `PLI_NPCPROPS`, as sent.
+    pub fn npc_props(&self, player: u16, raw: &[u8]) {
+        let _ = self.tx.send(WorldIn::NpcProps {
             player,
             raw: raw.to_vec(),
         });
@@ -511,6 +525,9 @@ pub struct WorldTask {
     anticheat: Option<Arc<AntiCheat>>,
     /// Items lying in each level (lower-case name).
     floor: HashMap<String, Vec<FloorItem>>,
+    /// The NPCs of each level read so far (lower-case name).
+    npcs: HashMap<String, Vec<Npc>>,
+    last_npc: u32,
 }
 
 impl WorldTask {
@@ -581,6 +598,7 @@ impl WorldTask {
                 let _ = reply.send(n);
             }
             WorldIn::Props { player, raw } => self.props(player, &raw),
+            WorldIn::NpcProps { player, raw } => self.npc_props(player, &raw),
             WorldIn::LevelWarp(w) => self.warp(w),
             WorldIn::OpenChest { player, x, y } => self.open_chest(player, x, y),
             WorldIn::Item {
@@ -822,6 +840,15 @@ impl WorldTask {
             return Ok(l.clone());
         }
         let l = Arc::new(Level::load(&self.levels.dir, name)?);
+        let npcs = l
+            .npcs
+            .iter()
+            .map(|n| {
+                self.last_npc += 1;
+                Npc::from_level(self.last_npc, n)
+            })
+            .collect();
+        self.npcs.insert(l.name.to_ascii_lowercase(), npcs);
         self.loaded.insert(key, l.clone());
         self.loaded.insert(l.name.to_ascii_lowercase(), l.clone());
         Ok(l)
@@ -1027,6 +1054,22 @@ impl WorldTask {
             return;
         };
         let mine = me.props.all();
+        // The level's NPCs, as they are now. A gmap client takes them
+        // under the gmap's name, with the level's cell (beta4 lab
+        // capture, 2026-11-05); the level is made active again after.
+        let npcs: Vec<_> = self
+            .npcs
+            .get(&me.level)
+            .into_iter()
+            .flatten()
+            .filter_map(|n| n.message_on(me.version, me.gmap.as_ref().map(|g| g.cell)))
+            .collect();
+        if !npcs.is_empty() {
+            let name = self.loaded.get(&me.level).map_or(&me.level, |l| &l.name);
+            for m in under_gmap(me.gmap.as_ref(), name, npcs) {
+                let _ = me.outbox.send(vec![m]);
+            }
+        }
         // The items lying there.
         if me.version.profile().protocol.plo.contains(PLO_ITEMADD) {
             let now = Instant::now();
@@ -1047,6 +1090,41 @@ impl WorldTask {
             }
             if let Some(m) = others::message(p.version, id, &mine, &others::JOINED) {
                 let _ = p.outbox.send(vec![m]);
+            }
+        }
+    }
+
+    /// A client's update of an NPC in its level: kept, and passed on to the
+    /// others there. An NPC of another level, or none, is ignored.
+    fn npc_props(&mut self, id: u16, raw: &[u8]) {
+        let Some(p) = self.players.get(&id) else {
+            return;
+        };
+        let (Some(head), Some(rest)) = (raw.get(..3), raw.get(3..)) else {
+            return;
+        };
+        let npc_id = head
+            .iter()
+            .fold(0u32, |a, b| a << 7 | u32::from(b.wrapping_sub(0x20) & 0x7F));
+        let Some(npc) = self
+            .npcs
+            .get_mut(&p.level)
+            .and_then(|l| l.iter_mut().find(|n| n.id == npc_id))
+        else {
+            return;
+        };
+        let changed = npc.update(rest, p.version);
+        if changed.is_empty() {
+            return;
+        }
+        let name = self.loaded.get(&p.level).map_or(&p.level, |l| &l.name);
+        for (&other, o) in &self.players {
+            if other != id && o.level == p.level {
+                if let Some(m) = crate::npcs::message(npc_id, &changed, o.version) {
+                    for m in under_gmap(o.gmap.as_ref(), name, vec![m]) {
+                        let _ = o.outbox.send(vec![m]);
+                    }
+                }
             }
         }
     }
@@ -1730,6 +1808,23 @@ mod tests {
         assert!(t.by_account.is_empty());
         assert!(w.online_accounts().is_empty());
     }
+}
+
+/// NPC messages for a player in `level`. A gmap client keeps NPCs under
+/// the gmap's name, so for one the messages go between a
+/// `PLO_SETACTIVELEVEL` naming the gmap and one naming the level again (the
+/// level is what the login burst made active). Real 2.22 neither draws nor
+/// moves a gmap level's NPC sent under the level's own name (Wine lab,
+/// 2026-11-05).
+fn under_gmap(gmap: Option<&Place>, level: &str, msgs: Vec<Vec<u8>>) -> Vec<Vec<u8>> {
+    let Some(g) = gmap else {
+        return msgs;
+    };
+    let active = |name: &str| crate::wire::msg(PLO_SETACTIVELEVEL, &crate::wire::latin1(name));
+    let mut out = vec![active(&g.gmap)];
+    out.extend(msgs);
+    out.push(active(level));
+    out
 }
 
 #[cfg(test)]

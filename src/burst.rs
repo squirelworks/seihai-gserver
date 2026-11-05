@@ -472,6 +472,7 @@ mod tests {
             links: file.links,
             signs: file.signs,
             chests: file.chests,
+            npcs: Vec::new(),
             mod_time: 1_700_000_123,
         };
         for &v in ClientVersion::all_versions() {
@@ -525,6 +526,7 @@ mod tests {
             links: file.links,
             signs: Vec::new(),
             chests: file.chests,
+            npcs: Vec::new(),
             mod_time: 1_700_000_456,
         };
         for &v in ClientVersion::all_versions() {
