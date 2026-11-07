@@ -24,7 +24,8 @@ How the server is put together, and where each later stage plugs in. Read
 | `src/levels.rs` | level files (`.nw`, `.graal`, `.zelda`) through `seihai_core::assets`, the level name check, the link, sign and chest writers | 2 |
 | `src/gmaps.rs` | `.gmap` files in `levels/` (`seihai_core::gmap::Gmap`), which builds play gmaps, a level's cell | 2 |
 | `src/others.rs` | other players' props: kept in one form, sent as `PLO_OTHERPLPROPS` (8) per receiver's build; join (50 = 1), logout (50 = 0, 51); chest items given as own props (`PLO_PLAYERPROPS` 9) | 2 |
-| `src/files.rs` | `WANTFILE`/`UPDATEFILE` served from `<world>/files/` and the `.gmap` files in `levels/`: the name check, the case-insensitive index, `PLO_FILE` per build, large files | 2 |
+| `src/files.rs` | `WANTFILE`/`UPDATEFILE` served from `<world>/files/` and the `.gmap` files in `levels/`: the name check, the case-insensitive index, `PLO_FILE` per build, large files, packages | 2 |
+| `src/gpak.rs` | `.gpak` / `.gpake`: who loads them, `config/gpakkeys.txt`, the `PLO_FILEKEY` (104) packet | 2 |
 | `src/listlink.rs` | the listserver link over the encrypted channel (`SVLINK01`): register, player count with nickname and props, account check (`VERIACC2`), pong (`SVO_PING` 16), private messages, file start; two plain threads, reconnects every 15 s | link |
 | `src/rc.rs` | RC and NC logins for `seihai-rc` (skeleton) | 4 |
 | `src/npclink.rs` | the link to `seihai-npcserver` (`PROTOCOL.md`): `Hub` (players for the link), `serve_link`, `supervise` for `npcserver = auto` | 5 (first half) |

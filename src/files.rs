@@ -29,6 +29,10 @@
 //! server is sent, otherwise `PLO_FILEUPTODATE` (45), or before 2.1, which
 //! has no 45, `PLO_FILESENDFAILED`. A name the server does not have also
 //! gets "up to date" (as in stage 1), so the client keeps its copy.
+//!
+//! A `.gpake` is sent only with its key from `config/gpakkeys.txt` first
+//! (`gpak.rs`). A package the build does not load, or an encrypted package
+//! with no key, is `PLO_FILESENDFAILED`. `gpakkeys.txt` is never served.
 
 use crate::wire::{gint3, gint5, ids::*, latin1, msg};
 use seihai_core::protocol::ClientVersion;
@@ -52,6 +56,8 @@ const RESCAN: Duration = Duration::from_secs(2);
 pub struct FileStore {
     files_dir: PathBuf,
     levels_dir: PathBuf,
+    /// `config/gpakkeys.txt`. Read when a `.gpake` is sent. Not indexed.
+    keys_path: PathBuf,
     index: Mutex<Index>,
 }
 
@@ -86,11 +92,18 @@ impl FileStore {
         FileStore {
             files_dir: world.join("files"),
             levels_dir: world.join("levels"),
+            keys_path: world.join("config").join("gpakkeys.txt"),
             index: Mutex::new(Index {
                 by_name: HashMap::new(),
                 scanned: None,
             }),
         }
+    }
+
+    /// The DES key for `name` from `config/gpakkeys.txt`, if that file has one.
+    pub fn package_key(&self, name: &str) -> Option<[u8; 8]> {
+        let text = std::fs::read_to_string(&self.keys_path).unwrap_or_default();
+        crate::gpak::key_in(&text, name)
     }
 
     /// The file called `name`, if the world has it. A name not in the
@@ -160,6 +173,11 @@ impl FileStore {
                     dirs.push(e.path());
                 } else if kind.is_file() {
                     if let Some(n) = e.file_name().to_str() {
+                        // The key file is private even if a copy is dropped
+                        // under files/.
+                        if n.eq_ignore_ascii_case("gpakkeys.txt") {
+                            continue;
+                        }
                         out.entry(n.to_ascii_lowercase())
                             .or_insert_with(|| e.path());
                     }
@@ -243,6 +261,69 @@ pub fn send_file(version: ClientVersion, f: &Found) -> Option<Vec<Vec<u8>>> {
         return None;
     }
     Some(frames_of(m))
+}
+
+/// The frames that answer one file request.
+///
+/// `asked` is the name bytes the client sent (used on "failed" and "up to
+/// date", so the client can match them). `name` is that name as text.
+/// `key` is the `.gpake` key, when the world has one. A non-package is
+/// unchanged from [`send_file`] / [`up_to_date`] / [`failed`].
+pub fn offer(
+    version: ClientVersion,
+    asked: &[u8],
+    name: &str,
+    found: Option<&Found>,
+    since: Option<u64>,
+    key: Option<[u8; 8]>,
+) -> Vec<Vec<u8>> {
+    let kind = crate::gpak::package_kind(name);
+    if !crate::gpak::client_loads(version, kind) {
+        return one(failed(version, asked));
+    }
+    let key_msg = if kind == crate::gpak::PackageKind::Encrypted {
+        let Some(key) = key else {
+            return one(failed(version, asked));
+        };
+        if !version.profile().protocol.plo.contains(PLO_FILEKEY) {
+            return one(failed(version, asked));
+        }
+        Some(crate::gpak::file_key_packet(name, &key))
+    } else {
+        None
+    };
+    let newer = match (&found, since) {
+        (Some(f), Some(t)) => f.mod_time > t,
+        (Some(_), None) => true,
+        (None, _) => false,
+    };
+    if let Some(f) = found.filter(|_| newer) {
+        if let Some(mut frames) = send_file(version, f) {
+            if let Some(key_msg) = key_msg {
+                if let Some(first) = frames.first_mut() {
+                    let mut body = key_msg;
+                    body.extend_from_slice(first);
+                    *first = body;
+                }
+            }
+            return frames;
+        }
+        return one(failed(version, asked));
+    }
+    if since.is_some() {
+        let mut body = key_msg.unwrap_or_default();
+        body.extend(up_to_date(version, asked));
+        return one(body);
+    }
+    one(failed(version, asked))
+}
+
+fn one(body: Vec<u8>) -> Vec<Vec<u8>> {
+    if body.is_empty() {
+        Vec::new()
+    } else {
+        vec![body]
+    }
 }
 
 /// "Could not send": `PLO_FILESENDFAILED` with the name, where the build
@@ -363,5 +444,91 @@ mod tests {
                 assert!(st.ignored.is_empty(), "{v:?} drops {:?}", st.ignored);
             }
         }
+    }
+
+    #[test]
+    fn the_key_file_is_not_served_and_a_gpake_starts_with_104() {
+        let (w, s) = store("gpak");
+        std::fs::create_dir_all(w.join("config")).unwrap();
+        std::fs::write(
+            w.join("config/gpakkeys.txt"),
+            "sample.gpake 133457799bbcdff1\n",
+        )
+        .unwrap();
+        std::fs::write(w.join("files/gpakkeys.txt"), b"secret-key-line").unwrap();
+        std::fs::write(w.join("files/sample.gpake"), b"PK").unwrap();
+        std::fs::write(w.join("files/sample.gpak"), b"PK").unwrap();
+        assert!(s.find("gpakkeys.txt").is_none());
+        let key = [0x13, 0x34, 0x57, 0x79, 0x9b, 0xbc, 0xdf, 0xf1];
+        assert_eq!(s.package_key("Sample.gpake"), Some(key));
+
+        let enc = s.find("sample.gpake").unwrap();
+        let plain = s.find("sample.gpak").unwrap();
+        let sent = offer(
+            ClientVersion::V420R8,
+            b"sample.gpake",
+            "sample.gpake",
+            Some(&enc),
+            None,
+            Some(key),
+        );
+        assert_eq!(sent[0][0], 104 + 32, "key first");
+        assert!(
+            sent[0].windows(2).any(|b| b == b"PK"),
+            "the package follows"
+        );
+
+        let old = offer(
+            ClientVersion::V404R2,
+            b"sample.gpake",
+            "sample.gpake",
+            Some(&enc),
+            None,
+            Some(key),
+        );
+        assert_eq!(old[0][0], 30 + 32);
+
+        let no_key = offer(
+            ClientVersion::V603R7,
+            b"sample.gpake",
+            "sample.gpake",
+            Some(&enc),
+            None,
+            None,
+        );
+        assert_eq!(no_key[0][0], 30 + 32);
+
+        let plain_old = offer(
+            ClientVersion::V420R8,
+            b"sample.gpak",
+            "sample.gpak",
+            Some(&plain),
+            None,
+            None,
+        );
+        assert_eq!(plain_old[0][0], 30 + 32);
+
+        let plain_new = offer(
+            ClientVersion::V603R7,
+            b"sample.gpak",
+            "sample.gpak",
+            Some(&plain),
+            None,
+            None,
+        );
+        assert_ne!(plain_new[0][0], 104 + 32);
+        assert_ne!(plain_new[0][0], 30 + 32);
+
+        let cached = offer(
+            ClientVersion::V603R7,
+            b"sample.gpake",
+            "sample.gpake",
+            Some(&enc),
+            Some(u64::MAX),
+            Some(key),
+        );
+        let nl = cached[0].iter().position(|b| *b == b'\n').unwrap();
+        assert_eq!(cached[0][0], 104 + 32);
+        assert_eq!(cached[0][nl + 1], 45 + 32, "up to date follows the key");
     }
 }

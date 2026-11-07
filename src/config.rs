@@ -96,6 +96,9 @@ pub struct Config {
     /// The anti-cheat checks and what they do (`anticheat`,
     /// `anticheat_log`, `anticheat_rate`, `anticheat.<check>`).
     pub anticheat: crate::anticheat::Policy,
+    /// Packages to push at login, from `gpaks = a.gpake,b.gpak`. Empty
+    /// sends none. Each name is served like a file request.
+    pub gpaks: Vec<String>,
 }
 
 /// How the NPC-server link runs.
@@ -141,6 +144,7 @@ impl Config {
             listserver_key: String::new(),
             listserver_accounts: false,
             anticheat: crate::anticheat::Policy::default(),
+            gpaks: Vec::new(),
         }
     }
 
@@ -239,6 +243,14 @@ impl Config {
             "listserver_secure" => self.listserver_secure = flag(v)?,
             "listserver_key" => self.listserver_key = v.to_string(),
             "listserver_accounts" => self.listserver_accounts = flag(v)?,
+            "gpaks" => {
+                self.gpaks = v
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+                    .collect();
+            }
             _ => {
                 return match self.anticheat.set(key, v) {
                     Some(r) => r,
