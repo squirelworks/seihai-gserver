@@ -17,7 +17,7 @@ How the server is put together, and where each later stage plugs in. Read
 | `src/secure.rs` | the Seihai secure login (`SEI00001`): spots C1, answers S1, opens C2 and rebuilds the classic login frame | 1 |
 | `src/ratelimit.rs` | login scheduling: the cap on password checks at once (`password_checks`) and the per-address login rate (`login_rate`) | 1 |
 | `src/codec.rs` | frames per generation (gen 2 zlib, gen 3 LCG byte, gen 5 XOR) | 1 |
-| `src/wire.rs` | server-to-client message writers and the ids we use | 1 |
+| `src/wire.rs` | server-to-client message writers and the ids we use (`docs/packet-ids.md`) | 1 |
 | `src/burst.rs` | the login burst per generation, own player props | 1 |
 | `src/server.rs` | accept loop, one task per connection, the idle session | 1 |
 | `src/world.rs` | the world task: who is online and player ids, the levels read so far, other players in a level, links between levels, gmap cells and crossings, opened chests and player flags, items on the floor, the account save on logout (done); the 50 ms tick (to do) | 2 |

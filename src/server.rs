@@ -16,10 +16,10 @@ use crate::wire::{gchar, gint4, gshort, gstring, ids::*, latin1, msg};
 use seihai_core::protocol::{
     parse_player_props_with, zlib_decompress, ClientVersion, EncryptionGen,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -43,6 +43,9 @@ pub struct Server {
     pub npc: Arc<crate::npclink::Hub>,
     started: Instant,
     pub verbose: bool,
+    /// First sight of a client message stage 1 does not handle. Verbose
+    /// mode logs the same ids once.
+    unknown: Mutex<BTreeSet<u8>>,
     /// The secure-login key (`SEI00001`); `None` when secure logins are off.
     pub identity: Option<seihai_core::protocol::seclogin::ServerIdentity>,
     /// The listserver link (see `listlink`); `None` when `listserver` is
@@ -121,6 +124,7 @@ impl Server {
             store,
             started: Instant::now(),
             verbose: false,
+            unknown: Mutex::new(BTreeSet::new()),
             identity: None,
             listlink: None,
         }
@@ -134,6 +138,21 @@ impl Server {
     /// Accounts online now, lower-case and sorted.
     pub fn online_accounts(&self) -> Vec<String> {
         self.world.online_accounts()
+    }
+
+    /// Client message ids stage 1 has seen and does not handle.
+    pub fn unknown_ids(&self) -> BTreeSet<u8> {
+        self.unknown
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+    }
+
+    fn note_unknown(&self, id: u8) {
+        self.unknown
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(id);
     }
 
     fn log(&self, peer: &SocketAddr, text: &str) {
@@ -851,13 +870,8 @@ impl Session {
                         }
                     }
                 }
-                // Read and not answered in stage 1: the language, the
-                // packet count (1.33 to 1.39, every 10 s; not a login),
-                // the 1.33 to 1.37 weapon upload, the tamper check (never
-                // required), the process list, image updates,
-                // level entry and walking off a level.
-                PLI_LANGUAGE | PLI_PACKETCOUNT | PLI_WEAPONADD | PLI_TAMPERCHECK
-                | PLI_PROCESSLIST | PLI_SHOWIMG | PLI_ENTERLEVEL => {}
+                // Read and not answered in stage 1. See `stage1_quiet`.
+                _ if stage1_quiet(id) => {}
                 // Player flags: `name` or `name=value`; kept with the account.
                 PLI_FLAGSET | PLI_FLAGDEL => {
                     let text = seihai_core::protocol::latin1(payload);
@@ -923,8 +937,11 @@ impl Session {
                     });
                 }
                 _ => {
-                    if first_time && server.verbose {
-                        server.log(peer, &format!("message {id} not handled in stage 1"));
+                    if first_time {
+                        server.note_unknown(id);
+                        if server.verbose {
+                            server.log(peer, &format!("message {id} not handled in stage 1"));
+                        }
                     }
                 }
             }
