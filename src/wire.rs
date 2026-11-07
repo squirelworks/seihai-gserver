@@ -178,11 +178,11 @@ pub mod ids {
     /// Empty in the login burst. Confirmed: asks for the process list.
     pub const PLO_LISTPROCESSES: u8 = 182;
 
-    // Named for a later stage. Not sent yet.
     /// `{104}{name}{byte}{GINT5 lo}{GINT5 hi}`: DES key for an encrypted
     /// package. Confirmed for the key when the byte is 1; other byte values
-    /// are unknown. Send before the file. 3.153 to 6.03r7.
+    /// are unknown. Sent before a `.gpake`. 3.153 to 6.03r7.
     pub const PLO_FILEKEY: u8 = 104;
+    // Named for a later stage. Not sent yet.
     /// `{108}{sub}{GSHORT value}`. Confirmed for sub 0: the client answers
     /// [`PLI_PING`]. Sub 1 is stored and nothing that reads it was traced, so
     /// do not send it. 4.20r6, 4.20r8, 6.01r1, 6.03r7. Not 5.x, not before 4.20.

@@ -521,6 +521,16 @@ impl Conn {
         for f in frames {
             self.send(&mut codec, &f).await?;
         }
+        // Packages named in `gpaks`, the same way a file request is answered.
+        let packages = self.server.cfg.gpaks.clone();
+        for name in &packages {
+            let found = self.server.files.find(name);
+            let key = self.server.files.package_key(name);
+            let asked = crate::wire::latin1(name);
+            for frame in crate::files::offer(version, &asked, name, found.as_ref(), None, key) {
+                self.send(&mut codec, &frame).await?;
+            }
+        }
         let mut session = Session {
             id,
             version,
@@ -798,26 +808,23 @@ impl Session {
                     };
                     let name = seihai_core::protocol::latin1(raw);
                     let found = server.files.find(&name);
+                    let key = server.files.package_key(&name);
                     let newer = match (&found, since) {
                         (Some(f), Some(t)) => f.mod_time > t,
                         (found, None) => found.is_some(),
                         (None, Some(_)) => false,
                     };
-                    let sent = found
-                        .filter(|_| newer)
-                        .and_then(|f| crate::files::send_file(self.version, &f));
-                    match sent {
-                        Some(mut out) if out.len() == 1 => reply.append(&mut out[0]),
-                        Some(out) => {
+                    let sent =
+                        crate::files::offer(self.version, raw, &name, found.as_ref(), since, key);
+                    match sent.len() {
+                        1 => reply.extend_from_slice(&sent[0]),
+                        n if n > 1 => {
                             if !reply.is_empty() {
                                 frames.push(std::mem::take(&mut reply));
                             }
-                            frames.extend(out);
+                            frames.extend(sent);
                         }
-                        None if since.is_some() && !newer => {
-                            reply.extend(crate::files::up_to_date(self.version, raw));
-                        }
-                        None => reply.extend(crate::files::failed(self.version, raw)),
+                        _ => {}
                     }
                     if server.verbose {
                         let what = if newer { "sent" } else { "not sent" };
