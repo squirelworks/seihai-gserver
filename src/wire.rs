@@ -88,80 +88,210 @@ pub fn latin1(s: &str) -> Vec<u8> {
         .collect()
 }
 
-/// The message ids this server uses.
+/// The message ids this server names.
+///
+/// Each line is the layout this server sends or reads, and who it is for.
+/// "Confirmed" means the bytes were checked against a client or against
+/// this server's own writer. "Inferred" means the role is the best reading
+/// and is not settled. Ids with no constant are listed in `docs/packet-ids.md`.
+/// Names added for a later stage are not sent yet.
 pub mod ids {
-    // Server to client.
+    // Server to client. Sent today.
+    /// Level board. Confirmed: an empty one ends a gmap cell.
     pub const PLO_LEVELBOARD: u8 = 0;
+    /// One link line. Confirmed.
     pub const PLO_LEVELLINK: u8 = 1;
+    /// Baddy props. Confirmed: this server relays them.
     pub const PLO_BADDYPROPS: u8 = 2;
+    /// NPC props. Confirmed: this server relays them.
     pub const PLO_NPCPROPS: u8 = 3;
+    /// One chest. Confirmed.
     pub const PLO_LEVELCHEST: u8 = 4;
+    /// One sign. Confirmed.
     pub const PLO_LEVELSIGN: u8 = 5;
-    pub const PLO_ITEMADD: u8 = 22;
-    pub const PLO_ITEMDEL: u8 = 23;
-    pub const PLO_OTHERPLPROPS: u8 = 8;
-    pub const PLO_PLAYERPROPS: u8 = 9;
+    /// Level name. Confirmed.
     pub const PLO_LEVELNAME: u8 = 6;
+    /// Another player's props. Confirmed. Only the props that player's build lists.
+    pub const PLO_OTHERPLPROPS: u8 = 8;
+    /// The player's own props. Confirmed.
+    pub const PLO_PLAYERPROPS: u8 = 9;
+    /// Empty. Confirmed: the player leads the level.
     pub const PLO_ISLEADER: u8 = 10;
+    /// A bomb. Confirmed: relayed from the client.
     pub const PLO_BOMBADD: u8 = 11;
+    /// A bomb removed. Confirmed: relayed from the client.
     pub const PLO_BOMBDEL: u8 = 12;
+    /// Half-tile warp: x, y, level name. Confirmed.
     pub const PLO_PLAYERWARP: u8 = 14;
-    pub const PLO_ARROWADD: u8 = 19;
-    pub const PLO_FIRESPY: u8 = 20;
-    pub const PLO_PLAYERWARP2: u8 = 49;
+    /// Text, then the link closes. Confirmed.
     pub const PLO_DISCMESSAGE: u8 = 16;
+    /// An arrow. Confirmed: relayed from the client.
+    pub const PLO_ARROWADD: u8 = 19;
+    /// A fire spy. Confirmed: relayed from the client.
+    pub const PLO_FIRESPY: u8 = 20;
+    /// An item on the floor. Confirmed.
+    pub const PLO_ITEMADD: u8 = 22;
+    /// An item removed. Confirmed.
+    pub const PLO_ITEMDEL: u8 = 23;
+    /// One GCHAR. Confirmed: this server sends 73.
     pub const PLO_SIGNATURE: u8 = 25;
+    /// A hurt baddy. Confirmed: relayed.
     pub const PLO_BADDYHURT: u8 = 27;
+    /// One flag, `name` or `name=value`. Confirmed.
     pub const PLO_FLAGSET: u8 = 28;
+    /// File name. Confirmed: the file will not be sent.
     pub const PLO_FILESENDFAILED: u8 = 30;
+    /// An explosion. Confirmed: relayed.
     pub const PLO_EXPLOSION: u8 = 36;
+    /// A private message. Confirmed.
     pub const PLO_PRIVATEMESSAGE: u8 = 37;
-    pub const PLO_HURTPLAYER: u8 = 40;
+    /// GINT5 modification time. Confirmed.
     pub const PLO_LEVELMODTIME: u8 = 39;
+    /// A hurt player. Confirmed.
+    pub const PLO_HURTPLAYER: u8 = 40;
+    /// The start message. Confirmed.
     pub const PLO_STARTMESSAGE: u8 = 41;
+    /// World time. Confirmed: one step every 5 s.
     pub const PLO_NEWWORLDTIME: u8 = 42;
+    /// One GCHAR, the default weapon. Confirmed.
     pub const PLO_DEFAULTWEAPON: u8 = 43;
+    /// The client's copy of a file is current. Confirmed. Not sent before 2.1.
     pub const PLO_FILEUPTODATE: u8 = 45;
+    /// Pixel warp: GCHAR x*2, y*2, z, gmap x, gmap y, then the level. Confirmed.
+    pub const PLO_PLAYERWARP2: u8 = 49;
+    /// Start of a large file. Confirmed.
     pub const PLO_LARGEFILESTART: u8 = 68;
+    /// End of a large file. Confirmed.
     pub const PLO_LARGEFILEEND: u8 = 69;
+    /// Size of a large file. Confirmed.
     pub const PLO_LARGEFILESIZE: u8 = 84;
+    /// GINT3 length; the bytes follow outside the line. Confirmed.
     pub const PLO_RAWDATA: u8 = 100;
-    pub const PLO_FILE: u8 = 102;
+    /// A level board in a raw block. Confirmed.
     pub const PLO_BOARDPACKET: u8 = 101;
+    /// A file body. Confirmed.
+    pub const PLO_FILE: u8 = 102;
+    /// Level name. Confirmed: chests and NPCs apply to this level.
     pub const PLO_SETACTIVELEVEL: u8 = 156;
+    /// Status-list text. Confirmed.
     pub const PLO_STATUSLIST: u8 = 180;
+    /// Empty in the login burst. Confirmed: asks for the process list.
     pub const PLO_LISTPROCESSES: u8 = 182;
 
+    // Named for a later stage. Not sent yet.
+    /// `{104}{name}{byte}{GINT5 lo}{GINT5 hi}`: DES key for an encrypted
+    /// package. Confirmed for the key when the byte is 1; other byte values
+    /// are unknown. Send before the file. 3.153 to 6.03r7.
+    pub const PLO_FILEKEY: u8 = 104;
+    /// `{108}{sub}{GSHORT value}`. Confirmed for sub 0: the client answers
+    /// [`PLI_PING`]. Sub 1 is stored and nothing that reads it was traced, so
+    /// do not send it. 4.20r6, 4.20r8, 6.01r1, 6.03r7. Not 5.x, not before 4.20.
+    pub const PLO_PING: u8 = 108;
+    /// `{109}{GINT5 mod time}{local name}{url}`. Confirmed layout. Inferred:
+    /// the client stores the download under the local name. 5.24r4 to 6.03r7.
+    pub const PLO_DOWNLOADURL: u8 = 109;
+    /// Header `type,name,cache flag,GINT5,GINT5` (the two GINT5 values are the
+    /// DES key), then the body. Confirmed. With the cache flag set, the client
+    /// writes the body it received.
+    pub const PLO_NPCWEAPONSCRIPT: u8 = 140;
+    /// Empty. Confirmed: sets a one-shot flag. Inferred: the flag means login
+    /// is done. 2.05 to 6.03r7, after the login burst.
+    pub const PLO_LOGGEDIN: u8 = 168;
+    /// `{193}{GINT5 crc32}{weapon name}`: use the cached weapon script when
+    /// the CRC matches. Confirmed. 4.04r2 to 5.12. Not a modification time.
+    pub const PLO_WEAPONCRC: u8 = 193;
+    /// Empty. Confirmed: clears the loaded weapon and class scripts.
+    /// 4.04r2 to 6.03r7.
+    pub const PLO_CLEARWEAPONS: u8 = 194;
+    /// Use the cached script: the same DES key as [`PLO_NPCWEAPONSCRIPT`] and
+    /// the CRC32 of the plain body. Confirmed. No body in this message.
+    pub const PLO_LOADSCRIPT: u8 = 197;
+
     // Client to server.
+    /// Half-tile warp: GCHAR x*2, y*2, level name. Confirmed.
     pub const PLI_LEVELWARP: u8 = 0;
+    /// The player's props. Confirmed.
     pub const PLI_PLAYERPROPS: u8 = 2;
+    /// NPC props. Confirmed.
     pub const PLI_NPCPROPS: u8 = 3;
+    /// A bomb. Confirmed.
     pub const PLI_BOMBADD: u8 = 4;
+    /// A bomb removed. Confirmed.
     pub const PLI_BOMBDEL: u8 = 5;
+    /// An arrow. Confirmed.
     pub const PLI_ARROWADD: u8 = 9;
+    /// A fire spy. Confirmed.
     pub const PLI_FIRESPY: u8 = 10;
+    /// An item: GCHAR x*2, y*2, item. Confirmed.
     pub const PLI_ITEMADD: u8 = 12;
-    pub const PLI_CLAIMPKER: u8 = 14;
+    /// An item removed. Confirmed.
     pub const PLI_ITEMDEL: u8 = 13;
+    /// A kill claim. Confirmed.
+    pub const PLI_CLAIMPKER: u8 = 14;
+    /// Baddy props. Confirmed.
     pub const PLI_BADDYPROPS: u8 = 15;
+    /// A hurt baddy. Confirmed.
     pub const PLI_BADDYHURT: u8 = 16;
+    /// `name` or `name=value`. Confirmed.
     pub const PLI_FLAGSET: u8 = 18;
+    /// A flag removed. Confirmed.
     pub const PLI_FLAGDEL: u8 = 19;
+    /// GCHAR x, y, in tiles. Confirmed.
     pub const PLI_OPENCHEST: u8 = 20;
+    /// A file name. Confirmed.
     pub const PLI_WANTFILE: u8 = 23;
+    /// An image update. Confirmed: read and not answered.
     pub const PLI_SHOWIMG: u8 = 24;
-    pub const PLI_WEAPONADD: u8 = 25;
+    /// `{25}{name}{image}{script}`, same shape as a weapon add from the server.
+    /// Confirmed: 1.21 to 1.37 send this for every weapon they hold. Accepted
+    /// and not answered until weapons are a stage.
+    pub const PLI_WEAPONUPLOAD: u8 = 25;
+    /// A hurt player. Confirmed.
     pub const PLI_HURTPLAYER: u8 = 26;
+    /// An explosion. Confirmed.
     pub const PLI_EXPLOSION: u8 = 27;
+    /// GINT5 modification time, then a warp. Confirmed.
     pub const PLI_LEVELWARPMOD: u8 = 30;
+    /// A packet count. Confirmed: 1.33 to 1.39, about every 10 s. Not a login.
     pub const PLI_PACKETCOUNT: u8 = 31;
+    /// The player took an item. Confirmed.
     pub const PLI_ITEMTAKE: u8 = 32;
+    /// A leading 0 byte, then the default weapon id. Confirmed: 1.38 and later
+    /// send this instead of [`PLI_WEAPONUPLOAD`]. Accepted and not answered yet.
+    pub const PLI_WEAPONADD: u8 = 33;
+    /// GINT5 modification time, then a file name. Confirmed.
     pub const PLI_UPDATEFILE: u8 = 34;
+    /// GINT5 modification time, then a level name. Confirmed: a gmap neighbour.
     pub const PLI_ADJACENTLEVEL: u8 = 35;
+    /// The client's language. Confirmed: read and not answered.
     pub const PLI_LANGUAGE: u8 = 37;
+    /// Two hashes. Confirmed: read and not answered. Never required.
     pub const PLI_TAMPERCHECK: u8 = 39;
+    /// The process list, answering [`PLO_LISTPROCESSES`]. Confirmed: read and not answered.
     pub const PLI_PROCESSLIST: u8 = 44;
+    /// Entered a level. Confirmed: read and not answered.
     pub const PLI_ENTERLEVEL: u8 = 46;
+    /// The script name. Confirmed: the client asks again when its cache does not match.
+    pub const PLI_UPDATESCRIPT: u8 = 158;
+    /// Game clients: `!` and a GSHORT of the [`PLO_PING`] value, capped at
+    /// 28671. RCs: empty, every 60 s. Confirmed layout. Inferred that it is a ping.
+    pub const PLI_PING: u8 = 162;
+
+    /// True when stage 1 reads `id` and does not answer it, so it is not
+    /// logged as unhandled.
+    pub fn stage1_quiet(id: u8) -> bool {
+        matches!(
+            id,
+            PLI_LANGUAGE
+                | PLI_PACKETCOUNT
+                | PLI_WEAPONUPLOAD
+                | PLI_WEAPONADD
+                | PLI_TAMPERCHECK
+                | PLI_PROCESSLIST
+                | PLI_SHOWIMG
+                | PLI_ENTERLEVEL
+        )
+    }
 }
 
 #[cfg(test)]
@@ -208,5 +338,24 @@ mod tests {
         let mut b = Vec::new();
         gstring(b"abc", &mut b);
         assert_eq!(b, b"#abc");
+    }
+
+    #[test]
+    fn weapon_ids_and_the_quiet_set() {
+        assert_eq!(ids::PLI_WEAPONUPLOAD, 25);
+        assert_eq!(ids::PLI_WEAPONADD, 33);
+        assert!(ids::stage1_quiet(ids::PLI_WEAPONUPLOAD));
+        assert!(ids::stage1_quiet(ids::PLI_WEAPONADD));
+        assert!(!ids::stage1_quiet(7));
+        assert_eq!(ids::PLI_PING, 162);
+        assert_eq!(ids::PLO_FILEKEY, 104);
+        assert_eq!(ids::PLO_PING, 108);
+        assert_eq!(ids::PLO_DOWNLOADURL, 109);
+        assert_eq!(ids::PLO_LOGGEDIN, 168);
+        assert_eq!(ids::PLO_WEAPONCRC, 193);
+        assert_eq!(ids::PLO_CLEARWEAPONS, 194);
+        assert_eq!(ids::PLO_NPCWEAPONSCRIPT, 140);
+        assert_eq!(ids::PLO_LOADSCRIPT, 197);
+        assert_eq!(ids::PLI_UPDATESCRIPT, 158);
     }
 }
