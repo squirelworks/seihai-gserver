@@ -34,8 +34,13 @@ login_rate = 30
 login_rate_loopback = false
 max_players = 256
 
-# Stage 1 has no level files: the start board is one tile everywhere.
+# The tile of the generated board, used only when the start level's file
+# is missing from levels/.
 board_tile = 511
+
+# Packages (.gpak, .gpake) to push at login, comma-separated, served like a
+# file request; a .gpake needs its key in config/gpakkeys.txt. Empty: none.
+gpaks =
 
 # The Seihai secure login (version token SEI00001): Seihai clients started
 # with --secure-login send the account and password encrypted. This file
