@@ -13,7 +13,7 @@ client: [seihai](https://github.com/squirelworks/seihai).
 **Status: stages 1 to 3 built.** Clients log in, play one shared world of
 levels and gmaps, and see each other's NPCs, baddies, bombs and hits. Open
 items per stage (real-client hits, RC, server-side NPC scripts) are in
-[docs/PLAN.md](docs/PLAN.md). What works, by stage, is in [docs/PLAN.md](docs/PLAN.md); the rules every
+[docs/PLAN.md](docs/PLAN.md); the rules every
 contributor and coding agent follows are in [AGENTS.md](AGENTS.md).
 
 What is built:
