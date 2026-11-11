@@ -46,7 +46,7 @@ What is built:
   player and message floods are logged and put back (`anticheat.*` in
   `config/server.txt`; kicks only where the admin turns them on);
 * packages: `.gpak` and `.gpake` for the builds that load them, the key
-  (`PLO_FILEKEY`, 104) first from `config/gpakkeys.txt`, which is never
+  (`PLO_FILEDECRYPTKEY`, 104) first from `config/gpakkeys.txt`, which is never
   served; `gpaks =` pushes packages at login;
 * client-side NPCs (stage 3): the level file's NPCs and baddies go to
   every player who enters; changes a client's script makes reach the

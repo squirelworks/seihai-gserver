@@ -6,9 +6,23 @@ server sends or reads. Client ranges come from the Seihai notes
 [the 2026-11-06 pass](https://github.com/squirelworks/Graal_analysis/blob/main/protocol/unknown-ids-2026-11-06.md)).
 This file does not restate those notes.
 
+Names follow upstream gs2lib's `IEnums.h` since 2026-11-11, as the rest of the
+suite does. Seven ids had Seihai names before that; a search for the old name
+still finds this table:
+
+| Id | Name | Seihai name until 2026-11-11 |
+|---|---|---|
+| C→S 25 | `PLI_TOWEAPON` | `PLI_WEAPONUPLOAD` |
+| C→S 162 | `PLI_PONG` | `PLI_PING` |
+| S→C 104 | `PLO_FILEDECRYPTKEY` | `PLO_FILEKEY` |
+| S→C 109 | `PLO_HTTPDOWNLOAD` | `PLO_DOWNLOADURL` |
+| S→C 168 | `PLO_ONLINEMODE` | `PLO_LOGGEDIN` |
+| S→C 193 | `PLO_WEAPONHASH` | `PLO_WEAPONCRC` |
+| S→C 194 | `PLO_RESETCLIENT` | `PLO_CLEARWEAPONS` |
+
 ## Id 25 was the wrong name
 
-25 is `PLI_WEAPONUPLOAD`: the weapon upload from 1.21 to 1.37 (name, image,
+25 is `PLI_TOWEAPON`: the weapon upload from 1.21 to 1.37 (name, image,
 full script). `PLI_WEAPONADD` is 33, which 1.38 and later send. Both are
 accepted and not answered until weapons are a stage, and neither is logged
 as unhandled.
@@ -17,20 +31,20 @@ as unhandled.
 
 | Id | Name | Layout |
 |---|---|---|
-| S→C 104 | `PLO_FILEKEY` | file name, byte 1, two GINT5; the DES key, before a `.gpake` |
+| S→C 104 | `PLO_FILEDECRYPTKEY` | file name, byte 1, two GINT5; the DES key, before a `.gpake` |
 
 ## Named, not sent yet
 
 | Id | Name | Layout |
 |---|---|---|
 | C→S 158 | `PLI_UPDATESCRIPT` | the script name; the client asks when its cache does not match |
-| C→S 162 | `PLI_PING` | game clients: `!` and a GSHORT capped at 28671; an RC sends it empty |
+| C→S 162 | `PLI_PONG` | game clients: `!` and a GSHORT capped at 28671; an RC sends it empty |
 | S→C 108 | `PLO_PING` | sub byte, GSHORT. Sub 0 asks for 162. Sub 1 is not sent |
-| S→C 109 | `PLO_DOWNLOADURL` | GINT5 mod time, local name, URL |
+| S→C 109 | `PLO_HTTPDOWNLOAD` | GINT5 mod time, local name, URL |
 | S→C 140 | `PLO_NPCWEAPONSCRIPT` | header (type, name, cache flag, two GINT5 key words), then the body |
-| S→C 168 | `PLO_LOGGEDIN` | empty, after the login burst |
-| S→C 193 | `PLO_WEAPONCRC` | GINT5 CRC32, weapon name |
-| S→C 194 | `PLO_CLEARWEAPONS` | empty |
+| S→C 168 | `PLO_ONLINEMODE` | empty, after the login burst |
+| S→C 193 | `PLO_WEAPONHASH` | GINT5 CRC32, weapon name |
+| S→C 194 | `PLO_RESETCLIENT` | empty |
 | S→C 197 | `PLO_LOADSCRIPT` | the same key and the CRC32 of the plain body; no body |
 
 ## No constant

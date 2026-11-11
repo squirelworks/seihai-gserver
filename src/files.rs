@@ -285,7 +285,7 @@ pub fn offer(
         let Some(key) = key else {
             return one(failed(version, asked));
         };
-        if !version.profile().protocol.plo.contains(PLO_FILEKEY) {
+        if !version.profile().protocol.plo.contains(PLO_FILEDECRYPTKEY) {
             return one(failed(version, asked));
         }
         Some(crate::gpak::file_key_packet(name, &key))
