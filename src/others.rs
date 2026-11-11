@@ -11,7 +11,8 @@
 //!   sends 78/79 still moves on a 2.05 screen.
 //! - Prop 10 is the bow slot before 2.1 (`props.bow_prop10`): it is not kept
 //!   from those senders and not sent to those receivers.
-//! - The player id (14) is in the message header, not a prop. Joining and
+//! - The player id (14) is in the message header, not a prop. 1.35 reads
+//!   it as one GCHAR; later builds read a GSHORT (`put_id`). Joining and
 //!   leaving (50 `JOINLEAVELVL`, 51 `PCONNECTED`) are the server's to say.
 //!   On logout the lab GServer sent 50 = 0, then 51, to 2.22
 //!   (Seihai `lab-verification.md`), and this does the same.
@@ -22,6 +23,23 @@ use seihai_core::protocol::{
     ClientVersion,
 };
 use std::collections::BTreeMap;
+
+/// Writes the player id that heads `PLO_OTHERPLPROPS` the way `receiver`
+/// reads it. Original 1.35 reads one GCHAR before the props (exact-build
+/// static evidence, graal-client-repro#179); 1.36 on read a GSHORT. A 1.35
+/// id is capped at 223, the largest GCHAR.
+pub fn put_id(receiver: ClientVersion, id: u16, out: &mut Vec<u8>) {
+    if one_byte_id(receiver) {
+        out.push(gchar(id.min(223) as u8));
+    } else {
+        gshort(id, out);
+    }
+}
+
+/// Builds whose `PLO_OTHERPLPROPS` id is one GCHAR.
+pub fn one_byte_id(v: ClientVersion) -> bool {
+    v == ClientVersion::V135
+}
 
 pub const JOINLEAVELVL: u8 = 50;
 pub const PCONNECTED: u8 = 51;
@@ -227,7 +245,7 @@ pub fn message(
         return None;
     }
     let mut p = Vec::new();
-    gshort(id, &mut p);
+    put_id(receiver, id, &mut p);
     p.extend(body);
     Some(msg(PLO_OTHERPLPROPS, &p))
 }
@@ -386,26 +404,37 @@ mod tests {
                 );
                 continue;
             };
-            let mut st = SessionState::for_version(v);
-            st.apply_body(&m);
-            assert!(st.ignored.is_empty(), "{v:?}");
-            let o = st.others.iter().find(|o| o.id == 7).expect("listed");
             let other = v.profile().props.other;
-            if other.contains(0) {
-                assert_eq!(o.nick.as_deref(), Some("Alice"), "{v:?}");
-            }
-            if other.contains(X) || other.contains(X2) {
-                assert_eq!((o.x, o.y), (30.0, 30.5), "{v:?}");
+            // 1.35's id is one GCHAR; seihai-core's session model reads a
+            // GSHORT for every build, so it is not an oracle for 1.35.
+            let id_len = if one_byte_id(v) { 1 } else { 2 };
+            if one_byte_id(v) {
+                assert_eq!(m[1], gchar(7), "{v:?}");
+            } else {
+                let mut st = SessionState::for_version(v);
+                st.apply_body(&m);
+                assert!(st.ignored.is_empty(), "{v:?}");
+                let o = st.others.iter().find(|o| o.id == 7).expect("listed");
+                if other.contains(0) {
+                    assert_eq!(o.nick.as_deref(), Some("Alice"), "{v:?}");
+                }
+                if other.contains(X) || other.contains(X2) {
+                    assert_eq!((o.x, o.y), (30.0, 30.5), "{v:?}");
+                }
             }
             // The whole payload is props the build reads: nothing is cut.
             let prof = v.profile();
             let props = seihai_core::protocol::parse_player_props_in(
-                &m[3..m.len() - 1],
+                &m[1 + id_len..m.len() - 1],
                 prof.props.bow_prop10,
                 Some(&prof.props.other),
             );
             let len: usize = props.iter().map(|p| 1 + p.raw.len()).sum();
-            assert_eq!(len, m.len() - 4, "{v:?}");
+            assert_eq!(len, m.len() - 2 - id_len, "{v:?}");
+            if one_byte_id(v) {
+                let nick = props.iter().find(|p| p.id == 0).expect("nick");
+                assert!(nick.raw.ends_with(b"Alice"), "{v:?}");
+            }
         }
     }
 
