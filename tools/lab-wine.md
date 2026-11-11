@@ -12,7 +12,7 @@ E="nsenter -t $(cat ns.pid) -n -m"
 $E Xvfb :9 -screen 0 1024x768x24 &
 $E python3 -I listserver.py run/listserver.log &          # the lab listserver (handoff folder)
 $E seihai-gserver --world world --verbose &               # create_accounts = true in the lab world
-$E python3 -I tools/lab-register.py "Seihai Rust" 14802 & # lists us; stage 1 has no listserver link
+$E python3 -I tools/lab-register.py "Seihai Rust" 14802 & # lists us; stage 1 had no listserver link (now `listserver =` can register instead)
 $E tcpdump -U -i lo -w run/lab.pcap 'port 14802 or portrange 14921-14923' &
 $E sh -c 'cd CLIENTDIR && DISPLAY=:9 WINEPREFIX=$PWD/../wp WINEDEBUG=-all wine Graal.exe' &
 ```
