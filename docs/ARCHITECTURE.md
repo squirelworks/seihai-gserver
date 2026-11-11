@@ -20,12 +20,14 @@ How the server is put together, and where each later stage plugs in. Read
 | `src/wire.rs` | server-to-client message writers and the ids we use (`docs/packet-ids.md`) | 1 |
 | `src/burst.rs` | the login burst per generation, own player props | 1 |
 | `src/server.rs` | accept loop, one task per connection, the idle session | 1 |
-| `src/world.rs` | the world task: who is online and player ids, the levels read so far, other players in a level, links between levels, gmap cells and crossings, opened chests and player flags, items on the floor, the account save on logout (done); the 50 ms tick (to do) | 2 |
+| `src/world.rs` | the world task: who is online and player ids, the levels read so far, other players in a level, links between levels, gmap cells and crossings, opened chests and player flags, items on the floor, the account save on logout, NPCs, baddies and level leaders, bombs and hits, the 50 ms tick (`TICK`) | 2, 3 |
 | `src/levels.rs` | level files (`.nw`, `.graal`, `.zelda`) through `seihai_core::assets`, the level name check, the link, sign and chest writers | 2 |
 | `src/gmaps.rs` | `.gmap` files in `levels/` (`seihai_core::gmap::Gmap`), which builds play gmaps, a level's cell | 2 |
 | `src/others.rs` | other players' props: kept in one form, sent as `PLO_OTHERPLPROPS` (8) per receiver's build; join (50 = 1), logout (50 = 0, 51); chest items given as own props (`PLO_PLAYERPROPS` 9) | 2 |
 | `src/files.rs` | `WANTFILE`/`UPDATEFILE` served from `<world>/files/` and the `.gmap` files in `levels/`: the name check, the case-insensitive index, `PLO_FILE` per build, large files, packages | 2 |
 | `src/gpak.rs` | `.gpak` / `.gpake`: who loads them, `config/gpakkeys.txt`, the `PLO_FILEKEY` (104) packet | 2 |
+| `src/npcs.rs` | level NPCs: ids, props kept as wire bytes, the props each build reads, props a client may not set | 3 |
+| `src/baddies.rs` | baddies from the level file, `PLO_BADDYPROPS`, hits handed to the level leader, death and respawn | 3 |
 | `src/listlink.rs` | the listserver link over the encrypted channel (`SVLINK01`): register, player count with nickname and props, account check (`VERIACC2`), pong (`SVO_PING` 16), private messages, file start; two plain threads, reconnects every 15 s | link |
 | `src/rc.rs` | RC and NC logins for `seihai-rc` (skeleton) | 4 |
 | `src/npclink.rs` | the link to `seihai-npcserver` (`PROTOCOL.md`): `Hub` (players for the link), `serve_link`, `supervise` for `npcserver = auto` | 5 (first half) |
@@ -117,14 +119,14 @@ Conn task ──Hub::joined / props / left──▶ Hub (Mutex: players + link s
 ```
 
 - The wire format is `seihai_npcserver::link` (a git dependency pinned by
-  commit), so both programs share one codec. `PROTOCOL.md` is a copy of the
+  tag), so both programs share one codec. `PROTOCOL.md` is a copy of the
   NPC-server repo's; change both together.
 - Props on the link are in the 2.22 encoding: the login uses
   `burst::own_props(V222, ...)`, and client prop updates are re-emitted with
   the old bow slot (prop 10 before 2.1) dropped.
-- When the world task arrives (stage 2), the `Hub` calls move into it, and it
-  adds `PLAYER_LEVEL` on warps and relays the NPC-server's NPC props to the
-  players in each level.
+- Still to do now that the world task exists: move the `Hub` calls into it
+  (they are made from the connection task today), add `PLAYER_LEVEL` on
+  warps, and relay the NPC-server's NPC props to the players in each level.
 
 ## Testing
 
@@ -149,6 +151,21 @@ Conn task ──Hub::joined / props / left──▶ Hub (Mutex: players + link s
 - `tests/file_serving.rs`: 1.39, 2.05, 2.22 and 2.31 ask for a small file,
   a missing one, a `.gmap`, a 150 KB one and a name with `..`, and check
   copies with old and future times; every answer and every byte is checked.
+- `tests/chests.rs`, `tests/floor_items.rs`, `tests/save_on_stop.rs`:
+  chests, flags and items on the floor stay with the account, including a
+  save on stop while players are online.
+- `tests/anticheat.rs`: a cheating client's teleport, fast step, unlinked
+  warp and flood each get the configured action.
+- `tests/level_npcs.rs`, `tests/baddies.rs`, `tests/bombs_arrows.rs`,
+  `tests/hurt_death.rs`: stage 3.1 to 3.4 between two clients in a level.
+- `tests/login_load.rs`, `tests/unserved_logins.rs`,
+  `tests/quiet_weapon_ids.rs`, `tests/sample_world.rs`: login limits, RC/NC
+  refused in their own framing, ids 25 and 33 accepted quietly, the sample
+  world loads clean.
+- `tests/listserver_link.rs`: the encrypted listserver link against a fake
+  listserver on loopback.
+- `tests/file_rtt.rs` (ignored; a lab measure): file round trips while a
+  level full of players walks.
 - `tests/npc_link.rs`: this gserver, the real NPC-server session code and real
   client logins (2.22, 2.05) on loopback.
 - `tools/lab-matrix.sh`: the real `seihai-mae` binary for every profile.

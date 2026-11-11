@@ -10,11 +10,13 @@ Part of the Seihai server stack:
 [seihai-gserver-v2](https://github.com/squirelworks/seihai-gserver-v2) (GPL fork of GServer-v2, ships first) ·
 client: [seihai](https://github.com/squirelworks/seihai).
 
-**Status: stage 1.** Clients log in and stay connected; there is no world yet.
-What works, by stage, is in [docs/PLAN.md](docs/PLAN.md); the rules every
+**Status: stages 1 to 3 built.** Clients log in, play one shared world of
+levels and gmaps, and see each other's NPCs, baddies, bombs and hits. Open
+items per stage (real-client hits, RC, server-side NPC scripts) are in
+[docs/PLAN.md](docs/PLAN.md). What works, by stage, is in [docs/PLAN.md](docs/PLAN.md); the rules every
 contributor and coding agent follows are in [AGENTS.md](AGENTS.md).
 
-Stage 1 covers:
+What is built:
 
 * login for every protocol generation: gen 2 (1.21 to 1.39), gen 3 (1.41 to
   2.17) and gen 5 (2.22 to 6.x), with `seihai-core`'s codecs;
@@ -43,6 +45,14 @@ Stage 1 covers:
 * anti-cheat on the server: speed, teleports, warps with no link under the
   player and message floods are logged and put back (`anticheat.*` in
   `config/server.txt`; kicks only where the admin turns them on);
+* packages: `.gpak` and `.gpake` for the builds that load them, the key
+  (`PLO_FILEKEY`, 104) first from `config/gpakkeys.txt`, which is never
+  served; `gpaks =` pushes packages at login;
+* client-side NPCs (stage 3): the level file's NPCs and baddies go to
+  every player who enters; changes a client's script makes reach the
+  others; one player per level leads the baddies (`PLO_ISLEADER`); bombs,
+  shots, fire and blasts reach the level; hits reach their victim and kill
+  claims cost the killer alignment;
 * the idle session: the world time as a heartbeat;
 * the NPC-server link (`PROTOCOL.md`): `seihai-npcserver` logs in on its own
   loopback port and is told the level list and every player's props. With
@@ -58,7 +68,7 @@ Stage 1 covers:
   listserver's key is pinned in `config/listserver.pin` on first contact, or
   given as `listserver_key`.
 
-NPCs and RC are later stages.
+RC and server-side NPC scripts are later stages.
 
 ## Build and run
 
