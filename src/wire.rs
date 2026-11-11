@@ -181,28 +181,33 @@ pub mod ids {
     /// `{104}{name}{byte}{GINT5 lo}{GINT5 hi}`: DES key for an encrypted
     /// package. Confirmed for the key when the byte is 1; other byte values
     /// are unknown. Sent before a `.gpake`. 3.153 to 6.03r7.
-    pub const PLO_FILEKEY: u8 = 104;
+    /// Seihai name until 2026-11-11: `PLO_FILEKEY`.
+    pub const PLO_FILEDECRYPTKEY: u8 = 104;
     // Named for a later stage. Not sent yet.
     /// `{108}{sub}{GSHORT value}`. Confirmed for sub 0: the client answers
-    /// [`PLI_PING`]. Sub 1 is stored and nothing that reads it was traced, so
+    /// [`PLI_PONG`]. Sub 1 is stored and nothing that reads it was traced, so
     /// do not send it. 4.20r6, 4.20r8, 6.01r1, 6.03r7. Not 5.x, not before 4.20.
     pub const PLO_PING: u8 = 108;
     /// `{109}{GINT5 mod time}{local name}{url}`. Confirmed layout. Inferred:
     /// the client stores the download under the local name. 5.24r4 to 6.03r7.
-    pub const PLO_DOWNLOADURL: u8 = 109;
+    /// Seihai name until 2026-11-11: `PLO_DOWNLOADURL`.
+    pub const PLO_HTTPDOWNLOAD: u8 = 109;
     /// Header `type,name,cache flag,GINT5,GINT5` (the two GINT5 values are the
     /// DES key), then the body. Confirmed. With the cache flag set, the client
     /// writes the body it received.
     pub const PLO_NPCWEAPONSCRIPT: u8 = 140;
     /// Empty. Confirmed: sets a one-shot flag. Inferred: the flag means login
     /// is done. 2.05 to 6.03r7, after the login burst.
-    pub const PLO_LOGGEDIN: u8 = 168;
+    /// Seihai name until 2026-11-11: `PLO_LOGGEDIN`.
+    pub const PLO_ONLINEMODE: u8 = 168;
     /// `{193}{GINT5 crc32}{weapon name}`: use the cached weapon script when
     /// the CRC matches. Confirmed. 4.04r2 to 5.12. Not a modification time.
-    pub const PLO_WEAPONCRC: u8 = 193;
+    /// Seihai name until 2026-11-11: `PLO_WEAPONCRC`.
+    pub const PLO_WEAPONHASH: u8 = 193;
     /// Empty. Confirmed: clears the loaded weapon and class scripts.
     /// 4.04r2 to 6.03r7.
-    pub const PLO_CLEARWEAPONS: u8 = 194;
+    /// Seihai name until 2026-11-11: `PLO_CLEARWEAPONS`.
+    pub const PLO_RESETCLIENT: u8 = 194;
     /// Use the cached script: the same DES key as [`PLO_NPCWEAPONSCRIPT`] and
     /// the CRC32 of the plain body. Confirmed. No body in this message.
     pub const PLO_LOADSCRIPT: u8 = 197;
@@ -245,7 +250,8 @@ pub mod ids {
     /// `{25}{name}{image}{script}`, same shape as a weapon add from the server.
     /// Confirmed: 1.21 to 1.37 send this for every weapon they hold. Accepted
     /// and not answered until weapons are a stage.
-    pub const PLI_WEAPONUPLOAD: u8 = 25;
+    /// Seihai name until 2026-11-11: `PLI_WEAPONUPLOAD`.
+    pub const PLI_TOWEAPON: u8 = 25;
     /// A hurt player. Confirmed.
     pub const PLI_HURTPLAYER: u8 = 26;
     /// An explosion. Confirmed.
@@ -257,7 +263,7 @@ pub mod ids {
     /// The player took an item. Confirmed.
     pub const PLI_ITEMTAKE: u8 = 32;
     /// A leading 0 byte, then the default weapon id. Confirmed: 1.38 and later
-    /// send this instead of [`PLI_WEAPONUPLOAD`]. Accepted and not answered yet.
+    /// send this instead of [`PLI_TOWEAPON`]. Accepted and not answered yet.
     pub const PLI_WEAPONADD: u8 = 33;
     /// GINT5 modification time, then a file name. Confirmed.
     pub const PLI_UPDATEFILE: u8 = 34;
@@ -275,7 +281,8 @@ pub mod ids {
     pub const PLI_UPDATESCRIPT: u8 = 158;
     /// Game clients: `!` and a GSHORT of the [`PLO_PING`] value, capped at
     /// 28671. RCs: empty, every 60 s. Confirmed layout. Inferred that it is a ping.
-    pub const PLI_PING: u8 = 162;
+    /// Seihai name until 2026-11-11: `PLI_PING`.
+    pub const PLI_PONG: u8 = 162;
 
     /// True when stage 1 reads `id` and does not answer it, so it is not
     /// logged as unhandled.
@@ -284,7 +291,7 @@ pub mod ids {
             id,
             PLI_LANGUAGE
                 | PLI_PACKETCOUNT
-                | PLI_WEAPONUPLOAD
+                | PLI_TOWEAPON
                 | PLI_WEAPONADD
                 | PLI_TAMPERCHECK
                 | PLI_PROCESSLIST
@@ -342,18 +349,18 @@ mod tests {
 
     #[test]
     fn weapon_ids_and_the_quiet_set() {
-        assert_eq!(ids::PLI_WEAPONUPLOAD, 25);
+        assert_eq!(ids::PLI_TOWEAPON, 25);
         assert_eq!(ids::PLI_WEAPONADD, 33);
-        assert!(ids::stage1_quiet(ids::PLI_WEAPONUPLOAD));
+        assert!(ids::stage1_quiet(ids::PLI_TOWEAPON));
         assert!(ids::stage1_quiet(ids::PLI_WEAPONADD));
         assert!(!ids::stage1_quiet(7));
-        assert_eq!(ids::PLI_PING, 162);
-        assert_eq!(ids::PLO_FILEKEY, 104);
+        assert_eq!(ids::PLI_PONG, 162);
+        assert_eq!(ids::PLO_FILEDECRYPTKEY, 104);
         assert_eq!(ids::PLO_PING, 108);
-        assert_eq!(ids::PLO_DOWNLOADURL, 109);
-        assert_eq!(ids::PLO_LOGGEDIN, 168);
-        assert_eq!(ids::PLO_WEAPONCRC, 193);
-        assert_eq!(ids::PLO_CLEARWEAPONS, 194);
+        assert_eq!(ids::PLO_HTTPDOWNLOAD, 109);
+        assert_eq!(ids::PLO_ONLINEMODE, 168);
+        assert_eq!(ids::PLO_WEAPONHASH, 193);
+        assert_eq!(ids::PLO_RESETCLIENT, 194);
         assert_eq!(ids::PLO_NPCWEAPONSCRIPT, 140);
         assert_eq!(ids::PLO_LOADSCRIPT, 197);
         assert_eq!(ids::PLI_UPDATESCRIPT, 158);

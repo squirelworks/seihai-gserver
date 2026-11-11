@@ -67,6 +67,6 @@ fn seen_probe(version: ClientVersion, account: &str, quiet: u8, probe: u8) {
 
 #[test]
 fn upload_25_and_add_33_are_not_unhandled() {
-    seen_probe(ClientVersion::V133, "w133", ids::PLI_WEAPONUPLOAD, 7);
+    seen_probe(ClientVersion::V133, "w133", ids::PLI_TOWEAPON, 7);
     seen_probe(ClientVersion::V139, "w139", ids::PLI_WEAPONADD, 7);
 }

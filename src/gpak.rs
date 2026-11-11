@@ -2,7 +2,7 @@
 //!
 //! A `.gpak` is a ZIP the client saves and reads by file name. A `.gpake`
 //! is the same with each entry encrypted; the client opens it only after
-//! `PLO_FILEKEY` (104) for that name. The key file is
+//! `PLO_FILEDECRYPTKEY` (104) for that name. The key file is
 //! `config/gpakkeys.txt` (`name.gpake` and 16 hex digits, the line
 //! `seihai-servertools gpak pack` writes). It is never served.
 //!
@@ -12,7 +12,7 @@
 //! the name is 1, which 6.03r7 needs for a loose `.enc` file; packages do
 //! not check it. Other values of that byte are not sent.
 
-use crate::wire::{self, gchar, gint5, gstring, ids::PLO_FILEKEY, msg};
+use crate::wire::{self, gchar, gint5, gstring, ids::PLO_FILEDECRYPTKEY, msg};
 use seihai_core::protocol::ClientVersion;
 
 /// Which kind of package a file name is.
@@ -107,7 +107,7 @@ fn parse_key(hex: &str) -> Option<[u8; 8]> {
     Some(out)
 }
 
-/// `PLO_FILEKEY`: lower-cased file name, byte 1, then the key as two
+/// `PLO_FILEDECRYPTKEY`: lower-cased file name, byte 1, then the key as two
 /// little-endian GINT5 words. The message ends in a line feed.
 pub fn file_key_packet(name: &str, key: &[u8; 8]) -> Vec<u8> {
     let bare = name.rsplit(['/', '\\']).next().unwrap_or(name);
@@ -119,7 +119,7 @@ pub fn file_key_packet(name: &str, key: &[u8; 8]) -> Vec<u8> {
     let hi = u32::from_le_bytes([key[4], key[5], key[6], key[7]]);
     gint5(u64::from(lo), &mut payload);
     gint5(u64::from(hi), &mut payload);
-    msg(PLO_FILEKEY, &payload)
+    msg(PLO_FILEDECRYPTKEY, &payload)
 }
 
 #[cfg(test)]
