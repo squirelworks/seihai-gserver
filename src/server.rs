@@ -977,7 +977,7 @@ impl Session {
                 } => {
                     if plo.contains(PLO_OTHERPLPROPS) {
                         let mut p = Vec::new();
-                        gshort(from_id, &mut p);
+                        crate::others::put_id(self.version, from_id, &mut p);
                         if prof.props.other.contains(0) {
                             p.push(gchar(0));
                             gstring(&latin1(&nick), &mut p);
