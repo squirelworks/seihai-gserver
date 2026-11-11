@@ -32,15 +32,20 @@ behaviour against, never a code source (see `00-rules.md`).
    `gmap-order.md`, `bigmap-neighbours.md`), links and warps, signs, chests, items
    on the ground, other players' props, flags, `WANTFILE`/`UPDATEFILE` file serving.
    Played with real 1.39, 2.05 rev 2, 2.17.1, 2.22 and 2.31 under Wine
-   (`docs/lab/stage2-2026-11-04.md`).
+   (`docs/lab/stage2-2026-11-04.md`). **Done.**
 3. Client-side NPCs: NPC prop sync between players in a level (`npc-props-lab.md`),
-   baddies (`baddies.md`), bombs, arrows, hurt and death.
+   baddies (`baddies.md`), bombs, arrows, hurt and death. **Built** (3.1 to 3.4,
+   `src/npcs.rs`, `src/baddies.rs`; lab run with real 2.05 rev 2 and 2.22 in
+   `docs/lab/stage3-2026-11-05.md`). Open from that run: real clients did not
+   take or send player hits; a player saved with 0 hearts logs back in with 0;
+   `PLI_THROWCARRIED`'s shape needs a capture.
 4. RC and NC endpoints for `seihai-rc`.
 5. NPC-server link for `seihai-npcserver`. **Gserver to NPC-server half done,
    ahead of stage 2** (`src/npclink.rs`, `PROTOCOL.md`, `tests/npc_link.rs`,
    `docs/lab/npclink-2026-10-31.md`): `npcserver = off | external | auto`, the
    token handshake, level list, player join/props/leave, keep-alive. Left:
-   `PLAYER_LEVEL` and `LEVEL_RELOADED` once the world task exists, and the
+   `PLAYER_LEVEL` and `LEVEL_RELOADED` (the world task now exists, but the
+   `Hub` is still fed from the connection task, not from it), and the
    NPC-server to gserver messages (specified in `PROTOCOL.md`, milestone 2;
    not handled here yet).
 6. 3.x to 6.x: the Login lobby and server warp, GS2 bytecode delivery, and later our
@@ -222,8 +227,7 @@ Done: `src/secure.rs`, `secure_login_key` / `require_secure_login`,
 
 Next:
 
-- [ ] Switch `seihai-core` from the PR rev to the tag once seihai's
-      secure-login PR is merged and tagged (`v0.0.4`; Chiaki tags).
+- [x] Switch `seihai-core` from the PR rev to a tag (now `v0.0.5`, below).
 - Seihai only: real clients cannot be changed, so their logins stay in the
   clear (Squirrel, 2026-10-31).
 - [x] The listserver link is encrypted (Squirrel, 2026-10-31: "encrypt

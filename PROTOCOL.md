@@ -237,7 +237,8 @@ With `npcserver = auto` the gserver:
    gserver is running, and stops it when the gserver stops (it sends `BYE` and
    closes the link; `--once` makes the NPC-server exit when the link closes).
 
-`npcserver = off` (the default until milestone 2 ships) turns the link off, and
+`npcserver = off` (the gserver's default until it handles the milestone 2
+messages; the NPC-server already sends them) turns the link off, and
 `npcserver = external` listens for an NPC-server that someone starts by hand.
 
 ## Changes
@@ -249,3 +250,4 @@ With `npcserver = auto` the gserver:
 | 1 | 2026-11-04 | Sound messages `0x48` to `0x4A` specified. No version bump: the ids were reserved. This copy only, as above. |
 | 1 | 2026-11-04 | `NPC_SHAPE` (`0x4B`) specified. No version bump: the id was reserved. This copy only, as above. |
 | 1 | 2026-11-04 | `NPC_TRIGGER_ACTION` (`0x4C`) specified. No version bump: the id was reserved. This copy only, as above. |
+| 1 | 2026-11-11 | No protocol change. The two copies are the same file again; the "this copy only" notes above no longer hold. `seihai-gserver` reads milestone 1 only and does not yet act on the milestone 2 messages. |
