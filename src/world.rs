@@ -1150,7 +1150,23 @@ impl WorldTask {
                 else {
                     return;
                 };
-                items.remove(n);
+                let taken = items.remove(n);
+                // A build before 1.38 takes an item with a delete and
+                // gives it to itself: the server counts it the same, so
+                // the raise that follows is not a cheat. Nothing is sent.
+                let self_giving = op == ItemOp::Del
+                    && self.players.get(&id).is_some_and(|p| {
+                        !p.version
+                            .profile()
+                            .protocol
+                            .pli
+                            .contains(crate::wire::ids::PLI_ITEMTAKE)
+                    });
+                if self_giving {
+                    if let Some(p) = self.players.get_mut(&id) {
+                        others::give_item(&mut p.props, taken.item);
+                    }
+                }
                 if op == ItemOp::Take {
                     if let Some(p) = self.players.get_mut(&id) {
                         let changed = others::give_item(&mut p.props, item);
@@ -1908,6 +1924,10 @@ impl WorldTask {
         let Some(p) = self.players.get_mut(&id) else {
             return;
         };
+        let counted: Vec<(u8, Option<Vec<u8>>)> = COUNTED
+            .iter()
+            .map(|&i| (i, p.props.values().get(&i).cloned()))
+            .collect();
         if let Some(hub) = &self.npc {
             hub.props(id, raw, p.version.profile().props.bow_prop10);
         }
@@ -1988,11 +2008,71 @@ impl WorldTask {
         if !self.players.contains_key(&id) {
             return;
         }
+        self.check_counted(id, &mut change, &counted);
         if change.has(NICKNAME) {
             self.to_rcs(None, self.player_entry(id));
         }
         if !change.is_empty() {
             self.pending.entry(id).or_default().merge(change);
+        }
+    }
+
+    /// The items check (`anticheat.items`): a counted prop the client
+    /// raised past what the server gave. `before` holds the values before
+    /// the update. Hearts may come back up to the max after a death (the
+    /// client's own respawn). A correction puts the server's values back,
+    /// tells the player, and keeps them out of `change`.
+    fn check_counted(&mut self, id: u16, change: &mut Change, before: &[(u8, Option<Vec<u8>>)]) {
+        if self.anticheat.is_none() {
+            return;
+        }
+        let Some(p) = self.players.get(&id) else {
+            return;
+        };
+        let now = p.props.values();
+        let old = |i: u8| {
+            before
+                .iter()
+                .find(|(k, _)| *k == i)
+                .and_then(|(_, v)| v.as_ref())
+        };
+        let max_half = counted_value(1, old(1)).saturating_mul(2);
+        let raised: Vec<(u8, u32, u32)> = COUNTED
+            .iter()
+            .filter_map(|&i| {
+                let (was, is) = (counted_value(i, old(i)), counted_value(i, now.get(&i)));
+                // Unknown before (nothing from the account yet): nothing
+                // to compare with.
+                old(i)?;
+                let respawn = i == 2 && was == 0 && is <= max_half;
+                (is > was && !respawn).then_some((i, was, is))
+            })
+            .collect();
+        if raised.is_empty() {
+            return;
+        }
+        let what = raised
+            .iter()
+            .map(|(i, was, is)| format!("{} {was} to {is}", counted_name(*i)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        if !self.report(id, Kind::Items, what) {
+            return;
+        }
+        let Some(p) = self.players.get_mut(&id) else {
+            return;
+        };
+        let back: Vec<(u8, Option<Vec<u8>>)> = raised
+            .iter()
+            .map(|(i, _, _)| (*i, old(*i).cloned()))
+            .collect();
+        p.props.restore(change, &back);
+        let own: Vec<(u8, Vec<u8>)> = back
+            .into_iter()
+            .filter_map(|(i, v)| v.map(|v| (i, v)))
+            .collect();
+        if let Some(m) = others::own_message(p.version, &own) {
+            let _ = p.outbox.send(vec![m]);
         }
     }
 
@@ -2945,6 +3025,29 @@ mod tests {
 
 /// Player prop 32: alignment points (AP), 0 to 100.
 const ALIGNMENT: u8 = 32;
+
+/// The counted props the items check guards: max hearts, hearts (in
+/// halves), gralats, arrows, bombs.
+const COUNTED: [u8; 5] = [1, 2, 3, 4, 5];
+
+/// A counted prop's value from its 2.22 bytes (0 when unknown).
+fn counted_value(id: u8, v: Option<&Vec<u8>>) -> u32 {
+    match (id, v.map(Vec::as_slice)) {
+        (3, Some(b)) => seihai_core::protocol::read_gint3(b).map_or(0, |r| r as u32),
+        (_, Some([b, ..])) => u32::from(b.wrapping_sub(0x20)),
+        _ => 0,
+    }
+}
+
+fn counted_name(id: u8) -> &'static str {
+    match id {
+        1 => "max hearts",
+        2 => "half hearts",
+        3 => "gralats",
+        4 => "arrows",
+        _ => "bombs",
+    }
+}
 
 /// The AP a kill costs the killer: 2, plus 2 for every full 20 AP they
 /// have. GServer-v2 beta4 in the lab (2026-11-05) took 12 at 100, 10 at

@@ -38,6 +38,12 @@ pub struct Config {
     /// How often the world time goes out to clients that read it. It keeps
     /// an idle link busy, so a dead peer is noticed. 0 turns it off.
     pub heartbeat: Duration,
+    /// How often `PLO_PING` (108) goes to the builds that read it
+    /// (`ping.rs`). 0 turns it off.
+    pub ping: Duration,
+    /// Unanswered pings in a row before the client is dropped. 0 (the
+    /// default) never drops one.
+    pub ping_misses: u32,
     /// Close a connection that has sent nothing for this long. 0 (the
     /// default) never does: real clients standing still can stay quiet.
     pub idle_timeout: Duration,
@@ -124,6 +130,8 @@ impl Config {
             start_message: String::new(),
             create_accounts: false,
             heartbeat: Duration::from_secs(5),
+            ping: Duration::from_secs(30),
+            ping_misses: 0,
             idle_timeout: Duration::ZERO,
             login_timeout: Duration::from_secs(10),
             password_checks: 0,
@@ -214,6 +222,8 @@ impl Config {
             "create_accounts" => self.create_accounts = flag(v)?,
             "heartbeat" => self.heartbeat = secs(v)?,
             "idle_timeout" => self.idle_timeout = secs(v)?,
+            "ping" => self.ping = secs(v)?,
+            "ping_misses" => self.ping_misses = num(v)?,
             "login_timeout" => self.login_timeout = secs(v)?,
             "password_checks" => self.password_checks = num(v)?,
             "login_rate" => self.login_rate = num(v)?,
