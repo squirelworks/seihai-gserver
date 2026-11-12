@@ -16,6 +16,9 @@ usage:
       ban an account (no --for: until unbanned); it takes effect at its next login
   seihai-gserver unban NAME [--world DIR]
       lift a ban
+  seihai-gserver import-v2 SRC [--world DIR]
+      make a new world from a GServer-v2 server folder SRC: settings, the
+      version list, accounts, staff and bans (docs/GSERVER-V2-WORLD.md)
   seihai-gserver --version";
 
 fn main() -> ExitCode {
@@ -35,6 +38,7 @@ fn main() -> ExitCode {
         Some("account") => return account_command(&world, &args[1..]),
         Some("ban") => return ban_command(&world, &args[1..]),
         Some("unban") => return unban_command(&world, &args[1..]),
+        Some("import-v2") => return import_command(&world, &args[1..]),
         _ => {}
     }
     match run_server(&world, args) {
@@ -207,6 +211,28 @@ fn unban_command(world: &std::path::Path, args: &[String]) -> ExitCode {
         }
         Err(e) => {
             eprintln!("unban {name}: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn import_command(world: &std::path::Path, args: &[String]) -> ExitCode {
+    let [src] = args else {
+        eprintln!("usage: seihai-gserver import-v2 SRC [--world DIR]");
+        return ExitCode::FAILURE;
+    };
+    match seihai_gserver::import::import_v2(std::path::Path::new(src), world) {
+        Ok(r) => {
+            for d in r.done {
+                println!("wrote {d}");
+            }
+            for l in r.left {
+                println!("left: {l}");
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("import-v2: {e}");
             ExitCode::FAILURE
         }
     }
