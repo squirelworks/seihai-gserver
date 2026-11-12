@@ -161,7 +161,8 @@ fn a_policy_ban_holds_and_staff_are_exempt() {
     std::thread::sleep(Duration::from_millis(300));
     let m = refused(&addr, v, "dee", PASSWORD).unwrap();
     assert!(m.contains("anti-cheat: teleport"), "{m}");
-    assert!(m.contains(" 47 hours"), "{m}");
+    // Two days, less the moment since the ban.
+    assert!(m.contains(" 2 days") || m.contains(" 47 hours"), "{m}");
 
     let text = std::fs::read_to_string(&log).unwrap();
     assert_eq!(text.lines().count(), 1, "{text}");
