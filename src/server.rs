@@ -913,8 +913,12 @@ impl Conn {
         self.server.log(
             &self.peer,
             &format!(
-                "RC {} left{}",
+                "RC {} left ({}){}",
                 account.name,
+                result
+                    .as_ref()
+                    .err()
+                    .map_or("closed".to_string(), |e| e.to_string()),
                 if unhandled.is_empty() {
                     String::new()
                 } else {
@@ -922,7 +926,9 @@ impl Conn {
                 }
             ),
         );
-        result
+        // The leave is logged here; an error passed up would also log
+        // "closed before login", as the lab run of 2026-11-12 saw.
+        Ok(())
     }
 
     /// The text for a banned account (`config/bans.txt`), or `None`. A

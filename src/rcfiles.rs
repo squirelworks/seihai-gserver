@@ -8,6 +8,17 @@
 //! | 90 `RC_FILEBROWSER_CD`: the folder, the rest of the line | 67 `Folder changed to <folder>`, then 66: `GSTRING` folder, then per file a space, a `GCHAR` record length, `GSTRING` name, `GSTRING` rights (`r` or `rw`), `GINT5` size, `GINT5` mod time |
 //! | 92 `RC_FILEBROWSER_DOWN`: the name, the rest of the line | raw block (100) of 102: `GINT5` mod time, `GCHAR` name length, the name, the bytes |
 //! | 93 `RC_FILEBROWSER_UP` in a raw block (50): `GSTRING` name, the bytes | 67 `Uploaded file <name>` |
+//! | 96 `RC_FILEBROWSER_MOVE`: `GSTRING` name, the target folder as the rest of the line | 67 `Moved file <name> to <folder>` |
+//! | 97 `RC_FILEBROWSER_DELETE`: the name, the rest of the line | 67 `Deleted file <name>` |
+//! | 98 `RC_FILEBROWSER_RENAME`: `GSTRING` old name, `GSTRING` new name | 67 `Renamed file <old> to <new>` |
+//!
+//! Move, delete and rename are laid out as seihai-rc's `files mv`, `rm`
+//! and `rename` send them (seihai-rc `docs/PROTOCOL.md`, marked "check":
+//! not yet captured from a real RC). The answer lines are our own;
+//! seihai-rc lists the folder again rather than reading them. Each needs a
+//! write right on the file where it is and, for a move or rename, where it
+//! goes; a file already there is not replaced. Folder delete (160) is not
+//! answered.
 //!
 //! Any other 67 is a refusal, and says why. A get or put names a file in
 //! the folder of the last list, as with the fork.
@@ -29,6 +40,9 @@ use std::path::{Path, PathBuf};
 pub const PLI_RC_FILEBROWSER_CD: u8 = 90;
 pub const PLI_RC_FILEBROWSER_DOWN: u8 = 92;
 pub const PLI_RC_FILEBROWSER_UP: u8 = 93;
+pub const PLI_RC_FILEBROWSER_MOVE: u8 = 96;
+pub const PLI_RC_FILEBROWSER_DELETE: u8 = 97;
+pub const PLI_RC_FILEBROWSER_RENAME: u8 = 98;
 pub const PLO_RC_FILEBROWSER_DIR: u8 = 66;
 pub const PLO_RC_FILEBROWSER_MESSAGE: u8 = 67;
 pub const PLO_FILE: u8 = 102;
@@ -41,6 +55,16 @@ pub enum Op {
     Cd(String),
     Down(String),
     Up { name: String, data: Vec<u8> },
+    Move { name: String, to: String },
+    Delete(String),
+    Rename { from: String, to: String },
+}
+
+/// A `GSTRING` and what follows it.
+fn gstr(rest: &[u8]) -> Option<(String, &[u8])> {
+    let n = usize::from(rest.first()?.wrapping_sub(0x20));
+    let s = rest.get(1..1 + n)?;
+    Some((text(s), &rest[1 + n..]))
 }
 
 /// Read a request: `id` and its payload (a put's from inside its raw
@@ -56,6 +80,19 @@ pub fn parse(id: u8, rest: &[u8]) -> Option<Op> {
                 name: text(name),
                 data: rest[1 + n..].to_vec(),
             })
+        }
+        PLI_RC_FILEBROWSER_MOVE => {
+            let (name, to) = gstr(rest)?;
+            Some(Op::Move {
+                name,
+                to: text(to).trim().to_string(),
+            })
+        }
+        PLI_RC_FILEBROWSER_DELETE => Some(Op::Delete(text(rest).trim().to_string())),
+        PLI_RC_FILEBROWSER_RENAME => {
+            let (from, rest) = gstr(rest)?;
+            let (to, _) = gstr(rest)?;
+            Some(Op::Rename { from, to })
         }
         _ => None,
     }
@@ -184,6 +221,93 @@ impl Browser {
             Op::Cd(f) => self.cd(f),
             Op::Down(name) => self.down(&name),
             Op::Up { name, data } => self.up(&name, &data),
+            Op::Delete(name) => self.delete(&name),
+            Op::Move { name, to } => {
+                let mut f = to.replace('\\', "/");
+                if !f.is_empty() && !f.ends_with('/') {
+                    f.push('/');
+                }
+                self.relocate("move", &name, &f, &name)
+            }
+            Op::Rename { from, to } => match self.folder.clone() {
+                Some(f) => self.relocate("rename", &from, &f, &to),
+                None => (
+                    vec![refusal("Open a folder first.")],
+                    "rename: no folder".into(),
+                ),
+            },
+        }
+    }
+
+    fn delete(&self, name: &str) -> (Vec<Vec<u8>>, String) {
+        let (f, path) = match self.place(name, true) {
+            Ok(p) => p,
+            Err(why) => return (vec![refusal(&why)], format!("delete {name}: refused")),
+        };
+        if plain(&path).is_none() {
+            return (
+                vec![refusal(&format!("{f}{name} is not a file."))],
+                format!("delete {f}{name}: not a plain file"),
+            );
+        }
+        match std::fs::remove_file(&path) {
+            Ok(()) => (
+                vec![msg(
+                    PLO_RC_FILEBROWSER_MESSAGE,
+                    &latin1(&format!("Deleted file {name}")),
+                )],
+                format!("delete {f}{name}"),
+            ),
+            Err(e) => (
+                vec![refusal(&format!("Could not delete {name}."))],
+                format!("delete {f}{name}: {e}"),
+            ),
+        }
+    }
+
+    /// Move or rename `name` (in the listed folder) to `to` in `folder`.
+    fn relocate(&self, what: &str, name: &str, folder: &str, to: &str) -> (Vec<Vec<u8>>, String) {
+        let (f, from) = match self.place(name, true) {
+            Ok(p) => p,
+            Err(why) => return (vec![refusal(&why)], format!("{what} {name}: refused")),
+        };
+        let allowed =
+            safe_folder(folder) && safe_name(to) && self.right(folder, to).is_some_and(|r| r.write);
+        if !allowed {
+            return (
+                vec![refusal(&format!("No rights for {folder}{to}."))],
+                format!("{what} {f}{name} to {folder}{to}: refused"),
+            );
+        }
+        let dest = self.world.join(folder).join(to);
+        if plain(&from).is_none() {
+            return (
+                vec![refusal(&format!("{f}{name} is not a file."))],
+                format!("{what} {f}{name}: not a plain file"),
+            );
+        }
+        if std::fs::symlink_metadata(&dest).is_ok() {
+            return (
+                vec![refusal(&format!("{folder}{to} is already there."))],
+                format!("{what} {f}{name} to {folder}{to}: target exists"),
+            );
+        }
+        let done = std::fs::create_dir_all(self.world.join(folder))
+            .and_then(|()| std::fs::rename(&from, &dest));
+        let line = if what == "move" {
+            format!("Moved file {name} to {folder}")
+        } else {
+            format!("Renamed file {name} to {to}")
+        };
+        match done {
+            Ok(()) => (
+                vec![msg(PLO_RC_FILEBROWSER_MESSAGE, &latin1(&line))],
+                format!("{what} {f}{name} to {folder}{to}"),
+            ),
+            Err(e) => (
+                vec![refusal(&format!("Could not {what} {name}."))],
+                format!("{what} {f}{name} to {folder}{to}: {e}"),
+            ),
         }
     }
 
@@ -456,6 +580,56 @@ mod tests {
         }
         let (out, _) = b.run(Op::Cd("config".into()));
         assert!(text(&split_messages(&out[0])[0].payload).starts_with("No rights"));
+        let _ = std::fs::remove_dir_all(&w);
+    }
+
+    #[test]
+    fn move_delete_rename() {
+        let w = std::env::temp_dir().join(format!("seihai-rcfiles-mv-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&w);
+        std::fs::create_dir_all(w.join("levels")).unwrap();
+        std::fs::write(w.join("levels/a.nw"), "A").unwrap();
+        std::fs::write(w.join("levels/b.nw"), "B").unwrap();
+        std::fs::write(w.join("levels/ro.txt"), "R").unwrap();
+        let mut b = Browser::new(
+            &w,
+            &[
+                "rw levels/*.nw".into(),
+                "r levels/*".into(),
+                "rw old/*".into(),
+            ],
+        );
+        let line = |out: &[Vec<u8>]| text(&split_messages(&out[0])[0].payload);
+        // Before a list there is no folder.
+        assert_eq!(
+            line(&b.run(parse(97, b"a.nw").unwrap()).0),
+            "Open a folder first."
+        );
+        b.run(Op::Cd("levels".into()));
+        // Rename, as seihai-rc lays it out: two GSTRINGs.
+        let op = parse(98, b"$a.nw$c.nw").unwrap();
+        assert_eq!(line(&b.run(op).0), "Renamed file a.nw to c.nw");
+        assert!(w.join("levels/c.nw").exists() && !w.join("levels/a.nw").exists());
+        // Not over a file that is there, nor to a name without a write right.
+        let op = parse(98, b"$c.nw$b.nw").unwrap();
+        assert!(line(&b.run(op).0).ends_with("already there."));
+        let op = parse(98, b"$c.nw%c.txt").unwrap();
+        assert!(line(&b.run(op).0).starts_with("No rights"));
+        // Move: a GSTRING, then the folder.
+        let op = parse(96, b"$c.nwold").unwrap();
+        assert_eq!(line(&b.run(op).0), "Moved file c.nw to old/");
+        assert_eq!(std::fs::read(w.join("old/c.nw")).unwrap(), b"A");
+        let op = parse(96, b"$b.nw../x").unwrap();
+        assert!(line(&b.run(op).0).starts_with("No rights"));
+        // Delete: the name, the rest of the line; a read right is not enough.
+        assert_eq!(
+            line(&b.run(parse(97, b"b.nw").unwrap()).0),
+            "Deleted file b.nw"
+        );
+        assert!(!w.join("levels/b.nw").exists());
+        assert!(line(&b.run(parse(97, b"ro.txt").unwrap()).0).starts_with("No rights"));
+        assert!(line(&b.run(parse(97, b"gone.nw").unwrap()).0).ends_with("not a file."));
+        assert!(w.join("levels/ro.txt").exists());
         let (out, _) = Browser::new(&w, &[]).run(Op::Cd(String::new()));
         assert!(text(&split_messages(&out[0])[0].payload).contains("no folder rights"));
         let _ = std::fs::remove_dir_all(&w);
