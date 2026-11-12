@@ -44,7 +44,8 @@ What is built:
   clears it for everyone;
 * anti-cheat on the server, off by default: speed, teleports, warps with no
   link under the player, item raises, hits from across the level and
-  message floods can be logged, put back or kicked (`anticheat.*` in
+  message floods can be logged, put back, kicked or banned, with staff
+  exempt per check if the admin wants (`anticheat.*` in
   `config/server.txt`; it only logs until the admin says more);
 * packages: `.gpak` and `.gpake` for the builds that load them, the key
   (`PLO_FILEDECRYPTKEY`, 104) first from `config/gpakkeys.txt`, which is never

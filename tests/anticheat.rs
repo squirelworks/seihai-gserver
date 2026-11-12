@@ -115,3 +115,60 @@ fn cheats_are_caught() {
     assert!(text.lines().last().unwrap().ends_with("; kicked"), "{text}");
     let _ = std::fs::remove_dir_all(&w);
 }
+
+/// `ban after N in S` bans the account through the world's ban file, so
+/// the next login is refused, and `staff exempt` leaves staff alone.
+#[test]
+fn a_policy_ban_holds_and_staff_are_exempt() {
+    use seihai_gserver::accounts::{Account, Store};
+    let w = world("anticheat-ban", "*\n");
+    let mut boss = Account::new("boss", "onlinestartlocal.nw", 30.0, 30.0);
+    boss.set_password(PASSWORD.as_bytes());
+    boss.staff = true;
+    Store::new(w.join("accounts")).save(&boss).unwrap();
+    let cfg = w.join("config/server.txt");
+    let mut text = std::fs::read_to_string(&cfg).unwrap();
+    text.push_str(
+        "anticheat = on\nanticheat.teleport = correct, ban 2d after 1 in 60, staff exempt\n",
+    );
+    std::fs::write(&cfg, text).unwrap();
+    let (addr, server) = start(&w);
+    let log = server.anticheat.log_path().to_path_buf();
+    let v = ClientVersion::V222;
+
+    // The staff account jumps across the level and stays where it went.
+    let mut b = login_gserver(&addr, v, random_key(), "boss", PASSWORD, false).unwrap();
+    let rb = b.conn.spawn_reader().unwrap();
+    let mut sb = SessionState::for_version(v);
+    read_until(&rb, &mut sb, Duration::from_secs(10), |s| s.board.is_some()).unwrap();
+    sb.player_x = None;
+    b.conn
+        .send_messages(&[walk_message_for(v, 2.0, 2.0, 2)])
+        .unwrap();
+    let _ = read_until(&rb, &mut sb, Duration::from_millis(500), |_| false);
+    assert_eq!(sb.player_x, None, "not put back");
+
+    // Anyone else is banned for it on the first jump, and kicked.
+    let mut d = login_gserver(&addr, v, random_key(), "dee", PASSWORD, false).unwrap();
+    let rd = d.conn.spawn_reader().unwrap();
+    let mut sd = SessionState::for_version(v);
+    read_until(&rd, &mut sd, Duration::from_secs(10), |s| s.board.is_some()).unwrap();
+    d.conn
+        .send_messages(&[walk_message_for(v, 2.0, 2.0, 2)])
+        .unwrap();
+    let e = read_until(&rd, &mut sd, Duration::from_secs(10), |_| false).unwrap_err();
+    assert!(e.contains("Disconnected by the server"), "{e}");
+    std::thread::sleep(Duration::from_millis(300));
+    let m = refused(&addr, v, "dee", PASSWORD).unwrap();
+    assert!(m.contains("anti-cheat: teleport"), "{m}");
+    assert!(m.contains(" 47 hours"), "{m}");
+
+    let text = std::fs::read_to_string(&log).unwrap();
+    assert_eq!(text.lines().count(), 1, "{text}");
+    assert!(
+        text.contains("\tdee\t") && text.ends_with("; banned for 2 days\n"),
+        "{text}"
+    );
+    drop(b);
+    let _ = std::fs::remove_dir_all(&w);
+}

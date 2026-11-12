@@ -273,6 +273,8 @@ pub struct Joining {
     pub flags: Vec<String>,
     /// Players the account killed so far.
     pub kills: u32,
+    /// A staff account, for the anti-cheat's `staff exempt`.
+    pub staff: bool,
 }
 
 /// The world's answer to a login it lets in.
@@ -675,6 +677,8 @@ struct Online {
     flags: BTreeMap<String, String>,
     /// Players killed, the account's count included.
     kills: u32,
+    /// A staff account: skips the checks the admin made `staff exempt`.
+    staff: bool,
     /// The anti-cheat's view: the last accepted position in gmap
     /// coordinates, and recent violations.
     walk: Walk,
@@ -904,6 +908,7 @@ impl WorldTask {
                         }
                         p.opened = who.chests.iter().cloned().collect();
                         p.kills = who.kills;
+                        p.staff = who.staff;
                         p.flags = who.flags.iter().map(|f| split_flag(f)).collect();
                         p.walk = Walk::at(p.global().0, p.global().1, Instant::now());
                     }
@@ -1702,16 +1707,12 @@ impl WorldTask {
         let Some(p) = self.players.get_mut(&id) else {
             return false;
         };
-        let v = p.score.report(&ac.policy, kind, Instant::now());
+        let v = p.score.report(&ac.policy, kind, Instant::now(), p.staff);
         if v.log {
-            let what = if v.kick {
-                format!("{what}; kicked")
-            } else {
-                what
-            };
+            let what = format!("{what}{}", v.suffix());
             ac.log(&p.account, p.version.label(), &p.level, kind, &what);
         }
-        if v.kick {
+        if ac.enforce(&p.account, kind, &v) {
             // An empty item: the connection closes.
             let _ = p.outbox.send(Vec::new());
         }
@@ -1762,6 +1763,7 @@ impl WorldTask {
                 opened: HashSet::new(),
                 flags: BTreeMap::new(),
                 kills: 0,
+                staff: false,
                 walk: Walk::at(0.0, 0.0, Instant::now()),
                 score: Score::default(),
                 stale: None,
@@ -2759,6 +2761,7 @@ mod tests {
             chests: Vec::new(),
             flags: Vec::new(),
             kills: 0,
+            staff: false,
         }
     }
 
@@ -3245,6 +3248,7 @@ mod tests {
                     opened: HashSet::new(),
                     flags: BTreeMap::new(),
                     kills: 0,
+                    staff: false,
                     walk: Walk::at(0.0, 0.0, Instant::now()),
                     score: Score::default(),
                     stale: None,

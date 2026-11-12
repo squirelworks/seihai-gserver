@@ -231,7 +231,11 @@ ban` / `unban`. Then the hurt check (`anticheat.hurt`): a
 `PLI_HURTPLAYER` from more than 24 tiles from the victim. #50 showed that
 real 2.05 and 2.22 clients do not send 26 for a sword: the victim's client
 hurts itself from the attacker's `sword` gani, so there is no hit message
-to check a weapon against. Everything is off by default since then. Still
+to check a weapon against. Everything is off by default since then. Then
+the rest of the policy: `ban after N in S` or `ban SPAN after N in S`
+writes the account into `config/bans.txt` (admin `anti-cheat`, the kind
+as the reason) and kicks, and `staff exempt` leaves `STAFF` accounts out
+of a check. Still
 open, and only worth it if an admin asks: bans by machine field and the
 speed figures from a lab run. A player saved dead logs in at 0 hearts, as beta4 does (issue
 #51, lab run 2026-11-12); `revive_dead = true` gives full hearts instead.
