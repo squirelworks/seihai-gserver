@@ -89,15 +89,20 @@ listserver_key =
 # and is made, with no password, on the first login.
 listserver_accounts = false
 
-# Anti-cheat (src/anticheat.rs). Each check is off, log or correct (log and
-# put it back), optionally with ", kick after N in S" (N violations within
-# S seconds). The defaults never kick. Violations go to the log file, one
-# tab-separated line each: time, account, build, level, check, what.
-anticheat = on
+# Anti-cheat (src/anticheat.rs). Off by default: a check can only guess,
+# and a wrong guess hurts honest players. Turned on, each check only logs
+# until it is set otherwise. Each check is off, log or correct (log and put
+# it back), optionally with ", kick after N in S" (N violations within S
+# seconds). Violations go to the log file, one tab-separated line each:
+# time, account, build, level, check, what. Bans (config/bans.txt) work
+# either way.
+anticheat = off
 anticheat_log = logs/anticheat.log
 # Messages a second a connection may send (file checks not counted).
 anticheat_rate = 200
-anticheat.speed = log
-anticheat.teleport = correct
-anticheat.warp = correct
-anticheat.rate = correct
+#anticheat.speed = log
+#anticheat.teleport = correct
+#anticheat.warp = correct
+#anticheat.rate = correct
+#anticheat.items = log
+#anticheat.hurt = correct

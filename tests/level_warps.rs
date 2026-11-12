@@ -51,7 +51,7 @@ fn links_load_the_next_level() {
     // warp only through a link the player stands on.
     let cfg = w.join("config/server.txt");
     let mut text = std::fs::read_to_string(&cfg).unwrap();
-    text.push_str("start_y = 1\n");
+    text.push_str("start_y = 1\nanticheat = on\nanticheat.warp = correct\n");
     std::fs::write(&cfg, text).unwrap();
     let house = seihai_core::assets::Level::parse(HOUSE).unwrap().tile_ids();
     let start_board = seihai_core::assets::Level::parse(START).unwrap().tile_ids();

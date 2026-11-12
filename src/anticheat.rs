@@ -25,6 +25,11 @@
 //!   server's value back and passes the raise on to nobody. Logged only by
 //!   default: classic level scripts run on the client and may grant
 //!   gralats the server never hears of.
+//! - **Hurt** (`world.rs`): a `PLI_HURTPLAYER` (26) from an attacker more
+//!   than [`HURT_RANGE`] tiles from the victim. Correcting drops the hit.
+//!   Real 2.05 and 2.22 clients do not send 26 for a sword: the victim's
+//!   client hurts itself when it sees the attacker's `sword` gani (prop
+//!   10), so this only covers hits a client claims for another player.
 //! - **Rate** (`server.rs`): more than `anticheat_rate` messages in one
 //!   second on a connection, file checks (`PLI_WANTFILE`, `PLI_UPDATEFILE`)
 //!   left out: a client checks its whole cache at login. One run of
@@ -33,9 +38,13 @@
 //! Actions: `off`, `log` (a line in the log file), `correct` (also put it
 //! back: the position is sent back to the player and not passed on, the
 //! warp is not answered, the message is dropped), and `kick after N in S`
-//! on top of either (N violations of that kind within S seconds). The
-//! defaults never kick: speed is logged, the rest are logged and
-//! corrected.
+//! on top of either (N violations of that kind within S seconds).
+//!
+//! **Off by default.** A check can only guess, and a wrong guess hurts an
+//! honest player more than it stops a cheat, so nothing runs until the
+//! admin sets `anticheat = on`. Even then every check only logs until the
+//! admin picks `correct` or a kick for it. Bans (`bans.rs`) are moderation
+//! and work either way.
 //!
 //! Settings in `config/server.txt`:
 //!
@@ -48,6 +57,7 @@
 //! anticheat.warp = log
 //! anticheat.rate = correct, kick after 3 in 10
 //! anticheat.items = correct
+//! anticheat.hurt = correct
 //! ```
 
 use std::collections::VecDeque;
@@ -67,6 +77,9 @@ pub const BURST: f32 = 30.0;
 pub const TELEPORT: f32 = 16.0;
 /// How far from a link a warp through it may start, in tiles.
 pub const LINK_SLACK: f32 = 3.0;
+/// How far from its victim a hit may come, in tiles: an arrow's flight
+/// across the screen, with room. A first guess, like the speed figures.
+pub const HURT_RANGE: f32 = 24.0;
 
 /// What was broken.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,15 +91,18 @@ pub enum Kind {
     /// A counted prop (hearts, max hearts, gralats, arrows, bombs) raised
     /// with no source the server knows.
     Items,
+    /// A hit on another player from too far away.
+    Hurt,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 5] = [
+    pub const ALL: [Kind; 6] = [
         Kind::Speed,
         Kind::Teleport,
         Kind::Warp,
         Kind::Rate,
         Kind::Items,
+        Kind::Hurt,
     ];
 
     /// The name in the settings and the log.
@@ -97,6 +113,7 @@ impl Kind {
             Kind::Warp => "warp",
             Kind::Rate => "rate",
             Kind::Items => "items",
+            Kind::Hurt => "hurt",
         }
     }
 
@@ -164,35 +181,20 @@ pub struct Policy {
     pub log: PathBuf,
     /// Messages a second a connection may send.
     pub rate: u32,
-    rules: [Rule; 5],
+    rules: [Rule; 6],
 }
 
 impl Default for Policy {
+    /// Off, and every check only logs once it is turned on.
     fn default() -> Self {
-        let correct = Rule {
-            action: Action::Correct,
-            kick_after: None,
-        };
         Policy {
-            enabled: true,
+            enabled: false,
             log: PathBuf::from("logs/anticheat.log"),
             rate: 200,
-            rules: [
-                Rule {
-                    action: Action::Log,
-                    kick_after: None,
-                },
-                correct,
-                correct,
-                correct,
-                // Logged only: classic level NPC scripts run on the client
-                // and may pay or charge gralats (shops), which the server
-                // cannot see.
-                Rule {
-                    action: Action::Log,
-                    kick_after: None,
-                },
-            ],
+            rules: [Rule {
+                action: Action::Log,
+                kick_after: None,
+            }; 6],
         }
     }
 }
@@ -257,7 +259,7 @@ pub struct Verdict {
 /// One player's recent violations, by kind.
 #[derive(Debug, Default)]
 pub struct Score {
-    recent: [VecDeque<Instant>; 5],
+    recent: [VecDeque<Instant>; 6],
 }
 
 impl Score {
@@ -445,6 +447,8 @@ mod tests {
             assert!(Rule::parse(bad).is_err(), "{bad}");
         }
         let mut p = Policy::default();
+        assert_eq!(p.rule(Kind::Warp).action, Action::Off, "off by default");
+        assert_eq!(p.set("anticheat", "on"), Some(Ok(())));
         assert_eq!(p.set("name", "x"), None);
         assert_eq!(p.set("anticheat.warp", "log"), Some(Ok(())));
         assert_eq!(p.rule(Kind::Warp).action, Action::Log);
@@ -454,22 +458,26 @@ mod tests {
     }
 
     #[test]
-    fn the_defaults_never_kick() {
-        let p = Policy::default();
+    fn the_defaults_do_nothing_and_then_only_log() {
+        let mut p = Policy::default();
         let mut s = Score::default();
         let now = Instant::now();
         for kind in Kind::ALL {
+            assert_eq!(s.report(&p, kind, now), Verdict::default());
+        }
+        p.set("anticheat", "on");
+        for kind in Kind::ALL {
             for _ in 0..100 {
-                assert!(!s.report(&p, kind, now).kick);
+                let v = s.report(&p, kind, now);
+                assert!(v.log && !v.correct && !v.kick, "{kind:?}");
             }
         }
-        assert!(!s.report(&p, Kind::Speed, now).correct, "speed is logged");
-        assert!(s.report(&p, Kind::Teleport, now).correct);
     }
 
     #[test]
     fn kicks_count_within_the_window() {
         let mut p = Policy::default();
+        p.set("anticheat", "on");
         p.set("anticheat.speed", "log, kick after 3 in 10");
         let mut s = Score::default();
         let t = Instant::now();
