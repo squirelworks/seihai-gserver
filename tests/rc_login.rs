@@ -158,15 +158,17 @@ fn staff_accounts_log_in_with_an_rc() {
 }
 
 /// C1 for `prefix` (type, and key for type 6) and the RC's `token`, S1
-/// back, then C2 with the account and password sealed. Returns the
-/// socket, ready for the server's first frame after the login.
-fn secure_login(
+/// back, then C2 with the account and password sealed, and `then` (whole
+/// frames) in the same write. Returns the socket, ready for the server's
+/// first frame after the login.
+fn secure_login_then(
     addr: &str,
     key: &[u8; 32],
     prefix: &[u8],
     token: &str,
     account: &str,
     pw: &str,
+    then: &[u8],
 ) -> TcpStream {
     let hs = ClientHandshake::new(prefix, token, b"").unwrap();
     let mut s = connect(addr, hs.hello());
@@ -180,8 +182,21 @@ fn secure_login(
     tail.extend(pw.as_bytes());
     let mut c2 = done.sealer.seal(&tail).unwrap();
     c2.push(b'\n');
-    s.write_all(&write_zlib_frame(&c2).unwrap()).unwrap();
+    let mut out = write_zlib_frame(&c2).unwrap();
+    out.extend_from_slice(then);
+    s.write_all(&out).unwrap();
     s
+}
+
+fn secure_login(
+    addr: &str,
+    key: &[u8; 32],
+    prefix: &[u8],
+    token: &str,
+    account: &str,
+    pw: &str,
+) -> TcpStream {
+    secure_login_then(addr, key, prefix, token, account, pw, &[])
 }
 
 #[test]
@@ -210,10 +225,11 @@ fn staff_log_in_through_the_secure_login_with_every_rc_type() {
     welcomed(|| read_zlib_frame(&mut s).unwrap(), "boss");
 
     // Type 3, NPC Control: plain zlib. With no NPC-server there is no NPC
-    // to list, so ask for the weapon list (115) and get its 167.
-    let mut s = secure_login(&addr, &key, &[3 + 0x20], "NCL11012", "boss", PASSWORD);
-    s.write_all(&write_zlib_frame(&[115 + 0x20, b'\n']).unwrap())
-        .unwrap();
+    // to list, so ask for the weapon list (115) and get its 167. The ask
+    // goes in the same write as the sealed login: it must be answered
+    // without waiting for another packet.
+    let ask = write_zlib_frame(&[115 + 0x20, b'\n']).unwrap();
+    let mut s = secure_login_then(&addr, &key, &[3 + 0x20], "NCL11012", "boss", PASSWORD, &ask);
     let m = ids(&read_zlib_frame(&mut s).unwrap());
     assert_eq!(m[0].0, 167, "{m:?}");
 
