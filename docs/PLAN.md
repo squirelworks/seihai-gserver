@@ -71,14 +71,19 @@ behaviour against, never a code source (see `00-rules.md`).
    (74) as 72, from the account file, and a set (76) of an offline
    account's props and flags; a set on a player online is refused until
    it can go through the world.
-5. NPC-server link for `seihai-npcserver`. **Gserver to NPC-server half done,
-   ahead of stage 2** (`src/npclink.rs`, `PROTOCOL.md`, `tests/npc_link.rs`,
+5. NPC-server link for `seihai-npcserver`. **Built from source, lab run
+   open** (`src/npclink.rs`, `src/world.rs`, `PROTOCOL.md`,
+   `tests/npc_link.rs`, `tests/npc_messages.rs`,
    `docs/lab/npclink-2026-10-31.md`): `npcserver = off | external | auto`, the
-   token handshake, level list, player join/props/leave, keep-alive. Left:
-   `PLAYER_LEVEL` and `LEVEL_RELOADED` (the world task now exists, but the
-   `Hub` is still fed from the connection task, not from it), and the
-   NPC-server to gserver messages (specified in `PROTOCOL.md`, milestone 2;
-   not handled here yet).
+   token handshake, level list, keep-alive; the world task feeds the `Hub`
+   (player join, props, `PLAYER_LEVEL`, leave, `LEVEL_RELOADED` from a 1 s
+   check of the loaded level files, the server flags for a new link) and
+   applies `0x40` to `0x4C` (`world.rs` module notes say what each becomes).
+   Dropped with a log line: the sound messages (no build reads a server
+   sound) and `NPC_TRIGGER_ACTION` (`PLO_TRIGGERACTION` 48 needs a capture).
+   Left: the lab run (`npcserver = auto` with seihai-npcserver's
+   `examples/world`, real 2.05 rev 2 and 2.22), and `PM_TO_NPC` /
+   `TRIGGER_ACTION`, which wait for the client messages they come from.
 6. 3.x to 6.x: the Login lobby and server warp, GS2 bytecode delivery, and later our
    own GS2 compiler (gs2-parser is GPL, so it cannot be used).
 7. Server-side anti-cheat (see "Milestone: server-side anti-cheat" below). Each

@@ -214,8 +214,18 @@ pub mod ids {
     pub const PLO_BADDYHURT: u8 = 27;
     /// One flag, `name` or `name=value`. Confirmed.
     pub const PLO_FLAGSET: u8 = 28;
+    /// `GINT3 id`: an NPC is gone from the level. Inferred from the upstream
+    /// gs2lib layout; no capture yet. Every build from 1.21 lists it.
+    pub const PLO_NPCDEL: u8 = 29;
     /// File name. Confirmed: the file will not be sent.
     pub const PLO_FILESENDFAILED: u8 = 30;
+    /// A flag name: the flag is unset. Inferred from the upstream gs2lib
+    /// layout; no capture yet.
+    pub const PLO_FLAGDEL: u8 = 31;
+    /// `GCHAR len` + weapon name, then NPC props (image 0, script 1). The
+    /// layout `seihai_core::protocol::parse_weapon_add` reads. This server
+    /// sends the name alone until weapons are a stage.
+    pub const PLO_NPCWEAPONADD: u8 = 33;
     /// An explosion. Confirmed: relayed.
     pub const PLO_EXPLOSION: u8 = 36;
     /// A private message. Confirmed.
