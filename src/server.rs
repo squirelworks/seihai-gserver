@@ -727,8 +727,36 @@ impl Conn {
         let welcome = crate::rc::welcome(&self.server.cfg.name, &account.name);
         self.send(&mut codec, &welcome).await?;
         let mut rc = crate::rc::RcSession::default();
-        let early = codec.messages(after);
-        rc.handle(&early);
+        let mut early = rc.handle(&codec.messages(after));
+        // The nickname an RC sends straight after its login goes into its
+        // first list entry.
+        let nick = early.iter().rev().find_map(|e| match e {
+            crate::rc::RcEvent::Nick(n) => Some(n.clone()),
+            _ => None,
+        });
+        early.retain(|e| !matches!(e, crate::rc::RcEvent::Nick(_)));
+        let server = self.server.clone();
+        let peer = self.peer;
+        let world = &server.world;
+        let (outbox, mut from_world) = tokio::sync::mpsc::unbounded_channel();
+        let Some(id) = world.rc_join(account.name.clone(), nick, outbox).await else {
+            return self.refuse(&mut codec, "The server is full.").await;
+        };
+        let tell = |events: Vec<crate::rc::RcEvent>| {
+            for e in events {
+                match e {
+                    crate::rc::RcEvent::Nick(n) => world.rc_nick(id, n),
+                    crate::rc::RcEvent::Chat(t) => {
+                        server.log(
+                            &peer,
+                            &format!("RC chat {}: {}", account.name, crate::wire::text(&t)),
+                        );
+                        world.rc_chat(id, t);
+                    }
+                }
+            }
+        };
+        tell(early);
         let idle = self.server.cfg.idle_timeout;
         let mut last_heard = Instant::now();
         let result = loop {
@@ -739,14 +767,23 @@ impl Conn {
                         break Err(e);
                     }
                     last_heard = Instant::now();
-                    let mut reply = Vec::new();
+                    let mut events = Vec::new();
                     while let Some(frame) = inbuf.take_frame()? {
                         let body = codec.decode(&frame)?;
-                        let msgs = codec.messages(&body);
-                        reply.extend(rc.handle(&msgs));
+                        events.extend(rc.handle(&codec.messages(&body)));
                     }
-                    for f in reply {
-                        self.send(&mut codec, &f).await?;
+                    tell(events);
+                }
+                Some(frames) = from_world.recv() => {
+                    let mut sent = Ok(());
+                    for f in frames {
+                        sent = self.send(&mut codec, &f).await;
+                        if sent.is_err() {
+                            break;
+                        }
+                    }
+                    if let Err(e) = sent {
+                        break Err(e);
                     }
                 }
                 _ = sleep_opt(idle_left) => {
@@ -756,6 +793,7 @@ impl Conn {
                 }
             }
         };
+        world.rc_left(id);
         let unhandled: Vec<String> = rc
             .unhandled
             .iter()

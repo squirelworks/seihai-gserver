@@ -29,7 +29,7 @@ How the server is put together, and where each later stage plugs in. Read
 | `src/npcs.rs` | level NPCs: ids, props kept as wire bytes, the props each build reads, props a client may not set | 3 |
 | `src/baddies.rs` | baddies from the level file, `PLO_BADDYPROPS`, hits handed to the level leader, death and respawn | 3 |
 | `src/listlink.rs` | the listserver link over the encrypted channel (`SVLINK01`): register, player count with nickname and props, account check (`VERIACC2`), pong (`SVO_PING` 16), private messages, file start; two plain threads, reconnects every 15 s | link |
-| `src/rc.rs` | RC logins for `seihai-rc`: the `STAFF` and `IPRANGE` checks, the welcome, the idle RC link (slice 1); NC still refused | 4 |
+| `src/rc.rs` | RC logins for `seihai-rc`: the `STAFF` and `IPRANGE` checks, the welcome (slice 1); the player list entries and RC chat lines the world task sends RCs (slice 2); NC still refused | 4 |
 | `src/npclink.rs` | the link to `seihai-npcserver` (`PROTOCOL.md`): `Hub` (players for the link), `serve_link`, `supervise` for `npcserver = auto` | 5 (first half) |
 | `src/anticheat.rs` | the admin policy (`anticheat.*` settings), violation scores and kicks, the log; the speed, teleport, warp and message-rate checks (stage 2.9); item and damage checks to come (`docs/PLAN.md`, stage 7) | 2, 7 |
 
@@ -165,6 +165,9 @@ Conn task ──Hub::joined / props / left──▶ Hub (Mutex: players + link s
 - `tests/rc_login.rs`: RC logins of type 6 (gen 5) and type 1 (zlib), and
   type 6 through `SEI00001`, for a `STAFF` account; a non-staff account,
   a wrong password and an address outside `IPRANGE` refused.
+- `tests/rc_players.rs`: two RCs (`seihai-rc`'s own client) and a player:
+  the list on login, each RC listed to the other, RC chat, a nickname
+  update and the leaves.
 - `tests/listserver_link.rs`: the encrypted listserver link against a fake
   listserver on loopback.
 - `tests/file_rtt.rs` (ignored; a lab measure): file round trips while a

@@ -23,6 +23,8 @@ flate2 = { version = "1", features = ["zlib-rs"] }
 [dev-dependencies]
 # Paused time for the world-tick tests.
 tokio = { version = "1", features = ["test-util"] }
+# The RC tests log in with Seihai's own RC client.
+seihai-rc = { git = "https://github.com/squirelworks/seihai-rc", tag = "v0.1.0" }
 
 # PBKDF2 and the codecs are slow unoptimised; the tests log in dozens of times.
 [profile.dev.package."*"]

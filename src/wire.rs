@@ -75,6 +75,11 @@ pub fn raw_block(id: u8, payload: &[u8]) -> Vec<u8> {
     out
 }
 
+/// Latin-1 bytes as text, for the log.
+pub fn text(b: &[u8]) -> String {
+    b.iter().map(|&c| c as char).collect()
+}
+
 /// Text in Latin-1, as the clients read it. Characters past U+00FF become `?`.
 pub fn latin1(s: &str) -> Vec<u8> {
     s.chars()

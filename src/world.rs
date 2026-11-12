@@ -83,6 +83,8 @@ type Batch = (Vec<u8>, Vec<(u16, usize, usize)>);
 
 /// Player ids are GSHORTs, which hold 14 bits; 0 is not a player.
 const ID_LIMIT: u16 = 1 << 14;
+/// Prop 0, the nickname.
+const NICKNAME: u8 = 0;
 
 /// What a connection tells the world.
 #[derive(Debug)]
@@ -146,6 +148,20 @@ pub enum WorldIn {
     },
     /// The server is stopping: save everyone online, then answer.
     SaveAll { reply: oneshot::Sender<usize> },
+    /// An RC logged in (`rc.rs`, slice 2): the world lists it and answers
+    /// with its id, `None` when no id is free.
+    RcJoined {
+        account: String,
+        nick: Option<Vec<u8>>,
+        outbox: Outbox,
+        reply: oneshot::Sender<Option<u16>>,
+    },
+    /// An RC's new nickname, Latin-1.
+    RcNick { rc: u16, nick: Vec<u8> },
+    /// A line of RC chat, Latin-1.
+    RcChat { rc: u16, text: Vec<u8> },
+    /// An RC's link closed.
+    RcLeft { rc: u16 },
 }
 
 /// Frame bodies for one player. Each item is a run of frames the
@@ -269,6 +285,7 @@ impl World {
                 baddies: HashMap::new(),
                 leaders: HashMap::new(),
                 pending: BTreeMap::new(),
+                rcs: BTreeMap::new(),
             })),
         }
     }
@@ -420,11 +437,56 @@ impl World {
         answer.await.unwrap_or(0)
     }
 
+    /// List an RC that logged in. Its id, or `None` when no id is free or
+    /// the world task is gone.
+    pub async fn rc_join(
+        &self,
+        account: String,
+        nick: Option<Vec<u8>>,
+        outbox: Outbox,
+    ) -> Option<u16> {
+        let (reply, answer) = oneshot::channel();
+        self.tx
+            .send(WorldIn::RcJoined {
+                account,
+                nick,
+                outbox,
+                reply,
+            })
+            .ok()?;
+        answer.await.ok().flatten()
+    }
+
+    /// An RC's new nickname.
+    pub fn rc_nick(&self, rc: u16, nick: Vec<u8>) {
+        let _ = self.tx.send(WorldIn::RcNick { rc, nick });
+    }
+
+    /// A line of RC chat.
+    pub fn rc_chat(&self, rc: u16, text: Vec<u8>) {
+        let _ = self.tx.send(WorldIn::RcChat { rc, text });
+    }
+
+    /// An RC's link closed.
+    pub fn rc_left(&self, rc: u16) {
+        let _ = self.tx.send(WorldIn::RcLeft { rc });
+    }
+
     /// Accounts online now, lower-case and sorted. Updated by the world
     /// task after each join and leave.
     pub fn online_accounts(&self) -> Vec<String> {
         self.online.borrow().clone()
     }
+}
+
+/// One RC as the world lists it.
+struct OnlineRc {
+    /// The account name as the account file has it.
+    account: String,
+    /// Its name in the list and on RC chat, a `GSTRING`
+    /// (`rc::rc_nick`).
+    nick: Vec<u8>,
+    outbox: Outbox,
 }
 
 /// One player as the world holds them.
@@ -615,6 +677,8 @@ pub struct WorldTask {
     /// Who leads each level (lower-case name): their client runs its
     /// baddies. An entry whose player has left the level is stale.
     leaders: HashMap<String, u16>,
+    /// The RCs logged in, by id. Their ids come from the players' space.
+    rcs: BTreeMap<u16, OnlineRc>,
 }
 
 impl WorldTask {
@@ -736,6 +800,114 @@ impl WorldTask {
                 level,
                 mod_time,
             } => self.adjacent(player, &level, mod_time),
+            WorldIn::RcJoined {
+                account,
+                nick,
+                outbox,
+                reply,
+            } => {
+                let id = self.take_id();
+                if let Some(id) = id {
+                    let nick = crate::rc::rc_nick(&account, nick.as_deref());
+                    self.rcs.insert(
+                        id,
+                        OnlineRc {
+                            account,
+                            nick,
+                            outbox,
+                        },
+                    );
+                }
+                if reply.send(id).is_ok() {
+                    if let Some(id) = id {
+                        self.rc_in(id);
+                    }
+                } else if let Some(id) = id {
+                    self.rcs.remove(&id);
+                }
+            }
+            WorldIn::RcNick { rc, nick } => {
+                if let Some(r) = self.rcs.get_mut(&rc) {
+                    r.nick = crate::rc::rc_nick(&r.account, Some(&nick));
+                    let entry = self.rc_entry(rc);
+                    self.to_rcs(Some(rc), entry);
+                }
+            }
+            WorldIn::RcChat { rc, text } => {
+                if let Some(r) = self.rcs.get(&rc) {
+                    let line = crate::rc::chat_line(&r.nick, &text);
+                    self.to_rcs(None, Some(line));
+                }
+            }
+            WorldIn::RcLeft { rc } => {
+                if self.rcs.remove(&rc).is_some() {
+                    self.to_rcs(None, Some(crate::rc::delplayer(rc)));
+                }
+            }
+        }
+    }
+
+    /// RC `id` is in: it gets the list (every player and every other RC),
+    /// the other RCs get its entry, and every RC hears of it on RC chat.
+    fn rc_in(&self, id: u16) {
+        let Some(me) = self.rcs.get(&id) else {
+            return;
+        };
+        let mut list: Vec<u8> = self
+            .players
+            .keys()
+            .filter_map(|&p| self.player_entry(p))
+            .collect::<Vec<_>>()
+            .concat();
+        for &other in self.rcs.keys().filter(|&&r| r != id) {
+            list.extend(self.rc_entry(other).unwrap_or_default());
+        }
+        if !list.is_empty() {
+            let _ = me.outbox.send(vec![list]);
+        }
+        self.to_rcs(Some(id), self.rc_entry(id));
+        let line = crate::wire::latin1(&format!("New RC: {}", me.account));
+        self.to_rcs(None, Some(crate::wire::msg(crate::rc::PLO_RC_CHAT, &line)));
+    }
+
+    /// Player `id`'s entry in an RC's list (`PLO_ADDPLAYER`).
+    fn player_entry(&self, id: u16) -> Option<Vec<u8>> {
+        let p = self.players.get(&id)?;
+        let level = self.loaded.get(&p.level).map_or(&p.level, |l| &l.name);
+        let nick = p
+            .props
+            .values()
+            .get(&0)
+            .cloned()
+            .unwrap_or_else(|| vec![0x20]);
+        Some(crate::rc::addplayer(
+            id,
+            &crate::wire::latin1(&p.account),
+            &crate::wire::latin1(level),
+            &nick,
+        ))
+    }
+
+    /// RC `id`'s entry in another RC's list.
+    fn rc_entry(&self, id: u16) -> Option<Vec<u8>> {
+        let r = self.rcs.get(&id)?;
+        Some(crate::rc::addplayer(
+            id,
+            &crate::wire::latin1(&r.account),
+            crate::rc::RC_LEVEL,
+            &r.nick,
+        ))
+    }
+
+    /// `body` to every RC but `except`.
+    fn to_rcs(&self, except: Option<u16>, body: Option<Vec<u8>>) {
+        let Some(body) = body else {
+            return;
+        };
+        for (&id, r) in &self.rcs {
+            if Some(id) != except {
+                let _ = r.outbox.send(vec![body.clone()]);
+            }
         }
     }
 
@@ -1172,6 +1344,7 @@ impl WorldTask {
             self.publish();
             self.tell_level(&p.level, id, &Change::default(), &others::LOGGED_OUT);
             self.hand_off(&p.level);
+            self.to_rcs(None, Some(crate::rc::delplayer(id)));
         }
     }
 
@@ -1239,6 +1412,8 @@ impl WorldTask {
                 let _ = p.outbox.send(vec![m]);
             }
         }
+        // The RCs list the player in the new level.
+        self.to_rcs(None, self.player_entry(id));
     }
 
     /// Who leads `level`, if they are still in it.
@@ -1552,6 +1727,9 @@ impl WorldTask {
         if !self.players.contains_key(&id) {
             return;
         }
+        if change.has(NICKNAME) {
+            self.to_rcs(None, self.player_entry(id));
+        }
         if !change.is_empty() {
             self.pending.entry(id).or_default().merge(change);
         }
@@ -1622,7 +1800,7 @@ impl WorldTask {
             } else {
                 self.last_id + 1
             };
-            if !self.players.contains_key(&self.last_id) {
+            if !self.players.contains_key(&self.last_id) && !self.rcs.contains_key(&self.last_id) {
                 return Some(self.last_id);
             }
         }
