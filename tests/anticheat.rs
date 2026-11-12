@@ -1,7 +1,8 @@
 //! Stage 2.9: the anti-cheat against a cheating client built on Seihai's
 //! own client code, on 127.0.0.1. A teleport is put back and the others
 //! never see it, a step too fast for the time is logged, a warp with no
-//! link under the player gets no answer, and a flood of messages is
+//! link under the player gets no answer unless the player is dead (a
+//! respawn), and a flood of messages is
 //! kicked where the admin says so. Every violation is a line in the log.
 
 mod common;
@@ -67,10 +68,12 @@ fn cheats_are_caught() {
     })
     .unwrap();
 
-    // Long steps at once: the third is too fast, and logged (the default
-    // for speed), so Amy still sees it.
+    // Long steps at once: 70 tiles, so the fifth is over the 60-tile
+    // budget, and logged (the default for speed), so Amy still sees it.
     d.conn
         .send_messages(&[
+            walk_message_for(v, 45.0, 30.0, 2),
+            walk_message_for(v, 59.0, 30.0, 2),
             walk_message_for(v, 45.0, 30.0, 2),
             walk_message_for(v, 59.0, 30.0, 2),
             walk_message_for(v, 45.0, 30.0, 2),
@@ -89,9 +92,21 @@ fn cheats_are_caught() {
         Some("onlinestartlocal.nw")
     );
 
-    // A flood (standing still, so only the rate is broken): kicked.
+    // Dead, the same warp goes through: a real 2.22 warps itself to the
+    // start spot to respawn, through no link (lab run 2026-11-12).
+    let dead = vec![2 + 0x20, 2 + 0x20, 0x20, b'\n'];
+    d.conn
+        .send_messages(&[dead, levelwarp_message(30.0, 60.0, "house.nw")])
+        .unwrap();
+    read_until(&rd, &mut sd, Duration::from_secs(10), |s| {
+        s.current_level_name().as_deref() == Some("house.nw")
+    })
+    .unwrap();
+
+    // A flood (standing still at the house's arrival, so only the rate is
+    // broken): kicked.
     let flood: Vec<Vec<u8>> = (0..80)
-        .map(|_| walk_message_for(v, 45.0, 30.0, 2))
+        .map(|_| walk_message_for(v, 30.0, 60.0, 2))
         .collect();
     d.conn.send_messages(&flood).unwrap();
     let e = read_until(&rd, &mut sd, Duration::from_secs(10), |_| false).unwrap_err();

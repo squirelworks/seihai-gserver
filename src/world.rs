@@ -1675,8 +1675,19 @@ impl WorldTask {
     /// the level they are in must have a link to `w.level`, the player
     /// must be on it (give or take [`LINK_SLACK`] tiles) and the arrival
     /// must be the link's.
+    ///
+    /// A dead player (0 hearts) is let through: a real 2.22 that dies
+    /// warps itself to the start spot to respawn, through no link (lab run
+    /// 2026-11-12, `docs/lab/anticheat-2026-11-12.md`).
     fn unlinked(&self, w: &Warp) -> Option<String> {
         let p = self.players.get(&w.player)?;
+        if p.props
+            .values()
+            .get(&2)
+            .is_some_and(|v| counted_value(2, Some(v)) == 0)
+        {
+            return None;
+        }
         let (px, py) = (p.props.x().unwrap_or(0.0), p.props.y().unwrap_or(0.0));
         let what = || format!("to {} {} {} from {px} {py}", w.level, w.x, w.y);
         let Some(level) = self.loaded.get(&p.level) else {

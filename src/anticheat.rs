@@ -73,10 +73,15 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 /// Tiles a second the speed check allows. A walk is half a tile every
 /// 50 ms tick, 10 tiles a second (14 on a diagonal), as read live in 2.05
 /// rev 2 (Seihai's `WALK_STEP_MS`); this leaves room over the diagonal.
+/// The lab run of 2026-11-12 (1.39, 2.05 rev 2, 2.17.1, 2.22, 2.31) saw at
+/// most 15.6 tiles in any second of walking, and 1.58 tiles in one step.
 pub const MAX_SPEED: f32 = 24.0;
-/// The most the speed budget holds, in tiles: a few seconds of steps that
-/// the server reads together after a stall on either side.
-pub const BURST: f32 = 30.0;
+/// The most the speed budget holds, in tiles: steps that the server reads
+/// together after a stall on the server or the network (a frozen client
+/// does not catch up). The lab run of 2026-11-12 read 31 tiles at once
+/// after a 3 s stall and 38 after 5 s; 30 kicked a 2.05 for the first, so
+/// this holds about 6 s of walking.
+pub const BURST: f32 = 60.0;
 /// A longer step in one update is a teleport, in tiles.
 pub const TELEPORT: f32 = 16.0;
 /// How far from a link a warp through it may start, in tiles.
@@ -656,9 +661,10 @@ mod tests {
             let v = 2.0 + i as f32;
             assert_eq!(w.step(v, v, ms(i * 100)), None, "step {i}");
         }
-        // Three seconds of steps the server reads at once after a stall.
+        // Five seconds and more of steps the server reads at once after a
+        // stall.
         let (x, y) = w.pos();
-        for i in 1..=30 {
+        for i in 1..=55 {
             assert_eq!(w.step(x - i as f32, y, ms(9_000)), None, "backlog {i}");
         }
         // Steps too long for the time: speed, and the position stays.

@@ -214,9 +214,11 @@ Landed in stage 2.9 (`src/anticheat.rs`): the policy layer (`off`, `log`,
 `anticheat_rate`, `anticheat.speed|teleport|warp|rate`), the log, and the
 speed, teleport, warp and message-rate checks. Defaults: speed `log`, the
 rest `correct`, no kicks. Item, heart and gralat checks and bans are next.
-The speed limits (24 tiles a second against a 10-tile walk, a 30-tile
-budget for steps read in a backlog, 16 tiles for a teleport) are a first
-guess for the lab run to tune. After a warp the client may send the spot it
+The speed limits were a first guess (24 tiles a second against a 10-tile
+walk, a 30-tile budget for steps read in a backlog, 16 tiles for a
+teleport). The lab run of 2026-11-12 (`docs/lab/anticheat-2026-11-12.md`)
+kept 24 and 16 and raised the budget to 60 tiles, and lets a dead player's
+own respawn warp through. After a warp the client may send the spot it
 left once more; that position is dropped, not counted.
 
 Landed next (issue #54): the items check (`anticheat.items`, Kind `items`)
@@ -236,8 +238,7 @@ the rest of the policy: `ban after N in S` or `ban SPAN after N in S`
 writes the account into `config/bans.txt` (admin `anti-cheat`, the kind
 as the reason) and kicks, and `staff exempt` leaves `STAFF` accounts out
 of a check. Still
-open, and only worth it if an admin asks: bans by machine field and the
-speed figures from a lab run. A player saved dead logs in at 0 hearts, as beta4 does (issue
+open, and only worth it if an admin asks: bans by machine field. A player saved dead logs in at 0 hearts, as beta4 does (issue
 #51, lab run 2026-11-12); `revive_dead = true` gives full hearts instead.
 
 ### Where it lives
