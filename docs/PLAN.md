@@ -226,8 +226,8 @@ never sees. Bans by account in `config/bans.txt` (account, end time,
 admin, reason), read at every login (game and RC), with `seihai-gserver
 ban` / `unban`. Still open: hurt range and weapon (after #50), a `ban`
 action in the policy, bans by machine field, and the speed figures from a
-lab run. A player saved dead logs in with full hearts (issue #51; the
-beta4 value is still to be checked).
+lab run. A player saved dead logs in at 0 hearts, as beta4 does (issue
+#51, lab run 2026-11-12); `revive_dead = true` gives full hearts instead.
 
 ### Where it lives
 

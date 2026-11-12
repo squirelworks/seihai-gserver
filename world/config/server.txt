@@ -37,6 +37,9 @@ password_checks = 0
 # login_rate_loopback is on, so lab bots on 127.0.0.1 are not throttled.
 login_rate = 30
 login_rate_loopback = false
+# A player saved at 0 hearts logs in at 0 (the client stands with one
+# empty heart, as on GServer-v2 beta4); true gives them full hearts.
+revive_dead = false
 max_players = 256
 
 # The tile of the generated board, used only when the start level's file
