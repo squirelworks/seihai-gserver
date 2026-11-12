@@ -12,6 +12,10 @@ usage:
       run the server (the world folder defaults to the current folder)
   seihai-gserver account NAME --password-env VAR [--world DIR]
       make an account, or set its password, from the environment variable VAR
+  seihai-gserver ban NAME [--for 30m|12h|3d|2w] [--reason TEXT] [--admin NAME] [--world DIR]
+      ban an account (no --for: until unbanned); it takes effect at its next login
+  seihai-gserver unban NAME [--world DIR]
+      lift a ban
   seihai-gserver --version";
 
 fn main() -> ExitCode {
@@ -27,8 +31,11 @@ fn main() -> ExitCode {
     let world = take_value(&mut args, "--world")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
-    if args.first().map(String::as_str) == Some("account") {
-        return account_command(&world, &args[1..]);
+    match args.first().map(String::as_str) {
+        Some("account") => return account_command(&world, &args[1..]),
+        Some("ban") => return ban_command(&world, &args[1..]),
+        Some("unban") => return unban_command(&world, &args[1..]),
+        _ => {}
     }
     match run_server(&world, args) {
         Ok(()) => ExitCode::SUCCESS,
@@ -142,4 +149,65 @@ fn account_command(world: &std::path::Path, args: &[String]) -> ExitCode {
         }
     }
     ExitCode::SUCCESS
+}
+
+fn ban_command(world: &std::path::Path, args: &[String]) -> ExitCode {
+    use seihai_gserver::bans::{parse_span, Ban, Bans};
+    let mut args = args.to_vec();
+    let span = take_value(&mut args, "--for");
+    let reason = take_value(&mut args, "--reason").unwrap_or_default();
+    let admin = take_value(&mut args, "--admin").unwrap_or_else(|| "console".into());
+    let (Some(name), None) = (args.first().cloned(), args.get(1)) else {
+        eprintln!("{USAGE}");
+        return ExitCode::FAILURE;
+    };
+    if !valid_account_name(&name) {
+        eprintln!("`{name}`: not an account name");
+        return ExitCode::FAILURE;
+    }
+    let until = match span.as_deref().map(parse_span) {
+        None => None,
+        Some(Some(s)) => Some(seihai_gserver::bans::now() + s),
+        Some(None) => {
+            eprintln!("--for: expected a span such as 30m, 12h, 3d or 2w");
+            return ExitCode::FAILURE;
+        }
+    };
+    let bans = Bans::new(world);
+    match bans.add(Ban {
+        account: name.clone(),
+        until,
+        admin,
+        reason,
+    }) {
+        Ok(()) => {
+            eprintln!("{name} banned ({})", bans.path().display());
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("ban {name}: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn unban_command(world: &std::path::Path, args: &[String]) -> ExitCode {
+    let Some(name) = args.first() else {
+        eprintln!("{USAGE}");
+        return ExitCode::FAILURE;
+    };
+    match seihai_gserver::bans::Bans::new(world).remove(name) {
+        Ok(true) => {
+            eprintln!("{name}: ban lifted");
+            ExitCode::SUCCESS
+        }
+        Ok(false) => {
+            eprintln!("{name} is not banned");
+            ExitCode::FAILURE
+        }
+        Err(e) => {
+            eprintln!("unban {name}: {e}");
+            ExitCode::FAILURE
+        }
+    }
 }

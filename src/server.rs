@@ -425,13 +425,20 @@ impl Conn {
                 )
                 .await;
         }
-        let account = match self.check_account(&login).await? {
+        let mut account = match self.check_account(&login).await? {
             Ok(a) => a,
             Err(why) => {
                 self.server.log(&self.peer, &format!("{who}: {why}"));
                 return self.refuse(&mut codec, why).await;
             }
         };
+        if let Some(text) = self.banned(&account.name) {
+            self.server.log(&self.peer, &format!("{who}: banned"));
+            return self.refuse(&mut codec, &text).await;
+        }
+        // A player who logged out dead comes back with hearts (issue #51).
+        // The account file keeps what happened; only the login changes.
+        account.revive();
         let key = login.account.to_ascii_lowercase();
         // What the world sends this player; framed and sent below.
         let (outbox, mut from_world) = tokio::sync::mpsc::unbounded_channel();
@@ -697,6 +704,19 @@ impl Conn {
         })
         .await
         .map_err(io::Error::other)?
+    }
+
+    /// The text for a banned account (`config/bans.txt`), or `None`. A
+    /// ban file that cannot be read is logged and lets the login through.
+    fn banned(&self, account: &str) -> Option<String> {
+        match crate::bans::Bans::new(&self.server.cfg.world).find(account) {
+            Ok(b) => b.map(|b| b.client_text()),
+            Err(e) => {
+                self.server
+                    .log(&self.peer, &format!("bans.txt not read: {e}"));
+                None
+            }
+        }
     }
 
     async fn send(&mut self, codec: &mut Codec, body: &[u8]) -> io::Result<()> {
