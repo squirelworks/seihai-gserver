@@ -550,6 +550,13 @@ impl World {
 }
 
 /// One RC as the world lists it.
+/// An RC's nickname as players see it: the account in capitals, whatever
+/// nickname the RC set, as GServer-v2 beta4 lists a real RC2 (lab run
+/// 2026-11-12: account `xrc` listed and named on PMs as `XRC`).
+fn rc_player_nick(account: &str) -> Vec<u8> {
+    crate::wire::latin1(&account.to_uppercase())
+}
+
 struct OnlineRc {
     /// The account name as the account file has it.
     account: String,
@@ -948,21 +955,20 @@ impl WorldTask {
                 r.nick = crate::rc::rc_nick(&r.account, Some(&nick));
                 let entry = self.rc_entry(rc);
                 self.to_rcs(Some(rc), entry);
-                self.rc_to_players(rc);
             }
             RcEvent::Chat(text) => {
                 let line = crate::rc::chat_line(&r.nick, &text);
                 self.to_rcs(None, Some(line));
             }
             RcEvent::Pm { to, text } => {
-                let nick = r.nick.get(1..).unwrap_or_default();
+                let nick = rc_player_nick(&r.account);
                 let account = crate::wire::latin1(&r.account);
                 let mut done = HashSet::new();
                 for id in to {
                     let Some(p) = self.players.get(&id).filter(|_| done.insert(id)) else {
                         continue;
                     };
-                    let m = others::private_message(p.version, rc, nick, &account, &text);
+                    let m = others::private_message(p.version, rc, &nick, &account, &text);
                     if !m.is_empty() {
                         let _ = p.outbox.send(vec![m]);
                     }
@@ -1073,12 +1079,15 @@ impl WorldTask {
         ))
     }
 
-    /// RC `rc` as an entry in `to`'s player list (`others::rc_entry`),
-    /// under the nickname its PMs carry.
+    /// RC `rc` as an entry in `to`'s player list (`others::rc_entry`).
     fn rc_for_player(&self, rc: u16, to: ClientVersion) -> Option<Vec<u8>> {
         let r = self.rcs.get(&rc)?;
-        let nick = r.nick.get(1..).unwrap_or_default();
-        others::rc_entry(to, rc, nick, &crate::wire::latin1(&r.account))
+        others::rc_entry(
+            to,
+            rc,
+            &rc_player_nick(&r.account),
+            &crate::wire::latin1(&r.account),
+        )
     }
 
     /// RC `rc`'s entry to every player.
