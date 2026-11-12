@@ -97,6 +97,30 @@ impl Change {
     }
 }
 
+/// An RC (or a far player) as an entry in a player's list: its nickname
+/// (prop 0) and account (34) in `PLO_OTHERPLPROPS`, with no level. GServer-v2
+/// beta4 sends one for an RC to every player when the RC logs in, and a
+/// real 2.22 queues a PM from the RC under that entry in its player list
+/// (lab run 2026-11-12). `None` for a build that has no such list.
+pub fn rc_entry(receiver: ClientVersion, id: u16, nick: &[u8], account: &[u8]) -> Option<Vec<u8>> {
+    use crate::wire::gstring;
+    let prof = receiver.profile();
+    if !prof.protocol.plo.contains(PLO_OTHERPLPROPS) {
+        return None;
+    }
+    let mut p = Vec::new();
+    put_id(receiver, id, &mut p);
+    if prof.props.other.contains(0) {
+        p.push(gchar(0));
+        gstring(nick, &mut p);
+    }
+    if prof.props.other.contains(34) {
+        p.push(gchar(34));
+        gstring(account, &mut p);
+    }
+    Some(msg(PLO_OTHERPLPROPS, &p))
+}
+
 /// A private message from `from` (a player or an RC id) to a `receiver`
 /// build: `PLO_OTHERPLPROPS` with the sender's nickname (0) and account
 /// (34), where the build reads them, so the client can name the sender,
@@ -110,23 +134,9 @@ pub fn private_message(
     account: &[u8],
     text: &[u8],
 ) -> Vec<u8> {
-    use crate::wire::{gstring, ids::PLO_PRIVATEMESSAGE};
-    let prof = receiver.profile();
-    let plo = &prof.protocol.plo;
-    let mut out = Vec::new();
-    if plo.contains(PLO_OTHERPLPROPS) {
-        let mut p = Vec::new();
-        put_id(receiver, from, &mut p);
-        if prof.props.other.contains(0) {
-            p.push(gchar(0));
-            gstring(nick, &mut p);
-        }
-        if prof.props.other.contains(34) {
-            p.push(gchar(34));
-            gstring(account, &mut p);
-        }
-        out.extend(msg(PLO_OTHERPLPROPS, &p));
-    }
+    use crate::wire::ids::PLO_PRIVATEMESSAGE;
+    let plo = &receiver.profile().protocol.plo;
+    let mut out = rc_entry(receiver, from, nick, account).unwrap_or_default();
     if plo.contains(PLO_PRIVATEMESSAGE) {
         let mut p = Vec::new();
         gshort(from, &mut p);
