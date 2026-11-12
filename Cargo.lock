@@ -465,7 +465,7 @@ dependencies = [
 [[package]]
 name = "seihai-npcserver"
 version = "0.1.1"
-source = "git+https://github.com/squirelworks/seihai-npcserver?rev=b17c0155953e8844b2f31b62101e12436d1af380#b17c0155953e8844b2f31b62101e12436d1af380"
+source = "git+https://github.com/squirelworks/seihai-npcserver?rev=1e275eb68a801e3d3caa92ca16a1fb070a0ee389#1e275eb68a801e3d3caa92ca16a1fb070a0ee389"
 dependencies = [
  "seihai-core 0.0.11",
 ]

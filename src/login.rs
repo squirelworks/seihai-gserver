@@ -72,11 +72,13 @@ pub fn is_rc(client_type: u8) -> bool {
 }
 
 /// What the log calls the build that logged in. An RC's token (`GSERV025`
-/// from RC2 2.05 and seihai-rc) is not a game build, so it is "RC" rather
-/// than "unknown build" (lab, 2026-11-12).
+/// from RC2 2.05 and seihai-rc) and an NC's (`NCL11012`, `NCL15031`) are
+/// not game builds, so they are "RC" and "NC" rather than "unknown build"
+/// (lab, 2026-11-12).
 pub fn build_label(client_type: u8, version: Option<ClientVersion>) -> &'static str {
     match version {
         _ if is_rc(client_type) => "RC",
+        _ if is_nc(client_type) => "NC",
         Some(v) => v.label(),
         None => "unknown build",
     }
@@ -231,6 +233,7 @@ mod tests {
     fn rc_logins_are_labelled_rc() {
         assert_eq!(build_label(6, None), "RC");
         assert_eq!(build_label(1, None), "RC");
+        assert_eq!(build_label(3, None), "NC");
         assert_eq!(build_label(0, None), "unknown build");
         assert_eq!(
             build_label(5, Some(ClientVersion::V222)),
