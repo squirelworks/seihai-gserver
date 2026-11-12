@@ -9,9 +9,10 @@ behaviour against, never a code source (see `00-rules.md`).
   `levels/`, `weapons/`, `npcs/` (format to be ours; read GServer-v2-style world
   folders too, so existing worlds move over). `seihai-gserver import-v2`
   makes a world from a GServer-v2 server folder: settings, the version list,
-  accounts, staff and bans so far (`src/import.rs`, from the format note
+  accounts, staff and bans (`src/import.rs`, from the format note
   `docs/GSERVER-V2-WORLD.md`, written from the fork's sample data files
-  only); moving `world/` (levels and client files) is the next slice.
+  only), and `world/` by its `foldersconfig.txt` (levels to `levels/`,
+  the rest to `files/`).
 - Async networking (tokio). One task per connection; one world task that owns
   levels and players and runs a 50 ms tick (real 2.x clients send walk props on a
   100 ms cadence and expect replies within a frame).

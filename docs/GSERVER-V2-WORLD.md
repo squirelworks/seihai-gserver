@@ -113,6 +113,22 @@ client may get, one `kind pattern` per line: `level *.nw`,
 `body bodies/*.png`, `sword swords/*`, `shield shields/*`, `file global/*`.
 Patterns are relative to `world/`.
 
-Moving `world/` over (levels to `levels/`, the rest to `files/`, with the
-folders config as the guide) is the next slice and is not done by
-`import-v2` yet; the importer says so.
+The samples do not say whether `*` crosses folders. Both `file global/*`
+and `head global/heads/*` are listed, which reads as one folder deep, so
+the importer's `*` stays within one folder name.
+
+`import-v2` copies `world/` (the source is only read). The first rule a
+file matches says where it goes:
+
+- `level`: into our `levels/`, under its own name. Ours has no level
+  subfolders yet, so `world/levels/house.nw` becomes `levels/house.nw`; a
+  second level with a name already taken is reported and not copied. A
+  `.gmap` matched as a level goes there too, where this server reads gmaps.
+- `file`, `head`, `body`, `sword`, `shield`: into our `files/`, under the
+  same path (`world/images/a.png` becomes `files/images/a.png`). Ours
+  serves anything under `files/` by name, so the kinds are not kept apart.
+- No rule: not copied, and reported, since a client could not get it from
+  the old server either. Dot files (the samples' `.empty`) are skipped.
+
+Without a `foldersconfig.txt`, `*.nw`, `*.graal` and `*.gmap` anywhere are
+levels and everything else is a file.

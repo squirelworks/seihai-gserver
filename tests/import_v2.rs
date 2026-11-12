@@ -59,6 +59,28 @@ fn v2_folder(tag: &str) -> PathBuf {
         account("(npcserver)", ""),
     )
     .unwrap();
+    // world/, with a folders config: levels at the top and in levels/,
+    // images in images/, and a file no rule lets through.
+    std::fs::write(
+        dir.join("config/foldersconfig.txt"),
+        "# Folder Configuration\nlevel   *.nw\nlevel   levels/*.nw\nfile    images/*.png\nhead    heads/*\n",
+    )
+    .unwrap();
+    for d in [
+        "world/levels",
+        "world/images",
+        "world/heads",
+        "world/private",
+    ] {
+        std::fs::create_dir_all(dir.join(d)).unwrap();
+    }
+    let level = "GLEVNW01\nSIGN 1 1\nMoved over.\nSIGNEND\n";
+    std::fs::write(dir.join("world/onlinestartlocal.nw"), level).unwrap();
+    std::fs::write(dir.join("world/levels/house.nw"), level).unwrap();
+    std::fs::write(dir.join("world/images/sign.png"), b"png bytes").unwrap();
+    std::fs::write(dir.join("world/heads/head9.png"), b"head bytes").unwrap();
+    std::fs::write(dir.join("world/private/notes.txt"), b"keep out").unwrap();
+    std::fs::write(dir.join("world/heads/.empty"), b"").unwrap();
     dir
 }
 
@@ -81,6 +103,24 @@ fn a_gserver_v2_folder_becomes_a_world() {
         left.contains("account keys not carried over: DEATHS"),
         "{left}"
     );
+    assert!(
+        left.contains("1 file(s) under world/ no foldersconfig rule lets a client have, not copied: private/notes.txt"),
+        "{left}"
+    );
+    assert!(
+        r.done.iter().any(|d| d.starts_with("2 level(s)")),
+        "{:?}",
+        r.done
+    );
+    assert!(w.join("levels/onlinestartlocal.nw").is_file());
+    assert!(w.join("levels/house.nw").is_file());
+    assert_eq!(
+        std::fs::read(w.join("files/images/sign.png")).unwrap(),
+        b"png bytes"
+    );
+    assert!(w.join("files/heads/head9.png").is_file());
+    assert!(!w.join("files/private").exists());
+    assert!(!w.join("files/heads/.empty").exists());
     // A second import into the same folder is refused.
     assert!(seihai_gserver::import::import_v2(&src, &w).is_err());
 
@@ -126,6 +166,25 @@ fn a_gserver_v2_folder_becomes_a_world() {
         Duration::from_secs(10),
     )
     .unwrap();
+    // A player gets the level that came from world/.
+    let v = ClientVersion::V222;
+    let mut c = seihai_core::net::login_gserver(
+        &addr,
+        v,
+        seihai_core::net::random_key(),
+        "Mara",
+        PASSWORD,
+        false,
+    )
+    .unwrap();
+    let rx = c.conn.spawn_reader().unwrap();
+    let mut st = seihai_core::protocol::SessionState::for_version(v);
+    read_until(&rx, &mut st, Duration::from_secs(10), |s| s.board.is_some()).unwrap();
+    assert_eq!(
+        st.current_level_name().as_deref(),
+        Some("onlinestartlocal.nw")
+    );
+    drop(c);
     // The ban came over; the allow-list's range lets 2.22 try.
     assert_eq!(
         refused(&addr, ClientVersion::V222, "Ned", PASSWORD).as_deref(),

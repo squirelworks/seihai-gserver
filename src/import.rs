@@ -3,9 +3,11 @@
 //! written from the fork's sample data files only; nothing here comes from
 //! the fork's code.
 //!
-//! This slice carries the settings (`config/serveroptions.txt`), the
-//! version allow-list and the accounts (with the staff list and bans).
-//! Moving `world/` (levels and client files) is the next slice. Nothing in
+//! It carries the settings (`config/serveroptions.txt`), the version
+//! allow-list, the accounts (with the staff list and bans) and the files
+//! under `world/` ([`world_files`]): levels to `levels/`, the rest a
+//! client may get to `files/`, by `config/foldersconfig.txt`. The source
+//! folder is only read. Nothing in
 //! the target world is overwritten: a file that is already there is kept
 //! and reported. Every setting and account key that is not carried over is
 //! reported too, so the admin can see what to set by hand.
@@ -439,11 +441,154 @@ pub fn import_v2(src: &Path, world: &Path) -> io::Result<Report> {
             unused.into_iter().collect::<Vec<_>>().join(", ")
         ));
     }
-    r.left.push(
-        "world/ (levels and client files) is not moved yet: put levels in levels/ and other files in files/"
-            .into(),
-    );
+    let rules = match std::fs::read_to_string(src.join("config").join("foldersconfig.txt")) {
+        Ok(t) => parse_folders(&t),
+        Err(_) => {
+            r.left.push(
+                "config/foldersconfig.txt: not read; levels are *.nw, *.graal and *.gmap anywhere in world/, the rest files"
+                    .into(),
+            );
+            default_folders()
+        }
+    };
+    world_files(&src.join("world"), world, &rules, &mut r)?;
     Ok(r)
+}
+
+/// What a `foldersconfig.txt` line lets a client have.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    Level,
+    /// `file`, `head`, `body`, `sword` and `shield`: all go to `files/`.
+    File,
+}
+
+/// `kind pattern` lines; `#` lines are comments. Unknown kinds are
+/// skipped.
+pub fn parse_folders(text: &str) -> Vec<(Kind, String)> {
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .filter_map(|l| {
+            let (kind, pattern) = l.split_once(char::is_whitespace)?;
+            let kind = match kind.to_ascii_lowercase().as_str() {
+                "level" => Kind::Level,
+                "file" | "head" | "body" | "sword" | "shield" => Kind::File,
+                _ => return None,
+            };
+            Some((kind, pattern.trim().replace('\\', "/")))
+        })
+        .collect()
+}
+
+/// Without a folders config: levels by extension anywhere, the rest files.
+fn default_folders() -> Vec<(Kind, String)> {
+    vec![
+        (Kind::Level, "**.nw".into()),
+        (Kind::Level, "**.graal".into()),
+        (Kind::Level, "**.gmap".into()),
+        (Kind::File, "**".into()),
+    ]
+}
+
+/// Whether `path` (relative, `/` between parts) matches `pattern`, without
+/// case: `*` is any run within one folder name, `**` any run across
+/// folders (ours, for [`default_folders`]).
+pub fn glob(pattern: &str, path: &str) -> bool {
+    fn go(p: &[u8], n: &[u8]) -> bool {
+        match p {
+            [] => n.is_empty(),
+            [b'*', b'*', rest @ ..] => (0..=n.len()).any(|k| go(rest, &n[k..])),
+            [b'*', rest @ ..] => (0..=n.len())
+                .take_while(|&k| k == 0 || n[k - 1] != b'/')
+                .any(|k| go(rest, &n[k..])),
+            [c, rest @ ..] => n
+                .split_first()
+                .is_some_and(|(d, nr)| c.eq_ignore_ascii_case(d) && go(rest, nr)),
+        }
+    }
+    go(pattern.as_bytes(), path.as_bytes())
+}
+
+/// Copy the files under `src` (a GServer-v2 `world/`) into `world`: the
+/// first rule a file matches says where. A level goes into `levels/` under
+/// its own name (ours has no level subfolders; a `.gmap` is a level here
+/// too, as `levels/` is where this server reads gmaps). Anything else a
+/// rule lets through goes into `files/` under the same path. A file no
+/// rule matches is not copied; nor is one already in the target, or a
+/// second level with a name taken.
+pub fn world_files(
+    src: &Path,
+    world: &Path,
+    rules: &[(Kind, String)],
+    r: &mut Report,
+) -> io::Result<()> {
+    let mut all = Vec::new();
+    let mut stack = vec![src.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for e in entries.filter_map(Result::ok) {
+            let path = e.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if let Ok(rel) = path.strip_prefix(src) {
+                if let Some(rel) = rel.to_str() {
+                    all.push((rel.replace('\\', "/"), path.clone()));
+                }
+            }
+        }
+    }
+    all.sort();
+    let (mut levels, mut files) = (0, 0);
+    let mut unmatched = Vec::new();
+    for (rel, path) in all {
+        let name = rel.rsplit('/').next().unwrap_or(&rel);
+        if name.starts_with('.') {
+            continue;
+        }
+        let Some((kind, _)) = rules.iter().find(|(_, p)| glob(p, &rel)) else {
+            unmatched.push(rel);
+            continue;
+        };
+        let target = match kind {
+            Kind::Level if crate::levels::valid_level_name(name) => world.join("levels").join(name),
+            Kind::Level => {
+                r.left.push(format!("world/{rel}: not a level name here"));
+                continue;
+            }
+            Kind::File => world.join("files").join(&rel),
+        };
+        if target.exists() {
+            r.left
+                .push(format!("world/{rel}: {} exists; kept", target.display()));
+            continue;
+        }
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::copy(&path, &target)?;
+        match kind {
+            Kind::Level => levels += 1,
+            Kind::File => files += 1,
+        }
+    }
+    r.done.push(format!(
+        "{levels} level(s) in {}, {files} file(s) in {}",
+        world.join("levels").display(),
+        world.join("files").display()
+    ));
+    if !unmatched.is_empty() {
+        let n = unmatched.len();
+        unmatched.truncate(10);
+        r.left.push(format!(
+            "{n} file(s) under world/ no foldersconfig rule lets a client have, not copied: {}{}",
+            unmatched.join(", "),
+            if n > 10 { ", ..." } else { "" }
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -469,6 +614,22 @@ mod tests {
             convert_allowed(t),
             "# Imported from a GServer-v2 allowedversions.txt.\n# List of version strings.\n# GNW13110\t// 1.41r1\nGNW22122:GNW28015\nGNW03014  # 2.05\n\n"
         );
+    }
+
+    #[test]
+    fn folders_config_and_globs() {
+        let rules = parse_folders(
+            "# Folder Configuration\nhead    heads/*\nlevel   *.nw\nlevel   levels/*.nw\nfile    images/*.png\nfile    global/*\nodd     x/*\n",
+        );
+        assert_eq!(rules.len(), 5);
+        assert_eq!(rules[1], (Kind::Level, "*.nw".to_string()));
+        assert!(glob("*.nw", "start.NW"));
+        assert!(!glob("*.nw", "levels/start.nw"), "one folder deep only");
+        assert!(glob("levels/*.nw", "levels/start.nw"));
+        assert!(glob("global/*", "global/a.png"));
+        assert!(!glob("global/*", "global/heads/a.png"));
+        assert!(glob("**.nw", "a/b/c.nw"));
+        assert!(glob("**", "a/b/c.png"));
     }
 
     #[test]
