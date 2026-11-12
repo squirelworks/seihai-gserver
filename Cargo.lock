@@ -441,6 +441,7 @@ dependencies = [
  "pbkdf2",
  "seihai-core",
  "seihai-npcserver",
+ "seihai-rc",
  "sha2",
  "tokio",
 ]
@@ -449,6 +450,14 @@ dependencies = [
 name = "seihai-npcserver"
 version = "0.1.1"
 source = "git+https://github.com/squirelworks/seihai-npcserver?tag=v0.1.1#846f30b9486fa93c48ee766db8b31d167f6f427b"
+dependencies = [
+ "seihai-core",
+]
+
+[[package]]
+name = "seihai-rc"
+version = "0.1.0"
+source = "git+https://github.com/squirelworks/seihai-rc?tag=v0.1.0#798aee0ef7d307db78d9173ad0a40e95342d0264"
 dependencies = [
  "seihai-core",
 ]

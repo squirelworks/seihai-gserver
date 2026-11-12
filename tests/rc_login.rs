@@ -64,14 +64,21 @@ fn disc(body: &[u8]) -> String {
     String::from_utf8_lossy(&m[0].1).into_owned()
 }
 
-fn welcomed(body: &[u8], account: &str) {
-    let m = ids(body);
+/// The welcome frame, then the frames from the world until "New RC".
+fn welcomed(mut next: impl FnMut() -> Vec<u8>, account: &str) {
+    let m = ids(&next());
     assert_eq!(m[0], (SIGNATURE, vec![73 + 0x20]), "{m:?}");
-    assert!(
-        m.iter()
-            .any(|(id, p)| *id == RC_CHAT && p == format!("New RC: {account}").as_bytes()),
-        "{m:?}"
-    );
+    assert!(m.iter().any(|(id, _)| *id == RC_CHAT), "{m:?}");
+    let new_rc = format!("New RC: {account}");
+    for _ in 0..10 {
+        let m = ids(&next());
+        if m.iter()
+            .any(|(id, p)| *id == RC_CHAT && p == new_rc.as_bytes())
+        {
+            return;
+        }
+    }
+    panic!("no {new_rc:?}");
 }
 
 /// A gen-5 frame from the RC: no compression, XORed.
@@ -98,7 +105,7 @@ fn staff_accounts_log_in_with_an_rc() {
     // build; an RC token is not asked about.
     let mut s = connect(&addr, &line(6, Some(0x2A), "GSERV025", "boss", PASSWORD));
     let mut inc = Gen5::new(0x2A);
-    welcomed(&read_frame(&mut s, &mut inc).unwrap(), "boss");
+    welcomed(|| read_frame(&mut s, &mut inc).unwrap(), "boss");
     // The keepalive and a nickname are taken; the link stays up.
     let mut out = Gen5::new(0x2A);
     let mut body = vec![162 + 0x20, b'\n', 2 + 0x20, 0x20, 4 + 0x20];
@@ -115,7 +122,7 @@ fn staff_accounts_log_in_with_an_rc() {
 
     // Type 1: plain zlib frames.
     let mut s = connect(&addr, &line(1, None, "GSERV023", "boss", PASSWORD));
-    welcomed(&read_zlib_frame(&mut s).unwrap(), "boss");
+    welcomed(|| read_zlib_frame(&mut s).unwrap(), "boss");
 
     // Refusals, each in the RC's own framing.
     let mut s = connect(&addr, &line(6, Some(5), "GSERV025", "player", PASSWORD));
@@ -171,6 +178,7 @@ fn an_rc_logs_in_through_the_secure_login() {
     let mut c2 = done.sealer.seal(&tail).unwrap();
     c2.push(b'\n');
     s.write_all(&write_zlib_frame(&c2).unwrap()).unwrap();
-    welcomed(&read_frame(&mut s, &mut Gen5::new(0x2A)).unwrap(), "boss");
+    let mut inc = Gen5::new(0x2A);
+    welcomed(|| read_frame(&mut s, &mut inc).unwrap(), "boss");
     let _ = std::fs::remove_dir_all(&w);
 }

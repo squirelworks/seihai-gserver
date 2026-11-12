@@ -81,6 +81,11 @@ impl Change {
         }
     }
 
+    /// Whether the change sets prop `id`.
+    pub fn has(&self, id: u8) -> bool {
+        self.values.contains_key(&id)
+    }
+
     /// A one-`GCHAR` prop in the change (the gmap cell, 43 and 44).
     pub fn byte(&self, id: u8) -> Option<u8> {
         match self.values.get(&id)?.as_slice() {

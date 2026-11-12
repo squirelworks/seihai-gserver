@@ -43,8 +43,14 @@ behaviour against, never a code source (see `00-rules.md`).
    built** (`src/rc.rs`, `tests/rc_login.rs`): RC logins (types 1 and 6,
    and through `SEI00001`) for accounts with `STAFF`, from the account's
    `IPRANGE` (loopback only without one); refusals in the RC's framing; the
-   welcome (`PLO_SIGNATURE`, RC chat) and a quiet idle link. No real RC run
-   yet. Next: the player list and RC chat (slice 2).
+   welcome (`PLO_SIGNATURE`, RC chat) and a quiet idle link. **Slice 2
+   built** (`tests/rc_players.rs`, with `seihai-rc` v0.1.0 as the client):
+   the world task lists RCs under ids from the players' space; an RC gets
+   `PLO_ADDPLAYER` for every player and other RC on login, then live
+   `ADDPLAYER` on a login, level change or nickname change and
+   `PLO_DELPLAYER` on a leave; "New RC: account" and RC chat lines
+   (`nickname: text`, our own form) go to every RC. No real RC run yet.
+   Next: player actions (slice 3: messages, admin messages, kick, warp).
 5. NPC-server link for `seihai-npcserver`. **Built from source, lab run
    open** (`src/npclink.rs`, `src/world.rs`, `PROTOCOL.md`,
    `tests/npc_link.rs`, `tests/npc_messages.rs`,
