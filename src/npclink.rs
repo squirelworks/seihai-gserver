@@ -6,19 +6,20 @@
 //! `link` module, so both sides share one codec. `PROTOCOL.md` is copied in
 //! this repo; change it in both.
 //!
-//! - [`Hub`] is the shared state: who is online (with their props), and the
-//!   sender to the connected NPC-server, if any. Connection tasks call
-//!   [`Hub::joined`], [`Hub::props`] and [`Hub::left`]; each updates the
-//!   state and forwards a message when an NPC-server is connected.
+//! - [`Hub`] is the shared state: who is online (with their props), the
+//!   server flags, and the sender to the connected NPC-server, if any. The
+//!   world task calls [`Hub::joined`], [`Hub::props`], [`Hub::level`],
+//!   [`Hub::left`] and [`Hub::level_reloaded`]; each updates the state and
+//!   forwards a message when an NPC-server is connected.
+//! - The NPC-server's own messages (`0x40` to `0x4C`) go to the world task
+//!   as [`WorldIn::FromNpc`], in the order they arrived, and the world
+//!   applies them (`world.rs`, "The NPC-server"). When the link closes the
+//!   world hears [`WorldIn::NpcGone`] and takes the server NPCs down.
 //! - [`serve_link`] accepts NPC-server connections.
 //! - [`supervise`] starts and restarts the NPC-server for `npcserver = auto`.
 //!
-//! TODO(stage 2): `PLAYER_LEVEL` when the world task handles level warps,
-//! `LEVEL_RELOADED` when it watches level files.
-//! TODO(npcserver milestone 2): the NPC-server to gserver messages specified
-//! in `PROTOCOL.md` (`0x40` to `0x47`: NPC props, player changes, warps), and
-//! the gserver to NPC-server `0x24` to `0x26`, relayed by the world. Until
-//! then they are logged once and skipped.
+//! Not sent yet: `PM_TO_NPC`, `TRIGGER_ACTION` (`0x24`, `0x26`), which wait
+//! for the client messages they come from.
 
 use std::collections::BTreeMap;
 use std::io;
@@ -32,6 +33,8 @@ use seihai_npcserver::link::{self, tokens_match, Message, LINK_VERSION, TOKEN_EN
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
+
+use crate::world::WorldIn;
 
 /// Time a new link connection gets to send `HELLO`.
 const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
@@ -66,6 +69,9 @@ struct HubState {
     /// The connected NPC-server, and a number for that connection.
     link: Option<(u64, mpsc::UnboundedSender<Message>)>,
     next_link: u64,
+    /// The server flags as the world holds them (`name=value`), for a
+    /// `SERVER_FLAGS` when an NPC-server connects.
+    server_flags: Vec<Vec<u8>>,
 }
 
 /// Shared link state. One per server; cheap when no NPC-server connects.
@@ -75,6 +81,9 @@ pub struct Hub {
     server_name: String,
     levels_dir: PathBuf,
     started: Instant,
+    /// The world task's inbox, for the NPC-server's messages. Weak, so the
+    /// world task still ends when the server drops its handle.
+    to_world: Mutex<Option<mpsc::WeakUnboundedSender<WorldIn>>>,
 }
 
 impl Hub {
@@ -87,7 +96,24 @@ impl Hub {
             server_name: server_name.to_string(),
             levels_dir: levels_dir.to_path_buf(),
             started: Instant::now(),
+            to_world: Mutex::new(None),
         }
+    }
+
+    /// Where the NPC-server's messages go (`World::set_npc` calls this).
+    pub fn attach_world(&self, tx: mpsc::WeakUnboundedSender<WorldIn>) {
+        *self.to_world.lock().unwrap() = Some(tx);
+    }
+
+    /// Pass a message to the world task; false when there is none.
+    fn to_world(&self, ev: WorldIn) -> bool {
+        let tx = self
+            .to_world
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(|w| w.upgrade());
+        tx.is_some_and(|tx| tx.send(ev).is_ok())
     }
 
     /// The token, for `supervise` to hand to the NPC-server it starts.
@@ -120,9 +146,11 @@ impl Hub {
         send(&mut st, msg);
     }
 
-    /// A player sent `PLI_PLAYERPROPS`. `bow_prop10` is the sender's
-    /// profile setting: its prop 10 is the old bow slot, which is dropped
-    /// (the link carries prop 10 as a gani).
+    /// A player's props changed: `PLI_PLAYERPROPS` from the client, or a
+    /// `SET_PLAYER_PROPS` the world applied (in the 2.22 encoding, so
+    /// `bow_prop10` false). `bow_prop10` is the sender's profile setting:
+    /// its prop 10 is the old bow slot, which is dropped (the link carries
+    /// prop 10 as a gani).
     pub fn props(&self, id: u16, raw: &[u8], bow_prop10: bool) {
         let mut st = self.state.lock().unwrap();
         let Some(p) = st.players.get_mut(&id) else {
@@ -139,6 +167,43 @@ impl Hub {
                 props: changed,
             },
         );
+    }
+
+    /// A player entered another level (a link, a gmap crossing or a warp).
+    pub fn level(&self, id: u16, level: &str) {
+        let mut st = self.state.lock().unwrap();
+        let Some(p) = st.players.get_mut(&id) else {
+            return;
+        };
+        let level = level.as_bytes().to_vec();
+        if p.level == level {
+            return;
+        }
+        p.level = level.clone();
+        send(
+            &mut st,
+            Message::PlayerLevel {
+                player_id: id,
+                level,
+            },
+        );
+    }
+
+    /// A level file changed on disk and the world read it again.
+    pub fn level_reloaded(&self, name: &str) {
+        let mut st = self.state.lock().unwrap();
+        send(
+            &mut st,
+            Message::LevelReloaded {
+                name: name.as_bytes().to_vec(),
+            },
+        );
+    }
+
+    /// The server flag set changed (`name=value` entries). Kept for the
+    /// next NPC-server to connect; the one connected set them itself.
+    pub fn server_flags(&self, entries: Vec<Vec<u8>>) {
+        self.state.lock().unwrap().server_flags = entries;
     }
 
     /// A player's connection closed.
@@ -276,6 +341,11 @@ async fn handle(hub: &Hub, mut stream: TcpStream, peer: SocketAddr) -> io::Resul
                     props: p.prop_stream(),
                 });
             }
+            if !st.server_flags.is_empty() {
+                let _ = tx.send(Message::ServerFlags {
+                    entries: st.server_flags.clone(),
+                });
+            }
             st.next_link += 1;
             let me = st.next_link;
             st.link = Some((me, tx.clone()));
@@ -318,6 +388,7 @@ async fn handle(hub: &Hub, mut stream: TcpStream, peer: SocketAddr) -> io::Resul
     });
 
     let mut seen_unknown = [false; 256];
+    let mut world_gone = false;
     let result = loop {
         let msgs = match tokio::time::timeout(DEAD_AFTER, read_frame(&mut rd)).await {
             Err(_) => {
@@ -340,6 +411,13 @@ async fn handle(hub: &Hub, mut stream: TcpStream, peer: SocketAddr) -> io::Resul
                 }
                 Message::Pong { .. } => {}
                 Message::Bye { reason } => done = Some(format!("bye: {}", link::show(&reason))),
+                // The NPC-server's own messages: the world applies them.
+                m if (0x40..=0x4C).contains(&m.id()) && !matches!(m, Message::Unknown { .. }) => {
+                    if !hub.to_world(WorldIn::FromNpc(m)) && !world_gone {
+                        world_gone = true;
+                        hub.log(&peer, "no world task; NPC-server messages are dropped");
+                    }
+                }
                 other => {
                     let id = other.id();
                     if !seen_unknown[id as usize] {
@@ -360,6 +438,9 @@ async fn handle(hub: &Hub, mut stream: TcpStream, peer: SocketAddr) -> io::Resul
     {
         let mut st = hub.state.lock().unwrap();
         if st.link.as_ref().is_some_and(|(n, _)| *n == me) {
+            // Under the lock, so the world hears this before anything a
+            // next NPC-server sends.
+            hub.to_world(WorldIn::NpcGone);
             st.link = None;
         }
     }
