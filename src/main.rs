@@ -16,6 +16,9 @@ usage:
       ban an account (no --for: until unbanned); it takes effect at its next login
   seihai-gserver unban NAME [--world DIR]
       lift a ban
+  seihai-gserver key-fingerprint [--world DIR]
+      print the secure-login (SEI00001) public key and its fingerprint; reads
+      the key file and never makes one
   seihai-gserver --version";
 
 fn main() -> ExitCode {
@@ -35,6 +38,7 @@ fn main() -> ExitCode {
         Some("account") => return account_command(&world, &args[1..]),
         Some("ban") => return ban_command(&world, &args[1..]),
         Some("unban") => return unban_command(&world, &args[1..]),
+        Some("key-fingerprint") => return key_fingerprint_command(&world, &args[1..]),
         _ => {}
     }
     match run_server(&world, args) {
@@ -207,6 +211,46 @@ fn unban_command(world: &std::path::Path, args: &[String]) -> ExitCode {
         }
         Err(e) => {
             eprintln!("unban {name}: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `key-fingerprint`: the key the server would load, without starting it
+/// and without making a key when there is none.
+fn key_fingerprint_command(world: &std::path::Path, args: &[String]) -> ExitCode {
+    use seihai_core::protocol::seclogin::{self, ServerIdentity};
+    if let Some(a) = args.first() {
+        eprintln!("unknown argument `{a}`\n{USAGE}");
+        return ExitCode::FAILURE;
+    }
+    let cfg = match seihai_gserver::config::Config::load(world) {
+        Ok((c, _)) => c,
+        Err(e) => {
+            eprintln!("world {}: {e}", world.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    let Some(path) = cfg.secure_login_key_path() else {
+        eprintln!("secure login is off (secure_login_key is empty)");
+        return ExitCode::FAILURE;
+    };
+    if !path.is_file() {
+        eprintln!(
+            "no secure login key at {} yet; the server makes it on its first start",
+            path.display()
+        );
+        return ExitCode::FAILURE;
+    }
+    match ServerIdentity::load_or_create(&path) {
+        Ok((id, _)) => {
+            let key = id.public_key();
+            println!("key {}", seclogin::encode_key(&key));
+            println!("fingerprint {}", seclogin::fingerprint(&key));
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("secure login key {}: {e}", path.display());
             ExitCode::FAILURE
         }
     }

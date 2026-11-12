@@ -270,4 +270,6 @@ Next:
       accepts those logins.
 - [ ] RC logins (`rc.rs`, type 1/6): the same handshake once `seihai-rc`
       speaks it.
-- [ ] A `key-fingerprint` subcommand that prints the key without starting.
+- [x] A `key-fingerprint` subcommand that prints the key without starting
+      (`src/main.rs`, `tests/cli.rs`). It reads the key file and never
+      makes one.
