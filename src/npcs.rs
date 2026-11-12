@@ -91,6 +91,27 @@ impl Npc {
         Npc { id, props }
     }
 
+    /// A server NPC from the NPC-server (`NPC_ADDED`): the record a level
+    /// NPC gets, with `id` as this server's id for it, and then the link's
+    /// props (the 2.22 encoding). The script stays on the NPC-server: a
+    /// script sent to the clients would run there as well.
+    pub fn from_link(id: u32, props: &[u8]) -> Self {
+        let mut idv = Vec::new();
+        gint3(id, &mut idv);
+        let mut n = Npc {
+            id,
+            props: BTreeMap::from([
+                (VISFLAGS, vec![gchar(VIS_SHOWN)]),
+                (MESSAGE, vec![gchar(0)]),
+                (ID, idv),
+                (SPRITE, vec![gchar(2)]),
+                (UNKNOWN43, vec![0xFF]),
+            ]),
+        };
+        n.update(props, ClientVersion::V222);
+        n
+    }
+
     /// Take a client's update (as its build writes it); returns the props
     /// that changed, to pass on. Props a client may not set are dropped.
     pub fn update(&mut self, raw: &[u8], sender: ClientVersion) -> Vec<(u8, Vec<u8>)> {
@@ -342,6 +363,24 @@ mod tests {
         assert!(n
             .update(&[gchar(GMAPLEVELX), gchar(3)], ClientVersion::V222)
             .is_empty());
+    }
+
+    #[test]
+    fn a_server_npc_has_the_level_npc_record_and_no_script() {
+        let mut raw = vec![gchar(IMAGE), gchar(8)];
+        raw.extend(b"door.png");
+        raw.push(gchar(SCRIPT));
+        gshort(5, &mut raw);
+        raw.extend(b"hello");
+        raw.extend([gchar(X), gchar(60)]);
+        let n = Npc::from_link(12, &raw);
+        let (id, p) =
+            parse_npc_props(payload(&n.message(ClientVersion::V205).unwrap()), true).unwrap();
+        assert_eq!(id, 12);
+        assert_eq!(p.image.as_deref(), Some("door.png"));
+        assert_eq!(p.x, Some(30.0));
+        assert!(p.script.is_none());
+        assert!(n.props.contains_key(&VISFLAGS) && n.props.contains_key(&ID));
     }
 
     #[test]

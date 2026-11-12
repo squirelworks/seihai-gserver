@@ -109,6 +109,8 @@ impl Server {
             &cfg.world,
         ));
         world.set_anticheat(anticheat.clone());
+        // The world feeds the NPC-server link and applies what it sends.
+        world.set_npc(npc.clone());
         let login_rate = crate::ratelimit::LoginRate::new(cfg.login_rate, cfg.login_rate_loopback);
         let password_checks = crate::ratelimit::PasswordChecks::new(cfg.password_check_slots());
         Server {
@@ -203,7 +205,6 @@ pub async fn serve(server: Arc<Server>, listener: TcpListener) -> io::Result<()>
             let result = conn.run().await;
             if let Some(id) = conn.player.take() {
                 s.world.left(id);
-                s.npc.left(id);
                 if let Some(l) = &s.listlink {
                     l.player_removed(id);
                 }
@@ -448,6 +449,7 @@ impl Conn {
         };
         let joining = crate::world::Joining {
             account: key.clone(),
+            name: account.name.clone(),
             level: start.to_string(),
             version,
             gen: login.gen,
@@ -484,16 +486,6 @@ impl Conn {
         self.player = Some(id);
         {
             let level = level.name.as_str();
-            // The link carries props in the 2.22 encoding.
-            let props = burst::own_props(
-                ClientVersion::V222,
-                &Player {
-                    id,
-                    account: &account,
-                    leader,
-                },
-            );
-            self.server.npc.joined(id, &account.name, level, &props);
             if let Some(l) = &self.server.listlink {
                 l.player_added(ListedPlayer {
                     id,
@@ -878,7 +870,6 @@ impl Session {
                 PLI_PLAYERPROPS => {
                     let bow = self.version.profile().props.bow_prop10;
                     server.world.props(self.id, payload);
-                    server.npc.props(self.id, payload, bow);
                     let props = parse_player_props_with(payload, bow);
                     if let Some(nick) = props.iter().find(|p| p.id == 0) {
                         let nick = nick
