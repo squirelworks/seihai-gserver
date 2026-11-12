@@ -535,6 +535,8 @@ impl Conn {
             score: Default::default(),
             flooding: None,
             kicked: false,
+            ping: (!cfg.ping.is_zero() && version.profile().protocol.plo.contains(PLO_PING))
+                .then(crate::ping::Pinger::default),
         };
         for f in session.handle(&self.server, &self.peer, &early) {
             self.send(&mut codec, &f).await?;
@@ -555,6 +557,11 @@ impl Conn {
             t
         });
         let sends_time = version.profile().protocol.plo.contains(PLO_NEWWORLDTIME);
+        let mut ping_timer = session.ping.is_some().then(|| {
+            let mut t = tokio::time::interval_at(tokio::time::Instant::now() + cfg.ping, cfg.ping);
+            t.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            t
+        });
         let listlink = self.server.listlink.clone();
         let mut last_heard = Instant::now();
         loop {
@@ -580,6 +587,16 @@ impl Conn {
                     }
                     for f in reply {
                         self.send(&mut codec, &f).await?;
+                    }
+                }
+                _ = tick(ping_timer.as_mut()) => {
+                    if let Some(p) = session.ping.as_mut() {
+                        let m = p.ping(Instant::now());
+                        if cfg.ping_misses > 0 && p.missed >= cfg.ping_misses {
+                            self.server.log(&self.peer, &format!("{} pings unanswered", p.missed));
+                            return self.refuse(&mut codec, "Disconnected for not answering.").await;
+                        }
+                        self.send(&mut codec, &m).await?;
                     }
                 }
                 _ = tick(heartbeat.as_mut()) => {
@@ -731,6 +748,8 @@ struct Session {
     flooding: Option<bool>,
     /// The anti-cheat says to close the connection.
     kicked: bool,
+    /// Pings, for a build that reads `PLO_PING`.
+    ping: Option<crate::ping::Pinger>,
 }
 
 impl Session {
@@ -784,6 +803,15 @@ impl Session {
             *n += 1;
             let first_time = *n == 1;
             match id {
+                PLI_PONG => {
+                    let rtt = self
+                        .ping
+                        .as_mut()
+                        .and_then(|p| p.answer(payload, Instant::now()));
+                    if let (Some(rtt), true) = (rtt, server.verbose) {
+                        server.log(peer, &format!("ping {} ms", rtt.as_millis()));
+                    }
+                }
                 // Files from the world folder (`files.rs`). A request for
                 // a file the world does not have gets "failed"; a check of
                 // a copy gets the file when the server's is newer, else
