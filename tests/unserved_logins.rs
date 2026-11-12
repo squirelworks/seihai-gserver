@@ -1,6 +1,5 @@
-//! Login types this server knows but does not serve yet (NC), and RC
-//! logins it turns away, are refused in their own framing, so the client
-//! shows the reason (issue #16). RCs that log in: `tests/rc_login.rs`. The login lines are the ones `seihai-rc` sends; the
+//! RC and NC logins this server turns away are refused in their own
+//! framing, so the client shows the reason (issue #16). RCs that log in: `tests/rc_login.rs`. The login lines are the ones `seihai-rc` sends; the
 //! replies are read the way it reads them. Only `127.0.0.1` is used.
 
 mod common;
@@ -47,7 +46,7 @@ fn rc_and_nc_logins_get_the_reason_in_their_own_frames() {
         ),
         (
             &b"#NCL11012%admin\"pw\n"[..],
-            "This server does not take NC logins yet.",
+            "Account name or password is wrong.",
         ),
     ] {
         let mut s = connect(&addr, line);

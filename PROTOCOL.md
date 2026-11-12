@@ -202,10 +202,41 @@ script engine does that itself), so the gserver should not send it back as
 `TRIGGER_ACTION`. Delivering it to what else listens in that level is the
 gserver's side of the link.
 
-### 0x80 to 0xFF: NPC Control (*reserved*)
+### 0x80 to 0x8F: NPC Control
 
-Planned: the NPC list, classes and weapons for `seihai-rc`, relayed by the
-gserver.
+NPC Control (NC) clients log in to the gserver, which serves them from what
+the NPC-server tells it. These ids were reserved in link version 1;
+specifying them does not bump the version. A side that does not know them
+logs and skips them, as for any unknown id.
+
+| Id | Name | Direction | Fields |
+|---|---|---|---|
+| `0x80` | `NC_NPC` | NPC → GS | `npc_id: u32`, `name: str`, `type: str`, `level: str` |
+| `0x81` | `NC_GET` | GS → NPC | `request: u32`, `npc_id: u32`, `what: u8` (0 script, 1 attributes) |
+| `0x82` | `NC_TEXT` | NPC → GS | `request: u32`, `found: u8` (1 yes, 0 no such NPC), `text: blob` |
+| `0x83` | `NC_SCRIPT_SET` | GS → NPC | `npc_id: u32`, `script: blob` |
+| `0x84` | `NC_NPC_DELETE` | GS → NPC | `npc_id: u32` |
+
+- `NC_NPC` names one database NPC. The NPC-server sends one for every NPC
+  after the `NPC_ADDED` messages when its scripts start, and again for each
+  NPC it restarts. `type` is a `GRNPC001` file's `TYPE`, empty when there is
+  none. `level` is empty for a level-less NPC.
+- `NC_GET` asks for a script or the attributes, and `NC_TEXT` answers it
+  with the same `request`. Attributes are `name=value` lines: `name`,
+  `level`, `x`, `y`, `image`, then every other key of a `GRNPC001` file in
+  lower case.
+- `NC_SCRIPT_SET` writes the script into the NPC's file and starts the
+  NPCs of that level again: they go (`NPC_DELETED`), come back
+  (`NPC_ADDED`, `NC_NPC`) and run `created` with the new script.
+- `NC_NPC_DELETE` renames the NPC's file to `.txt.deleted`, which is not
+  read on the next start, sends `NPC_DELETED`, and restarts the other NPCs
+  of that level the same way.
+- Neither set nor delete has a reply. A refusal (no such NPC, a file that
+  cannot be written) is logged by the NPC-server.
+
+### 0x90 to 0xFF: *reserved*
+
+Classes and weapons for NPC Control, once the NPC-server keeps them.
 
 ## Authentication
 
@@ -251,4 +282,4 @@ messages; the NPC-server already sends them) turns the link off, and
 | 1 | 2026-11-04 | `NPC_SHAPE` (`0x4B`) specified. No version bump: the id was reserved. This copy only, as above. |
 | 1 | 2026-11-04 | `NPC_TRIGGER_ACTION` (`0x4C`) specified. No version bump: the id was reserved. This copy only, as above. |
 | 1 | 2026-11-11 | No protocol change. The two copies are the same file again; the "this copy only" notes above no longer hold. `seihai-gserver` reads milestone 1 only and does not yet act on the milestone 2 messages. |
-| 1 | 2026-11-12 | No protocol change. `seihai-gserver` applies `0x40` to `0x4C` and sends `PLAYER_LEVEL`, `LEVEL_RELOADED` and, on connect, `SERVER_FLAGS` (stage 5, seihai-gserver #53). |
+| 1 | 2026-11-12 | NPC Control messages `0x80` to `0x84` specified and built on both sides (seihai-gserver issue #52). No version bump: the ids were reserved. |

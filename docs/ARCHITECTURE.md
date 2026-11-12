@@ -32,6 +32,7 @@ How the server is put together, and where each later stage plugs in. Read
 | `src/listlink.rs` | the listserver link over the encrypted channel (`SVLINK01`): register, player count with nickname and props, account check (`VERIACC2`), pong (`SVO_PING` 16), private messages, file start; two plain threads, reconnects every 15 s | link |
 | `src/rcaccounts.rs` | accounts from an RC: list, get, set, add, delete on the account files (slice 4); staff rights and comments (slice 6) | 4 |
 | `src/rcfiles.rs` | the RC file browser: list, get, put within the account's `FOLDER` rights; reads an RC's raw blocks (slice 5) | 4 |
+| `src/nc.rs` | NPC Control logins (type 3): the NPC-server's NPC list, attributes, scripts get and set, delete, through the link's `NC_*` messages (slice 6) | 4 |
 | `src/rcserver.rs` | server options (`config/server.txt`), folder config (`config/foldersconfig.txt`) and server flags for an RC; the flags kept in `config/serverflags.txt` | 4 |
 | `src/rcprops.rs` | a player's props for an RC (72) from the account file, and a set (76) on an offline account (slice 7) | 4 |
 | `src/ping.rs` | `PLO_PING` (108) on a timer to the builds whose profile reads it, the `PLI_PONG` (162) answer timed, the miss count (issue #44) | 2 |
@@ -184,6 +185,9 @@ World task ◀──WorldIn::FromNpc (0x40 to 0x4C), NpcGone── link task
   refused a set on them.
 - `tests/rc_files.rs`: an RC lists, gets and puts files with `seihai-rc`'s
   own file link; read-only and missing rights refused.
+- `tests/nc.rs`: the real NPC-server session links up with a world's NPC
+  files; an NC (`seihai-rc`'s client) lists, reads, sets and deletes them;
+  an RC's 94 is answered with this server's address.
 - `tests/rc_server.rs`: server options, folder config and server flags
   set and read back with `seihai-rc`'s messages; a player online sees the
   flags change, and they last over a restart.

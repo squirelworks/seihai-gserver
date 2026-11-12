@@ -13,7 +13,7 @@ seihai-core = { git = "https://github.com/squirelworks/seihai-core", tag = "v0.0
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time", "macros", "sync", "signal", "process"] }
 # The NPC-server link's wire format (PROTOCOL.md), shared with the NPC-server
 # so both sides use one codec.
-seihai-npcserver = { git = "https://github.com/squirelworks/seihai-npcserver", rev = "e10cecd8d01b76f017433ee73d0c54406766c53d" }
+seihai-npcserver = { git = "https://github.com/squirelworks/seihai-npcserver", rev = "29b2591e917461ad2d3e35abdb20488e50453597" }
 sha2 = "0.10"
 getrandom = "0.2"
 pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
@@ -24,7 +24,7 @@ flate2 = { version = "1", features = ["zlib-rs"] }
 # Paused time for the world-tick tests.
 tokio = { version = "1", features = ["test-util"] }
 # The RC tests log in with Seihai's own RC client.
-seihai-rc = { git = "https://github.com/squirelworks/seihai-rc", rev = "afc21072e36d6b66ec2e37af72ee8ee9a5b7c55f" }
+seihai-rc = { git = "https://github.com/squirelworks/seihai-rc", rev = "2430ee31cc4cb1f691fd9413deef1d6183012a8b" }
 
 # PBKDF2 and the codecs are slow unoptimised; the tests log in dozens of times.
 [profile.dev.package."*"]

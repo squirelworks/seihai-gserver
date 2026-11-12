@@ -50,13 +50,17 @@ pub enum LoginError {
 }
 
 /// The login types this server knows but does not serve yet, by name, and
-/// the framing each one reads after its login frame (from `seihai-rc`'s
-/// NC session): 3, NC, plain zlib frames, no key byte.
+/// the framing each one reads after its login frame. None now: NC (3) is
+/// served since stage 4 slice 6 (`nc.rs`).
 pub fn unserved_type(client_type: u8) -> Option<(&'static str, EncryptionGen)> {
-    match client_type {
-        3 => Some(("NC", EncryptionGen::Gen2)),
-        _ => None,
-    }
+    let _ = client_type;
+    None
+}
+
+/// NPC Control (`nc.rs`): type 3, token `NCL11012`, no key byte, plain
+/// zlib frames.
+pub fn is_nc(client_type: u8) -> bool {
+    client_type == crate::nc::NC_LOGIN_TYPE
 }
 
 /// RC login types (stage 4, `rc.rs`), from `seihai-rc`'s RC sessions:
@@ -148,7 +152,7 @@ pub fn parse(line: &[u8], extra_tokens: &[String]) -> Result<Login, LoginError> 
             let t = token_at(1).ok_or(LoginError::Short)?;
             (EncryptionGen::Gen5, rest[0].wrapping_sub(0x20), t, 9)
         }
-        1 => (
+        1 | 3 => (
             EncryptionGen::Gen2,
             0,
             token_at(0).ok_or(LoginError::Short)?,
@@ -271,14 +275,12 @@ mod tests {
             (6, EncryptionGen::Gen5, 0x2A, "GSERV025")
         );
         assert!(is_rc(1) && is_rc(6) && !is_rc(0) && !is_rc(3) && !is_rc(5));
+        let l = parse(b"#NCL11012\"ab\"cd\n", &[]).unwrap();
         assert_eq!(
-            parse(b"#NCL11012\"ab\"cd\n", &[]),
-            Err(LoginError::NotServed {
-                client_type: 3,
-                gen: EncryptionGen::Gen2,
-                key: 0
-            })
+            (l.client_type, l.gen, l.key, l.token.as_str()),
+            (3, EncryptionGen::Gen2, 0, "NCL11012")
         );
+        assert!(is_nc(3) && !is_nc(1));
         assert_eq!(parse(b"&", &[]), Err(LoginError::Short));
         assert_eq!(parse(b"\"x", &[]), Err(LoginError::Type(2)));
         assert_eq!(parse(b" !GNW03081", &[]), Err(LoginError::Short));

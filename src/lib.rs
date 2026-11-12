@@ -21,6 +21,7 @@ pub mod import;
 pub mod levels;
 pub mod listlink;
 pub mod login;
+pub mod nc;
 pub mod npclink;
 pub mod npcs;
 pub mod others;
