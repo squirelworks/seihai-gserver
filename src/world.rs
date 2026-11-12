@@ -220,6 +220,13 @@ pub enum WorldIn {
         set: crate::rcprops::Set,
         reply: oneshot::Sender<bool>,
     },
+    /// The server flags as `name=value` (or a bare `name`), for an RC.
+    ServerFlags { reply: oneshot::Sender<Vec<String>> },
+    /// An RC's server flags set (69): the list replaces the world's.
+    SetServerFlags {
+        flags: Vec<String>,
+        reply: oneshot::Sender<()>,
+    },
     /// A message from the NPC-server (`0x40` to `0x4C`), from the link.
     FromNpc(Message),
     /// The NPC-server link closed: its NPCs go.
@@ -358,6 +365,7 @@ impl World {
                 npc: None,
                 server_npcs: HashMap::new(),
                 server_flags: BTreeMap::new(),
+                flags_file: None,
                 noted: HashSet::new(),
                 reload_objects: HashSet::new(),
             })),
@@ -571,6 +579,43 @@ impl World {
             })
             .ok()?;
         answer.blocking_recv().ok().flatten()
+    }
+
+    /// [`WorldIn::ServerFlags`], from a blocking thread.
+    pub fn server_flags_blocking(&self) -> Vec<String> {
+        let (reply, answer) = oneshot::channel();
+        if self.tx.send(WorldIn::ServerFlags { reply }).is_err() {
+            return Vec::new();
+        }
+        answer.blocking_recv().unwrap_or_default()
+    }
+
+    /// [`WorldIn::SetServerFlags`], from a blocking thread. Returns once
+    /// the world has them.
+    pub fn set_server_flags_blocking(&self, flags: Vec<String>) {
+        let (reply, answer) = oneshot::channel();
+        if self
+            .tx
+            .send(WorldIn::SetServerFlags { flags, reply })
+            .is_ok()
+        {
+            let _ = answer.blocking_recv();
+        }
+    }
+
+    /// Where the server flags are kept (`config/serverflags.txt`, one
+    /// `name=value` a line): read now, written on every change. Call
+    /// before [`World::start`]; later calls do nothing.
+    pub fn set_server_flags_file(&self, path: PathBuf) {
+        if let Some(t) = self.task.lock().unwrap().as_mut() {
+            if let Ok(text) = std::fs::read_to_string(&path) {
+                for l in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
+                    let (n, v) = split_flag(l);
+                    t.server_flags.insert(n, v);
+                }
+            }
+            t.flags_file = Some(path);
+        }
     }
 
     /// [`WorldIn::RcPropsSet`], from a blocking thread. Whether the player
@@ -807,6 +852,8 @@ pub struct WorldTask {
     server_npcs: HashMap<u32, ServerNpc>,
     /// Server flags (`server.` names) by name; the value may be empty.
     server_flags: BTreeMap<String, String>,
+    /// Where the server flags are kept, if anywhere.
+    flags_file: Option<PathBuf>,
     /// Link messages already logged as not passed on.
     noted: HashSet<&'static str>,
     /// Levels whose file changed while players were in them: their NPCs
@@ -902,6 +949,18 @@ impl WorldTask {
                     .and_then(|id| self.players.get(id))
                     .map(Online::leaving);
                 let _ = reply.send(l);
+            }
+            WorldIn::ServerFlags { reply } => {
+                let _ = reply.send(
+                    self.server_flags
+                        .iter()
+                        .map(|(n, v)| flag_text(n, v))
+                        .collect(),
+                );
+            }
+            WorldIn::SetServerFlags { flags, reply } => {
+                self.set_server_flags(&flags);
+                let _ = reply.send(());
             }
             WorldIn::RcPropsSet { set, reply } => {
                 let id = self
@@ -1063,7 +1122,7 @@ impl WorldTask {
                 }
             }
             // The connection carries these out.
-            RcEvent::Account(_) | RcEvent::Files(_) => {}
+            RcEvent::Account(_) | RcEvent::Files(_) | RcEvent::Server(_) => {}
             RcEvent::Kick(id) => {
                 // The connection says why and closes; its leave lists the
                 // player out for every RC.
@@ -2524,6 +2583,7 @@ impl WorldTask {
                 let _ = p.outbox.send(vec![m.clone()]);
             }
         }
+        self.save_server_flags();
         if let Some(hub) = &self.npc {
             hub.server_flags(
                 self.server_flags
@@ -2531,6 +2591,47 @@ impl WorldTask {
                     .map(|(n, v)| crate::wire::latin1(&flag_text(n, v)))
                     .collect(),
             );
+        }
+    }
+
+    /// An RC's whole list: flags gone are unset, new or changed ones set,
+    /// each as the NPC-server's `SERVER_FLAG` would.
+    fn set_server_flags(&mut self, flags: &[String]) {
+        let new: BTreeMap<String, String> = flags
+            .iter()
+            .map(|f| split_flag(f))
+            .filter(|(n, _)| !n.is_empty())
+            .collect();
+        let gone: Vec<String> = self
+            .server_flags
+            .keys()
+            .filter(|n| !new.contains_key(*n))
+            .cloned()
+            .collect();
+        for n in gone {
+            self.server_flag(n, false, String::new());
+        }
+        for (n, v) in new {
+            if self.server_flags.get(&n) != Some(&v) {
+                self.server_flag(n, true, v);
+            }
+        }
+    }
+
+    /// Write the server flags to their file, if they have one.
+    fn save_server_flags(&self) {
+        let Some(path) = &self.flags_file else {
+            return;
+        };
+        let mut text = String::new();
+        for (n, v) in &self.server_flags {
+            text.push_str(&flag_text(n, v));
+            text.push('\n');
+        }
+        let tmp = path.with_extension("txt.new");
+        let r = std::fs::write(&tmp, text).and_then(|()| std::fs::rename(&tmp, path));
+        if let Err(e) = r {
+            eprintln!("{}: {e}", path.display());
         }
     }
 
