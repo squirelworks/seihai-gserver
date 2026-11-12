@@ -836,7 +836,19 @@ impl Conn {
                                     }
                                     op => op,
                                 };
-                                let d = crate::rcaccounts::run(&server.store, &online, start, op);
+                                let ctx = crate::rcaccounts::Ctx {
+                                    store: &server.store,
+                                    bans: &crate::bans::Bans::new(&cfg.world),
+                                    online: &online,
+                                    start,
+                                    admin: &name,
+                                };
+                                let d = crate::rcaccounts::run(&ctx, op);
+                                // Banned while online: off they go, as on an
+                                // RC disconnect.
+                                if let Some(pid) = d.kick.and_then(|a| server.world.id_of(&a)) {
+                                    server.world.rc_event(id, crate::rc::RcEvent::Kick(pid));
+                                }
                                 (vec![d.reply], d.log)
                             }
                             crate::rc::RcEvent::Files(op) => {

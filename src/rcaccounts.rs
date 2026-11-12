@@ -14,9 +14,26 @@
 //! `ADMINLEVEL` and `ADMINWORLDS` (`accounts.rs`). They are stored and
 //! shown, nothing acts on them yet; in particular the admin level does not
 //! make an account staff, which only `STAFF` in the file does, so an RC
-//! cannot raise an account to RC use. The ban fields are not read or
-//! written here yet: the ban file (`bans.rs`) comes with the anti-cheat
-//! PR, and the next slice joins them. A get says not banned.
+//! cannot raise an account to RC use.
+//!
+//! The ban fields are the world's ban file (`config/bans.txt`,
+//! `bans.rs`), the same one `seihai-gserver ban` writes and a login
+//! checks. A get says banned when a ban holds now, with its reason. A set
+//! or add that says banned writes a ban with no end (the RC sends no ban
+//! time), under the RC's account as the admin; one that already holds
+//! keeps its end. One that says not banned lifts the ban. The reason goes
+//! in as one line: the RC's lines joined with spaces.
+//!
+//! The player's own ban, as seihai-rc saw it (same section of its
+//! `docs/PROTOCOL.md`):
+//!
+//! | RC sends | Server answers |
+//! |---|---|
+//! | 87 `RC_PLAYERBANGET`: the account | 64: `GSTRING` account, `GCHAR` banned, the reason tokenized |
+//! | 88 `RC_PLAYERBANSET`: `GSTRING` account, `GCHAR` banned, the reason tokenized | nothing |
+//!
+//! A ban set on a player who is online disconnects them, as the fork did
+//! at `1d7843a`; their next login meets the ban.
 //!
 //! Slice 6 adds a player's staff rights and comments, as seihai-rc saw
 //! them from a real RC (`GSERV024`) against the fork (its
@@ -46,6 +63,7 @@
 //! are refused in the log only, as the RC gets no reply either way.
 
 use crate::accounts::{Account, Store};
+use crate::bans::{Ban, Bans};
 use crate::login::valid_account_name;
 use crate::wire::{gchar, gstring, latin1, msg, text};
 use seihai_core::protocol::read_gshort;
@@ -62,6 +80,10 @@ pub const PLI_RC_PLAYERRIGHTSGET: u8 = 83;
 pub const PLI_RC_PLAYERRIGHTSSET: u8 = 84;
 pub const PLI_RC_PLAYERCOMMENTSGET: u8 = 85;
 pub const PLI_RC_PLAYERCOMMENTSSET: u8 = 86;
+/// `PLO_RC_PLAYERBANGET` reply id.
+pub const PLO_RC_PLAYERBANGET: u8 = 64;
+pub const PLI_RC_PLAYERBANGET: u8 = 87;
+pub const PLI_RC_PLAYERBANSET: u8 = 88;
 
 pub const PLI_RC_ACCOUNTADD: u8 = 70;
 pub const PLI_RC_ACCOUNTDEL: u8 = 71;
@@ -111,6 +133,13 @@ pub enum Op {
         account: String,
     },
     PropsSet(crate::rcprops::Set),
+    BanGet(String),
+    BanSet {
+        account: String,
+        banned: bool,
+        /// Tokenized, as sent.
+        reason: Vec<u8>,
+    },
 }
 
 /// A player's staff rights as 62 and 84 carry them.
@@ -164,6 +193,17 @@ pub fn parse(id: u8, rest: &[u8]) -> Option<Op> {
         PLI_RC_ACCOUNTGET if !name().is_empty() => Some(Op::Get(name())),
         PLI_RC_PLAYERRIGHTSGET if !name().is_empty() => Some(Op::RightsGet(name())),
         PLI_RC_PLAYERCOMMENTSGET if !name().is_empty() => Some(Op::CommentsGet(name())),
+        PLI_RC_PLAYERBANGET if !name().is_empty() => Some(Op::BanGet(name())),
+        PLI_RC_PLAYERBANSET => {
+            let mut i = 0;
+            let account = text(&read_gstring(rest, &mut i)?);
+            let banned = rest.get(i)?.wrapping_sub(0x20) != 0;
+            Some(Op::BanSet {
+                account,
+                banned,
+                reason: rest[i + 1..].to_vec(),
+            })
+        }
         crate::rcprops::PLI_RC_PLAYERPROPSGET2 => read_gshort(rest).map(Op::PropsGetId),
         crate::rcprops::PLI_RC_PLAYERPROPSGET3 => {
             crate::rcprops::parse_get3(rest).map(|account| Op::PropsGet { id: 0, account })
@@ -254,20 +294,38 @@ fn condition(c: &str) -> Option<Test> {
     }
 }
 
-/// `PLO 73` for `a`.
-pub fn account_reply(a: &Account) -> Vec<u8> {
+/// The reason as the RC sends it (tokenized lines), as one line.
+fn reason_line(t: &[u8]) -> String {
+    lines(t)
+        .iter()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// A reason as the RC reads it: one tokenized line, or nothing.
+fn reason_tokens(ban: Option<&Ban>) -> Vec<u8> {
+    match ban {
+        Some(b) if !b.reason.is_empty() => tokenized(std::slice::from_ref(&b.reason)),
+        _ => Vec::new(),
+    }
+}
+
+/// `PLO 73` for `a`; `ban` is the one that holds on it now.
+pub fn account_reply(a: &Account, ban: Option<&Ban>) -> Vec<u8> {
     let mut p = Vec::new();
     gstring(&latin1(&a.name), &mut p);
     gstring(b"", &mut p);
     gstring(&latin1(&a.email), &mut p);
     p.extend([
-        gchar(0),
+        gchar(u8::from(ban.is_some())),
         gchar(u8::from(a.load_only)),
         gchar(a.admin_level.min(0xDF)),
     ]);
     gstring(&latin1(&a.admin_worlds), &mut p);
     p.push(0x20);
-    gstring(b"", &mut p);
+    gstring(&reason_tokens(ban), &mut p);
     msg(PLO_RC_ACCOUNTGET, &p)
 }
 
@@ -277,17 +335,62 @@ pub fn account_reply(a: &Account) -> Vec<u8> {
 pub struct Done {
     pub reply: Vec<u8>,
     pub log: Option<String>,
+    /// An account (lower case) to disconnect: banned while online.
+    pub kick: Option<String>,
 }
 
 /// Where an added account starts: the world's start level and spot.
 pub type Start<'a> = (&'a str, f32, f32);
 
-/// Carry out `op` on the account files. `online` are the accounts
-/// online now, lower case.
-pub fn run(store: &Store, online: &[String], start: Start, op: Op) -> Done {
+/// Where an RC's request runs: the account files, the ban file, who is
+/// online (lower case), where an added account starts, and the RC's own
+/// account (the admin on a ban it writes).
+pub struct Ctx<'a> {
+    pub store: &'a Store,
+    pub bans: &'a Bans,
+    pub online: &'a [String],
+    pub start: Start<'a>,
+    pub admin: &'a str,
+}
+
+/// The ban that holds on `name` now; a ban file that cannot be read
+/// counts as none.
+fn ban_on(bans: &Bans, name: &str) -> Option<Ban> {
+    bans.find(name).ok().flatten()
+}
+
+/// Write the RC's ban field for `account`: banned, or not. A ban that
+/// already holds keeps its end. What changed, for the log; nothing when
+/// it was not banned and stays so.
+fn set_ban(ctx: &Ctx, account: &str, banned: bool, reason: &[u8]) -> Option<String> {
+    let result = if banned {
+        let until = ban_on(ctx.bans, account).and_then(|b| b.until);
+        ctx.bans
+            .add(Ban {
+                account: account.to_string(),
+                until,
+                admin: ctx.admin.to_string(),
+                reason: reason_line(reason),
+            })
+            .map(|()| "banned")
+    } else {
+        ctx.bans
+            .remove(account)
+            .map(|was| if was { "ban lifted" } else { "" })
+    };
+    match result {
+        Ok("") => None,
+        Ok(what) => Some(what.to_string()),
+        Err(e) => Some(format!("ban not written: {e}")),
+    }
+}
+
+/// Carry out `op` on the account and ban files.
+pub fn run(ctx: &Ctx, op: Op) -> Done {
+    let (store, online, start) = (ctx.store, ctx.online, ctx.start);
     let log = |s: String| Done {
-        reply: Vec::new(),
         log: Some(s),
+        ..Done::default()
     };
     match op {
         Op::List {
@@ -321,12 +424,13 @@ pub fn run(store: &Store, online: &[String], start: Start, op: Op) -> Done {
                 reply: msg(PLO_RC_ACCOUNTLIST, &p),
                 log: (!ignored.is_empty())
                     .then(|| format!("account list: conditions not read: {}", ignored.join(", "))),
+                ..Done::default()
             }
         }
         Op::Get(name) => match valid_account_name(&name).then(|| store.load(&name)) {
             Some(Ok(Some(a))) => Done {
-                reply: account_reply(&a),
-                log: None,
+                reply: account_reply(&a, ban_on(ctx.bans, &a.name).as_ref()),
+                ..Done::default()
             },
             _ => log(format!("account get {name}: no such account")),
         },
@@ -336,7 +440,11 @@ pub fn run(store: &Store, online: &[String], start: Start, op: Op) -> Done {
         Op::Set(f) => match store.load(&f.account) {
             Ok(Some(mut a)) => {
                 apply(&mut a, &f);
-                saved(store, &a, format!("account set {}", a.name))
+                let ban = set_ban(ctx, &a.name, f.banned, &f.ban_reason)
+                    .map_or(String::new(), |b| format!(" ({b})"));
+                let mut d = saved(store, &a, format!("account set {}{ban}", a.name));
+                d.kick = kick_if_online(ctx, &a.name, f.banned);
+                d
             }
             _ => log(format!("account set {}: no such account", f.account)),
         },
@@ -344,11 +452,15 @@ pub fn run(store: &Store, online: &[String], start: Start, op: Op) -> Done {
             Ok(None) => {
                 let mut a = Account::new(&f.account, start.0, start.1, start.2);
                 apply(&mut a, &f);
-                saved(store, &a, format!("account add {}", a.name))
+                let ban = set_ban(ctx, &a.name, f.banned, &f.ban_reason)
+                    .map_or(String::new(), |b| format!(" ({b})"));
+                saved(store, &a, format!("account add {}{ban}", a.name))
             }
             _ => log(format!("account add {}: it exists", f.account)),
         },
-        Op::RightsGet(name) | Op::CommentsGet(name) if !valid_account_name(&name) => {
+        Op::RightsGet(name) | Op::CommentsGet(name) | Op::BanGet(name)
+            if !valid_account_name(&name) =>
+        {
             log(format!("account {name}: not a valid name"))
         }
         Op::RightsGet(name) => match store.load(&name) {
@@ -363,7 +475,7 @@ pub fn run(store: &Store, online: &[String], start: Start, op: Op) -> Done {
                 p.extend_from_slice(folders);
                 Done {
                     reply: msg(PLO_RC_PLAYERRIGHTSGET, &p),
-                    log: None,
+                    ..Done::default()
                 }
             }
             _ => log(format!("rights get {name}: no such account")),
@@ -375,7 +487,7 @@ pub fn run(store: &Store, online: &[String], start: Start, op: Op) -> Done {
                 p.extend(tokenized(&a.comments));
                 Done {
                     reply: msg(PLO_RC_PLAYERCOMMENTSGET, &p),
-                    log: None,
+                    ..Done::default()
                 }
             }
             _ => log(format!("comments get {name}: no such account")),
@@ -413,12 +525,44 @@ pub fn run(store: &Store, online: &[String], start: Start, op: Op) -> Done {
                 _ => log(format!("comments set {account}: no such account")),
             }
         }
+        Op::BanGet(name) => match store.load(&name) {
+            Ok(Some(a)) => {
+                let ban = ban_on(ctx.bans, &a.name);
+                let mut p = Vec::new();
+                gstring(&latin1(&a.name), &mut p);
+                p.push(gchar(u8::from(ban.is_some())));
+                p.extend(reason_tokens(ban.as_ref()));
+                Done {
+                    reply: msg(PLO_RC_PLAYERBANGET, &p),
+                    ..Done::default()
+                }
+            }
+            _ => log(format!("ban get {name}: no such account")),
+        },
+        Op::BanSet {
+            account,
+            banned,
+            reason,
+        } => match valid_account_name(&account).then(|| store.load(&account)) {
+            Some(Ok(Some(a))) => Done {
+                log: Some(format!(
+                    "ban set {}: {}",
+                    a.name,
+                    set_ban(ctx, &a.name, banned, &reason)
+                        .as_deref()
+                        .unwrap_or("not banned")
+                )),
+                kick: kick_if_online(ctx, &a.name, banned),
+                ..Done::default()
+            },
+            _ => log(format!("ban set {account}: no such account")),
+        },
         Op::PropsGetId(id) => log(format!("props get player {id}: not online")),
         Op::PropsGet { id, account } => {
             match valid_account_name(&account).then(|| store.load(&account)) {
                 Some(Ok(Some(a))) => Done {
                     reply: crate::rcprops::reply(id, &a),
-                    log: None,
+                    ..Done::default()
                 },
                 _ => log(format!("props get {account}: no such account")),
             }
@@ -454,6 +598,12 @@ pub fn run(store: &Store, online: &[String], start: Start, op: Op) -> Done {
     }
 }
 
+/// The account to disconnect when a ban was just set on it while online.
+fn kick_if_online(ctx: &Ctx, name: &str, banned: bool) -> Option<String> {
+    let lower = name.to_ascii_lowercase();
+    (banned && ctx.online.contains(&lower)).then_some(lower)
+}
+
 fn apply(a: &mut Account, f: &Fields) {
     if !f.password.is_empty() {
         a.set_password(&f.password);
@@ -471,6 +621,7 @@ fn saved(store: &Store, a: &Account, what: String) -> Done {
             Ok(()) => what,
             Err(e) => format!("{what}: {e}"),
         }),
+        ..Done::default()
     }
 }
 
@@ -480,6 +631,19 @@ mod tests {
     use seihai_core::protocol::split_messages;
 
     const START: Start = ("start.nw", 30.0, 30.0);
+
+    /// `run` with the ban file in a `bans` folder beside the accounts.
+    fn go(store: &Store, online: &[String], op: Op) -> Done {
+        let bans = Bans::new(&store.dir().with_extension("bans"));
+        let ctx = Ctx {
+            store,
+            bans: &bans,
+            online,
+            start: START,
+            admin: "boss",
+        };
+        run(&ctx, op)
+    }
 
     #[test]
     fn patterns() {
@@ -501,10 +665,9 @@ mod tests {
             store.save(&Account::new(n, "start.nw", 1.0, 1.0)).unwrap();
         }
         let list = |pattern: &str, conditions: &str| {
-            let d = run(
+            let d = go(
                 &store,
                 &[],
-                START,
                 Op::List {
                     pattern: pattern.into(),
                     conditions: conditions.into(),
@@ -531,7 +694,7 @@ mod tests {
         gstring(b"main", &mut p);
         gstring(b"", &mut p);
         let op = parse(PLI_RC_ACCOUNTSET, &p).unwrap();
-        assert!(run(&store, &[], START, op).reply.is_empty());
+        assert!(go(&store, &[], op).reply.is_empty());
         let bob = store.load("bob").unwrap().unwrap();
         assert!(bob.check_password(b"newpw"));
         assert_eq!((bob.admin_level, bob.load_only), (2, true));
@@ -540,13 +703,7 @@ mod tests {
         assert_eq!(names, ["bob"]);
         assert!(log.unwrap().contains("online=1"));
 
-        let got = run(
-            &store,
-            &[],
-            START,
-            parse(PLI_RC_ACCOUNTGET, b"Bob").unwrap(),
-        )
-        .reply;
+        let got = go(&store, &[], parse(PLI_RC_ACCOUNTGET, b"Bob").unwrap()).reply;
         let m = &split_messages(&got)[0];
         assert_eq!(m.id, PLO_RC_ACCOUNTGET);
         let mut want = Vec::new();
@@ -561,22 +718,20 @@ mod tests {
         // An add of a new name, then of one that exists.
         let mut add = p.clone();
         add[1..4].copy_from_slice(b"cat");
-        let d = run(&store, &[], START, parse(PLI_RC_ACCOUNTADD, &add).unwrap());
+        let d = go(&store, &[], parse(PLI_RC_ACCOUNTADD, &add).unwrap());
         assert_eq!(d.log.as_deref(), Some("account add cat"));
         let cat = store.load("cat").unwrap().unwrap();
         assert!(cat.check_password(b"newpw"));
         assert_eq!(cat.level, "start.nw");
-        let d = run(&store, &[], START, parse(PLI_RC_ACCOUNTADD, &add).unwrap());
+        let d = go(&store, &[], parse(PLI_RC_ACCOUNTADD, &add).unwrap());
         assert!(d.log.unwrap().contains("exists"));
 
         // Delete: not while online.
-        let d = run(&store, &["cat".into()], START, Op::Delete("Cat".into()));
+        let d = go(&store, &["cat".into()], Op::Delete("Cat".into()));
         assert!(d.log.unwrap().contains("online"));
-        run(&store, &[], START, Op::Delete("cat".into()));
+        go(&store, &[], Op::Delete("cat".into()));
         assert!(store.load("cat").unwrap().is_none());
-        assert!(run(&store, &[], START, Op::Get("../x".into()))
-            .reply
-            .is_empty());
+        assert!(go(&store, &[], Op::Get("../x".into())).reply.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

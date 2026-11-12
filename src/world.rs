@@ -547,6 +547,15 @@ impl World {
     pub fn account_of(&self, id: u16) -> Option<String> {
         self.ids.borrow().get(&id).cloned()
     }
+
+    /// The id of the player online with `account`, without case.
+    pub fn id_of(&self, account: &str) -> Option<u16> {
+        self.ids
+            .borrow()
+            .iter()
+            .find(|(_, a)| a.eq_ignore_ascii_case(account))
+            .map(|(&id, _)| id)
+    }
 }
 
 /// One RC as the world lists it.
