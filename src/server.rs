@@ -842,6 +842,7 @@ impl Conn {
                                     online: &online,
                                     start,
                                     admin: &name,
+                                    world: Some(&server.world),
                                 };
                                 let d = crate::rcaccounts::run(&ctx, op);
                                 // Banned while online: off they go, as on an

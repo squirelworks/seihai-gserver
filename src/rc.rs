@@ -55,8 +55,9 @@
 //! (`rcaccounts.rs`).
 //!
 //! NC (type 3) is still refused as "not served yet" in its own framing.
-//! Next: props of a player online through the world, server options (their
-//! layouts still need a lab), NC. Behaviour comes
+//! Props of a player online go through the world (`rcprops.rs`).
+//! Next: server options (their layouts still need a lab), NC. Behaviour
+//! comes
 //! from seihai-rc's `docs/PROTOCOL.md` and lab notes.
 //!
 //! Lessons from the real-RC capture against the gserver-v2 fork

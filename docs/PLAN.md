@@ -77,8 +77,11 @@ behaviour against, never a code source (see `00-rules.md`).
    reason, and the player ban (87 get as 64, 88 set), are the world's
    `config/bans.txt`; an RC ban has no end and names the RC's account as
    the admin, a ban set on a player online disconnects them, and their
-   next login meets the ban. Next: props of a player online through the
-   world, then server options once a lab has their layouts.
+   next login meets the ban. **Props of a player online built**
+   (`tests/rc_accounts.rs`): a get shows what the world holds over the
+   file, and a set goes to the player at once (as the NPC-server's
+   `SET_PLAYER_PROPS`), replaces the world's flags and writes the file.
+   Next: server options once a lab has their layouts, then NC.
 5. NPC-server link for `seihai-npcserver`. **Built from source, lab run
    open** (`src/npclink.rs`, `src/world.rs`, `PROTOCOL.md`,
    `tests/npc_link.rs`, `tests/npc_messages.rs`,

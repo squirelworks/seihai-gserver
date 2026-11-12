@@ -207,6 +207,19 @@ pub enum WorldIn {
     Rc { rc: u16, ev: crate::rc::RcEvent },
     /// An RC's link closed.
     RcLeft { rc: u16 },
+    /// What the world holds of the player online with `account` (lower
+    /// case), as it would go back to the file now; `None` when offline.
+    Snapshot {
+        account: String,
+        reply: oneshot::Sender<Option<Leaving>>,
+    },
+    /// An RC's props set (76) on the player online with `account`: the
+    /// props go to the player as the NPC-server's do, and the flags
+    /// replace the world's. Answers whether the player was online.
+    RcPropsSet {
+        set: crate::rcprops::Set,
+        reply: oneshot::Sender<bool>,
+    },
     /// A message from the NPC-server (`0x40` to `0x4C`), from the link.
     FromNpc(Message),
     /// The NPC-server link closed: its NPCs go.
@@ -548,6 +561,28 @@ impl World {
         self.ids.borrow().get(&id).cloned()
     }
 
+    /// [`WorldIn::Snapshot`], from a blocking thread (not a runtime one).
+    pub fn snapshot_blocking(&self, account: &str) -> Option<Leaving> {
+        let (reply, answer) = oneshot::channel();
+        self.tx
+            .send(WorldIn::Snapshot {
+                account: account.to_ascii_lowercase(),
+                reply,
+            })
+            .ok()?;
+        answer.blocking_recv().ok().flatten()
+    }
+
+    /// [`WorldIn::RcPropsSet`], from a blocking thread. Whether the player
+    /// was online and got it.
+    pub fn rc_props_set_blocking(&self, set: crate::rcprops::Set) -> bool {
+        let (reply, answer) = oneshot::channel();
+        if self.tx.send(WorldIn::RcPropsSet { set, reply }).is_err() {
+            return false;
+        }
+        answer.blocking_recv().unwrap_or(false)
+    }
+
     /// The id of the player online with `account`, without case.
     pub fn id_of(&self, account: &str) -> Option<u16> {
         self.ids
@@ -853,6 +888,24 @@ impl WorldTask {
                 }
             }
             WorldIn::Left { player } => self.leave(player),
+            WorldIn::Snapshot { account, reply } => {
+                let l = self
+                    .by_account
+                    .get(&account)
+                    .and_then(|id| self.players.get(id))
+                    .map(Online::leaving);
+                let _ = reply.send(l);
+            }
+            WorldIn::RcPropsSet { set, reply } => {
+                let id = self
+                    .by_account
+                    .get(&set.account.to_ascii_lowercase())
+                    .copied();
+                if let Some(id) = id {
+                    self.rc_props_set(id, &set);
+                }
+                let _ = reply.send(id.is_some());
+            }
             WorldIn::SaveAll { reply } => {
                 let mut n = 0;
                 if let Some(save) = &self.saver {
@@ -2316,6 +2369,25 @@ impl WorldTask {
     /// others in the level, and `PLAYER_PROPS` to the link. The NPC-server
     /// is a trusted source, so no anti-cheat check refuses it; a move puts
     /// the walk check at the new spot.
+    /// An RC's 76 on player `id`: the props it may set go through
+    /// [`Self::set_player_props`] (the player and the level see them, as
+    /// from the NPC-server), and its flags replace the player's.
+    fn rc_props_set(&mut self, id: u16, set: &crate::rcprops::Set) {
+        let mut raw = Vec::new();
+        for (&prop, v) in &set.props {
+            if crate::rcprops::LIVE.contains(&prop) {
+                raw.push(gchar(prop));
+                raw.extend_from_slice(v);
+            }
+        }
+        if !raw.is_empty() {
+            self.set_player_props(id, &raw);
+        }
+        if let Some(p) = self.players.get_mut(&id) {
+            p.flags = set.flags.iter().map(|f| split_flag(f)).collect();
+        }
+    }
+
     fn set_player_props(&mut self, id: u16, raw: &[u8]) {
         let Some(p) = self.players.get_mut(&id) else {
             return;

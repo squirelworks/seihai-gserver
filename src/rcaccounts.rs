@@ -351,6 +351,9 @@ pub struct Ctx<'a> {
     pub online: &'a [String],
     pub start: Start<'a>,
     pub admin: &'a str,
+    /// The world, for players online (`rcprops.rs`); `None` reads and
+    /// writes the files alone.
+    pub world: Option<&'a crate::world::World>,
 }
 
 /// The ban that holds on `name` now; a ban file that cannot be read
@@ -560,15 +563,21 @@ pub fn run(ctx: &Ctx, op: Op) -> Done {
         Op::PropsGetId(id) => log(format!("props get player {id}: not online")),
         Op::PropsGet { id, account } => {
             match valid_account_name(&account).then(|| store.load(&account)) {
-                Some(Ok(Some(a))) => Done {
-                    reply: crate::rcprops::reply(id, &a),
-                    ..Done::default()
-                },
+                Some(Ok(Some(mut a))) => {
+                    if let Some(l) = ctx.world.and_then(|w| w.snapshot_blocking(&a.name)) {
+                        l.apply_to(&mut a);
+                    }
+                    Done {
+                        reply: crate::rcprops::reply(id, &a),
+                        ..Done::default()
+                    }
+                }
                 _ => log(format!("props get {account}: no such account")),
             }
         }
         Op::PropsSet(set) => {
-            if online.contains(&set.account.to_ascii_lowercase()) {
+            let is_online = online.contains(&set.account.to_ascii_lowercase());
+            if is_online && ctx.world.is_none() {
                 return log(format!(
                     "props set {}: refused, the player is online",
                     set.account
@@ -576,8 +585,15 @@ pub fn run(ctx: &Ctx, op: Op) -> Done {
             }
             match valid_account_name(&set.account).then(|| store.load(&set.account)) {
                 Some(Ok(Some(mut a))) => {
+                    // Online: the player first, so a logout after this
+                    // writes the new values; then the file, for the rest.
+                    let live = is_online
+                        && ctx
+                            .world
+                            .is_some_and(|w| w.rc_props_set_blocking(set.clone()));
                     crate::rcprops::apply(&mut a, &set);
-                    saved(store, &a, format!("props set {}", a.name))
+                    let what = if live { " (online)" } else { "" };
+                    saved(store, &a, format!("props set {}{what}", a.name))
                 }
                 _ => log(format!("props set {}: no such account", set.account)),
             }
@@ -641,6 +657,7 @@ mod tests {
             online,
             start: START,
             admin: "boss",
+            world: None,
         };
         run(&ctx, op)
     }
