@@ -414,6 +414,12 @@ impl Conn {
                 .await;
         }
 
+        // An RC (stage 4): its own checks and session; it is not a player,
+        // and its token is not a game build, so the allow-list is not asked.
+        if login::is_rc(login.client_type) {
+            return self.run_rc(&login, codec, inbuf, &who, after).await;
+        }
+
         if !self.server.allow.allows(&login.token) {
             self.server
                 .log(&self.peer, &format!("{who}: version not allowed"));
@@ -424,7 +430,7 @@ impl Conn {
                 )
                 .await;
         }
-        let account = match self.check_account(&login).await? {
+        let account = match self.check_account(&login, true).await? {
             Ok(a) => a,
             Err(why) => {
                 self.server.log(&self.peer, &format!("{who}: {why}"));
@@ -627,7 +633,11 @@ impl Conn {
     /// The account for a login, made on first login when the world allows
     /// it. The outer error is an I/O failure; the inner one is the reason
     /// to give the client.
-    async fn check_account(&self, login: &Login) -> io::Result<Result<Account, &'static str>> {
+    async fn check_account(
+        &self,
+        login: &Login,
+        create: bool,
+    ) -> io::Result<Result<Account, &'static str>> {
         let store = self.server.store.clone();
         let cfg = self.server.cfg.clone();
         let name = login.account.clone();
@@ -660,6 +670,7 @@ impl Conn {
                 return match verdict {
                     crate::listlink::Verdict::Ok => match store.load(&name)? {
                         Some(a) => Ok(Ok(a)),
+                        None if !create => Ok(Err(crate::rc::NOT_STAFF)),
                         None => {
                             let a = Account::new(&name, &cfg.start_level, cfg.start_x, cfg.start_y);
                             store.save(&a)?;
@@ -677,7 +688,7 @@ impl Conn {
             match store.load(&name)? {
                 Some(a) if a.check_password(&password) => Ok(Ok(a)),
                 Some(_) => Ok(Err("Account name or password is wrong.")),
-                None if cfg.create_accounts && !password.is_empty() => {
+                None if create && cfg.create_accounts && !password.is_empty() => {
                     let mut a = Account::new(&name, &cfg.start_level, cfg.start_x, cfg.start_y);
                     a.set_password(&password);
                     store.save(&a)?;
@@ -688,6 +699,81 @@ impl Conn {
         })
         .await
         .map_err(io::Error::other)?
+    }
+
+    /// An RC login (`rc.rs`): the password, `STAFF` and the address are
+    /// checked, then the RC gets its welcome and the link stays open until
+    /// it closes. No account file is made for an RC.
+    async fn run_rc(
+        &mut self,
+        login: &Login,
+        mut codec: Codec,
+        mut inbuf: InBuf,
+        who: &str,
+        after: &[u8],
+    ) -> io::Result<()> {
+        let account = match self.check_account(login, false).await? {
+            Ok(a) => a,
+            Err(why) => {
+                self.server.log(&self.peer, &format!("RC {who}: {why}"));
+                return self.refuse(&mut codec, why).await;
+            }
+        };
+        if let Err(why) = crate::rc::admit(&account, self.peer.ip()) {
+            self.server.log(&self.peer, &format!("RC {who}: {why}"));
+            return self.refuse(&mut codec, why).await;
+        }
+        self.server.log(&self.peer, &format!("RC {who} logged in"));
+        let welcome = crate::rc::welcome(&self.server.cfg.name, &account.name);
+        self.send(&mut codec, &welcome).await?;
+        let mut rc = crate::rc::RcSession::default();
+        let early = codec.messages(after);
+        rc.handle(&early);
+        let idle = self.server.cfg.idle_timeout;
+        let mut last_heard = Instant::now();
+        let result = loop {
+            let idle_left = (!idle.is_zero()).then(|| idle.saturating_sub(last_heard.elapsed()));
+            tokio::select! {
+                r = read_more(&mut self.stream, &mut inbuf.buf) => {
+                    if let Err(e) = r {
+                        break Err(e);
+                    }
+                    last_heard = Instant::now();
+                    let mut reply = Vec::new();
+                    while let Some(frame) = inbuf.take_frame()? {
+                        let body = codec.decode(&frame)?;
+                        let msgs = codec.messages(&body);
+                        reply.extend(rc.handle(&msgs));
+                    }
+                    for f in reply {
+                        self.send(&mut codec, &f).await?;
+                    }
+                }
+                _ = sleep_opt(idle_left) => {
+                    self.server.log(&self.peer, "RC idle timeout");
+                    let _ = self.refuse(&mut codec, "Disconnected for being idle.").await;
+                    break Ok(());
+                }
+            }
+        };
+        let unhandled: Vec<String> = rc
+            .unhandled
+            .iter()
+            .map(|(id, n)| format!("{id} x{n}"))
+            .collect();
+        self.server.log(
+            &self.peer,
+            &format!(
+                "RC {} left{}",
+                account.name,
+                if unhandled.is_empty() {
+                    String::new()
+                } else {
+                    format!(" (not answered yet: {})", unhandled.join(", "))
+                }
+            ),
+        );
+        result
     }
 
     async fn send(&mut self, codec: &mut Codec, body: &[u8]) -> io::Result<()> {

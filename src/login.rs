@@ -51,18 +51,20 @@ pub enum LoginError {
 
 /// The login types this server knows but does not serve yet, by name, and
 /// the framing each one reads after its login frame (from `seihai-rc`'s
-/// RC and NC sessions):
-///
-/// - 1, the old RCs: plain zlib frames, no key byte;
-/// - 3, NC: plain zlib frames, no key byte;
-/// - 6, the newer RCs: a key byte after the type, then gen-5 frames.
+/// NC session): 3, NC, plain zlib frames, no key byte.
 pub fn unserved_type(client_type: u8) -> Option<(&'static str, EncryptionGen)> {
     match client_type {
-        1 => Some(("RC", EncryptionGen::Gen2)),
         3 => Some(("NC", EncryptionGen::Gen2)),
-        6 => Some(("RC", EncryptionGen::Gen5)),
         _ => None,
     }
+}
+
+/// RC login types (stage 4, `rc.rs`), from `seihai-rc`'s RC sessions:
+///
+/// - 1, the RCs from 2000 to 2002: no key byte, plain zlib frames;
+/// - 6, the newer RCs: a key byte after the type, then gen-5 frames.
+pub fn is_rc(client_type: u8) -> bool {
+    matches!(client_type, 1 | 6)
 }
 
 impl LoginError {
@@ -142,10 +144,16 @@ pub fn parse(line: &[u8], extra_tokens: &[String]) -> Result<Login, LoginError> 
                 }
             }
         }
-        5 => {
+        5 | 6 => {
             let t = token_at(1).ok_or(LoginError::Short)?;
             (EncryptionGen::Gen5, rest[0].wrapping_sub(0x20), t, 9)
         }
+        1 => (
+            EncryptionGen::Gen2,
+            0,
+            token_at(0).ok_or(LoginError::Short)?,
+            8,
+        ),
         other => {
             return Err(match unserved_type(other) {
                 Some((_, EncryptionGen::Gen5)) => LoginError::NotServed {
@@ -249,29 +257,26 @@ mod tests {
         // The same token from the allow-list, without a key: gen 2.
         let l = parse(b" ZZZ12345\"ab\"cd\n", &["ZZZ12345".into()]).unwrap();
         assert_eq!(l.gen, EncryptionGen::Gen2);
+        // RCs: type 1 has no key and reads gen 2; type 6 keeps its key
+        // and reads gen 5. Neither token is a game build.
+        let l = parse(b"!GSERV023%admin\"pw\n", &[]).unwrap();
         assert_eq!(
-            parse(b"!GSERV025\"ab\"cd\n", &[]),
-            Err(LoginError::NotServed {
-                client_type: 1,
-                gen: EncryptionGen::Gen2,
-                key: 0
-            })
+            (l.client_type, l.gen, l.key, l.token.as_str(), l.version),
+            (1, EncryptionGen::Gen2, 0, "GSERV023", None)
         );
+        assert_eq!((l.account.as_str(), &l.password[..]), ("admin", &b"pw"[..]));
+        let l = parse(b"&JGSERV025%admin\"pw\n", &[]).unwrap();
+        assert_eq!(
+            (l.client_type, l.gen, l.key, l.token.as_str()),
+            (6, EncryptionGen::Gen5, 0x2A, "GSERV025")
+        );
+        assert!(is_rc(1) && is_rc(6) && !is_rc(0) && !is_rc(3) && !is_rc(5));
         assert_eq!(
             parse(b"#NCL11012\"ab\"cd\n", &[]),
             Err(LoginError::NotServed {
                 client_type: 3,
                 gen: EncryptionGen::Gen2,
                 key: 0
-            })
-        );
-        // Type 6 keeps its key byte: the refusal goes out in gen 5.
-        assert_eq!(
-            parse(b"&JGSERV025%admin\"pw\n", &[]),
-            Err(LoginError::NotServed {
-                client_type: 6,
-                gen: EncryptionGen::Gen5,
-                key: 0x2A
             })
         );
         assert_eq!(parse(b"&", &[]), Err(LoginError::Short));

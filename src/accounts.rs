@@ -24,7 +24,13 @@
 //! CHEST onlinestartlocal.nw 30 36
 //! FLAG quest.started
 //! FLAG gr.x=30
+//! STAFF 1
+//! IPRANGE 127.0.0.1,192.168.1.*
 //! ```
+//!
+//! `STAFF` lets the account log in with an RC (`rc.rs`); `IPRANGE` lists
+//! where from (exact addresses, `*` wildcards, or `a.b.c.d/n`). Without an
+//! `IPRANGE` a staff account's RC may only come from loopback.
 //!
 //! The format is this project's own. Unknown keys are kept and written
 //! back, so later stages can add fields without losing old ones. The
@@ -72,6 +78,10 @@ pub struct Account {
     pub chests: Vec<(String, u8, u8)>,
     /// Player flags as the client set them: `name` or `name=value`.
     pub flags: Vec<String>,
+    /// `STAFF`: the account may log in with an RC.
+    pub staff: bool,
+    /// `IPRANGE`: where its RC may come from (see `rc::ip_allowed`).
+    pub ip_ranges: Vec<String>,
     /// Lines with keys this version does not use, kept as they were.
     pub other: Vec<String>,
 }
@@ -103,6 +113,8 @@ impl Account {
             kills: 0,
             chests: Vec::new(),
             flags: Vec::new(),
+            staff: false,
+            ip_ranges: Vec::new(),
             other: Vec::new(),
         }
     }
@@ -152,6 +164,13 @@ impl Account {
                     }
                 }
                 "FLAG" if !v.is_empty() => a.flags.push(v.to_string()),
+                "STAFF" => a.staff = !matches!(v, "0" | "false" | "no"),
+                "IPRANGE" => a.ip_ranges.extend(
+                    v.split(',')
+                        .map(str::trim)
+                        .filter(|r| !r.is_empty())
+                        .map(str::to_string),
+                ),
                 _ => a.other.push(line.to_string()),
             }
         }
@@ -194,6 +213,12 @@ impl Account {
         }
         for f in &self.flags {
             kv("FLAG", f.replace(['\n', '\r'], " "));
+        }
+        if self.staff {
+            kv("STAFF", "1".into());
+        }
+        if !self.ip_ranges.is_empty() {
+            kv("IPRANGE", self.ip_ranges.join(","));
         }
         for line in &self.other {
             s.push_str(line);

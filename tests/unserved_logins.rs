@@ -1,6 +1,6 @@
-//! Login types this server knows but does not serve yet (RC, NC) are
-//! refused in their own framing, so the client shows the reason
-//! (issue #16). The login lines are the ones `seihai-rc` sends; the
+//! Login types this server knows but does not serve yet (NC), and RC
+//! logins it turns away, are refused in their own framing, so the client
+//! shows the reason (issue #16). RCs that log in: `tests/rc_login.rs`. The login lines are the ones `seihai-rc` sends; the
 //! replies are read the way it reads them. Only `127.0.0.1` is used.
 
 mod common;
@@ -37,19 +37,22 @@ fn rc_and_nc_logins_get_the_reason_in_their_own_frames() {
     let mut s = connect(&addr, b"&JGSERV025%admin\"pw\n");
     let mut cipher = Gen5::new(0x2A);
     let body = read_frame(&mut s, &mut cipher).unwrap();
-    assert_eq!(disc_text(&body), "This server does not take RC logins yet.");
+    assert_eq!(disc_text(&body), "Account name or password is wrong.");
 
     // Type 1 (old RC) and type 3 (NC) read plain zlib frames.
-    for (line, name) in [
-        (&b"!GSERV025%admin\"pw\n"[..], "RC"),
-        (&b"#NCL11012%admin\"pw\n"[..], "NC"),
+    for (line, text) in [
+        (
+            &b"!GSERV025%admin\"pw\n"[..],
+            "Account name or password is wrong.",
+        ),
+        (
+            &b"#NCL11012%admin\"pw\n"[..],
+            "This server does not take NC logins yet.",
+        ),
     ] {
         let mut s = connect(&addr, line);
         let body = read_zlib_frame(&mut s).unwrap();
-        assert_eq!(
-            disc_text(&body),
-            format!("This server does not take {name} logins yet.")
-        );
+        assert_eq!(disc_text(&body), text);
     }
 
     // A type nobody knows still gets the plain zlib guess.
