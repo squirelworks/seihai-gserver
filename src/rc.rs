@@ -45,10 +45,13 @@
 //! the world folder within the account's `FOLDER` rights. A put comes in a
 //! raw block (50), which `rcfiles::split` reads as one message.
 //!
+//! Slices 6 and 7, built: staff rights and comments (`rcaccounts.rs`) and
+//! player props (`rcprops.rs`).
+//!
 //! NC (type 3) is still refused as "not served yet" in its own framing.
 //! Next: the RC warp and the ban fields (after stage 5 and the ban file),
-//! folder rights, comments and props from an RC, server options (their
-//! layouts still need a lab), NC (6). Behaviour comes
+//! props of a player online through the world, server options (their
+//! layouts still need a lab), NC. Behaviour comes
 //! from seihai-rc's `docs/PROTOCOL.md` and lab notes.
 //!
 //! Lessons from the real-RC capture against the gserver-v2 fork

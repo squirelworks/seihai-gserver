@@ -31,6 +31,7 @@ How the server is put together, and where each later stage plugs in. Read
 | `src/listlink.rs` | the listserver link over the encrypted channel (`SVLINK01`): register, player count with nickname and props, account check (`VERIACC2`), pong (`SVO_PING` 16), private messages, file start; two plain threads, reconnects every 15 s | link |
 | `src/rcaccounts.rs` | accounts from an RC: list, get, set, add, delete on the account files (slice 4); staff rights and comments (slice 6) | 4 |
 | `src/rcfiles.rs` | the RC file browser: list, get, put within the account's `FOLDER` rights; reads an RC's raw blocks (slice 5) | 4 |
+| `src/rcprops.rs` | a player's props for an RC (72) from the account file, and a set (76) on an offline account (slice 7) | 4 |
 | `src/rc.rs` | RC logins for `seihai-rc`: the `STAFF` and `IPRANGE` checks, the welcome (slice 1); the player list entries and RC chat lines the world task sends RCs (slice 2); private and admin messages and the disconnect (slice 3); NC still refused | 4 |
 | `src/npclink.rs` | the link to `seihai-npcserver` (`PROTOCOL.md`): `Hub` (players for the link), `serve_link`, `supervise` for `npcserver = auto` | 5 (first half) |
 | `src/anticheat.rs` | the admin policy (`anticheat.*` settings), violation scores and kicks, the log; the speed, teleport, warp and message-rate checks (stage 2.9); item and damage checks to come (`docs/PLAN.md`, stage 7) | 2, 7 |
@@ -169,7 +170,9 @@ Conn task ──Hub::joined / props / left──▶ Hub (Mutex: players + link s
   a wrong password and an address outside `IPRANGE` refused.
 - `tests/rc_accounts.rs`: an RC lists, reads, sets, adds and deletes
   accounts with `seihai-rc`'s own messages; sets another staff account's
-  rights and comments, and the folder rights then open a folder.
+  rights and comments, and the folder rights then open a folder; reads
+  and sets an offline player's props, reads an online one's by id and is
+  refused a set on them.
 - `tests/rc_files.rs`: an RC lists, gets and puts files with `seihai-rc`'s
   own file link; read-only and missing rights refused.
 - `tests/rc_players.rs`: two RCs (`seihai-rc`'s own client) and a player:

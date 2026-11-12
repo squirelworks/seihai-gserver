@@ -48,6 +48,7 @@
 use crate::accounts::{Account, Store};
 use crate::login::valid_account_name;
 use crate::wire::{gchar, gstring, latin1, msg, text};
+use seihai_core::protocol::read_gshort;
 
 /// `PLO_RC_ACCOUNTLISTGET` reply id.
 pub const PLO_RC_ACCOUNTLIST: u8 = 70;
@@ -86,7 +87,10 @@ pub struct Fields {
 /// An account request from an RC.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Op {
-    List { pattern: String, conditions: String },
+    List {
+        pattern: String,
+        conditions: String,
+    },
     Get(String),
     Set(Fields),
     Add(Fields),
@@ -94,7 +98,19 @@ pub enum Op {
     RightsGet(String),
     RightsSet(Rights),
     CommentsGet(String),
-    CommentsSet { account: String, lines: Vec<String> },
+    CommentsSet {
+        account: String,
+        lines: Vec<String>,
+    },
+    /// 73, by player id: the connection finds the account first and
+    /// sends [`Op::PropsGet`].
+    PropsGetId(u16),
+    /// A 72 for `account`, as player `id`.
+    PropsGet {
+        id: u16,
+        account: String,
+    },
+    PropsSet(crate::rcprops::Set),
 }
 
 /// A player's staff rights as 62 and 84 carry them.
@@ -148,12 +164,17 @@ pub fn parse(id: u8, rest: &[u8]) -> Option<Op> {
         PLI_RC_ACCOUNTGET if !name().is_empty() => Some(Op::Get(name())),
         PLI_RC_PLAYERRIGHTSGET if !name().is_empty() => Some(Op::RightsGet(name())),
         PLI_RC_PLAYERCOMMENTSGET if !name().is_empty() => Some(Op::CommentsGet(name())),
+        crate::rcprops::PLI_RC_PLAYERPROPSGET2 => read_gshort(rest).map(Op::PropsGetId),
+        crate::rcprops::PLI_RC_PLAYERPROPSGET3 => {
+            crate::rcprops::parse_get3(rest).map(|account| Op::PropsGet { id: 0, account })
+        }
+        crate::rcprops::PLI_RC_PLAYERPROPSSET2 => crate::rcprops::parse_set(rest).map(Op::PropsSet),
         PLI_RC_PLAYERRIGHTSSET => {
             let mut i = 0;
             let account = text(&read_gstring(rest, &mut i)?);
             let rights = read_gint5(rest, &mut i)?;
             let ip_range = text(&read_gstring(rest, &mut i)?);
-            let n = usize::from(seihai_core::protocol::read_gshort(rest.get(i..)?)?);
+            let n = usize::from(read_gshort(rest.get(i..)?)?);
             let folders = lines(rest.get(i + 2..i + 2 + n)?);
             Some(Op::RightsSet(Rights {
                 account,
@@ -390,6 +411,31 @@ pub fn run(store: &Store, online: &[String], start: Start, op: Op) -> Done {
                     saved(store, &a, format!("comments set {}", a.name))
                 }
                 _ => log(format!("comments set {account}: no such account")),
+            }
+        }
+        Op::PropsGetId(id) => log(format!("props get player {id}: not online")),
+        Op::PropsGet { id, account } => {
+            match valid_account_name(&account).then(|| store.load(&account)) {
+                Some(Ok(Some(a))) => Done {
+                    reply: crate::rcprops::reply(id, &a),
+                    log: None,
+                },
+                _ => log(format!("props get {account}: no such account")),
+            }
+        }
+        Op::PropsSet(set) => {
+            if online.contains(&set.account.to_ascii_lowercase()) {
+                return log(format!(
+                    "props set {}: refused, the player is online",
+                    set.account
+                ));
+            }
+            match valid_account_name(&set.account).then(|| store.load(&set.account)) {
+                Some(Ok(Some(mut a))) => {
+                    crate::rcprops::apply(&mut a, &set);
+                    saved(store, &a, format!("props set {}", a.name))
+                }
+                _ => log(format!("props set {}: no such account", set.account)),
             }
         }
         Op::Delete(name) => {

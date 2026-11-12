@@ -248,6 +248,8 @@ impl Refused {
 pub struct World {
     tx: mpsc::UnboundedSender<WorldIn>,
     online: watch::Receiver<Vec<String>>,
+    /// Player id to lower-case account, for an RC asking by id.
+    ids: watch::Receiver<BTreeMap<u16, String>>,
     /// The task, until [`World::start`] spawns it.
     task: Mutex<Option<WorldTask>>,
 }
@@ -262,12 +264,15 @@ impl World {
         }
         let (tx, rx) = mpsc::unbounded_channel();
         let (online_tx, online) = watch::channel(Vec::new());
+        let (ids_tx, ids) = watch::channel(BTreeMap::new());
         World {
             tx,
             online,
+            ids,
             task: Mutex::new(Some(WorldTask {
                 rx,
                 online: online_tx,
+                ids: ids_tx,
                 max_players,
                 levels,
                 gmaps,
@@ -470,6 +475,11 @@ impl World {
     pub fn online_accounts(&self) -> Vec<String> {
         self.online.borrow().clone()
     }
+
+    /// The account (lower case) of the player with `id`, if one is online.
+    pub fn account_of(&self, id: u16) -> Option<String> {
+        self.ids.borrow().get(&id).cloned()
+    }
 }
 
 /// One RC as the world lists it.
@@ -646,6 +656,7 @@ pub type Saver = Box<dyn Fn(Leaving) + Send>;
 pub struct WorldTask {
     rx: mpsc::UnboundedReceiver<WorldIn>,
     online: watch::Sender<Vec<String>>,
+    ids: watch::Sender<BTreeMap<u16, String>>,
     max_players: usize,
     levels: LevelSource,
     gmaps: Gmaps,
@@ -1861,6 +1872,12 @@ impl WorldTask {
         let mut v: Vec<String> = self.by_account.keys().cloned().collect();
         v.sort();
         self.online.send_replace(v);
+        self.ids.send_replace(
+            self.by_account
+                .iter()
+                .map(|(a, &id)| (id, a.clone()))
+                .collect(),
+        );
     }
 }
 
