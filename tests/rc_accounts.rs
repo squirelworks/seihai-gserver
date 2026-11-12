@@ -245,3 +245,82 @@ fn an_rc_reads_and_sets_player_props() {
     assert_eq!(store.load("test1").unwrap().unwrap().rupees, 5);
     let _ = std::fs::remove_dir_all(&w);
 }
+
+#[test]
+fn an_rc_bans_and_lifts_through_the_ban_file() {
+    use seihai_core::net::{login_gserver, random_key};
+    use seihai_core::protocol::{ClientVersion, SessionState};
+    use seihai_rc::players::{ban_get, ban_set, parse_ban};
+    let w = world("rcbans", "*\n");
+    let store = Store::new(w.join("accounts"));
+    let mut boss = File::new("boss", "onlinestartlocal.nw", 30.0, 30.0);
+    boss.set_password(PASSWORD.as_bytes());
+    boss.staff = true;
+    store.save(&boss).unwrap();
+    let (addr, _server) = start(&w);
+
+    // Cass is online.
+    let v = ClientVersion::V222;
+    let mut c = login_gserver(&addr, v, random_key(), "cass", PASSWORD, false).unwrap();
+    let rx = c.conn.spawn_reader().unwrap();
+    let mut st = SessionState::for_version(v);
+    read_until(&rx, &mut st, Duration::from_secs(10), |s| s.board.is_some()).unwrap();
+
+    let mut s = Session::login(
+        &addr,
+        &LoginParams {
+            kind: RcKind::Gen5,
+            token: RcKind::Gen5.default_token().into(),
+            account: "boss".into(),
+            password: PASSWORD.into(),
+            key: 9,
+            nickname: None,
+        },
+        Duration::from_secs(10),
+    )
+    .unwrap();
+    let ban = |s: &mut Session| {
+        s.send_messages(&[ban_get("cass").unwrap()]).unwrap();
+        parse_ban(&reply(s, 64)).unwrap()
+    };
+    assert!(!ban(&mut s).banned);
+
+    // Banned while online: the ban file has it, Cass is dropped and turned
+    // away at the next login.
+    s.send_messages(&[ban_set("cass", true, "spam, again").unwrap()])
+        .unwrap();
+    let _ = read_until(&rx, &mut st, Duration::from_secs(10), |s| {
+        s.disconnect_message.is_some()
+    });
+    assert_eq!(
+        st.disconnect_message.as_deref(),
+        Some("Disconnected by the server.")
+    );
+    let b = ban(&mut s);
+    assert!(b.banned);
+    assert_eq!(b.reason, ["spam, again"]);
+    let file = seihai_gserver::bans::Bans::new(&w)
+        .find("cass")
+        .unwrap()
+        .unwrap();
+    assert_eq!((file.admin.as_str(), file.until), ("boss", None));
+    assert_eq!(file.reason, "spam, again");
+    let mut a = get(&mut s, "cass");
+    assert!(a.banned);
+    assert_eq!(a.ban_reason, ["spam, again"]);
+    assert_eq!(
+        refused(&addr, v, "cass", PASSWORD).as_deref(),
+        Some("You are banned from this server: spam, again.")
+    );
+
+    // The account dialog lifts it.
+    a.banned = false;
+    s.send_messages(&[account_set(&a, "").unwrap()]).unwrap();
+    assert!(!ban(&mut s).banned);
+    assert!(!get(&mut s, "cass").banned);
+    assert!(seihai_gserver::bans::Bans::new(&w)
+        .find("cass")
+        .unwrap()
+        .is_none());
+    let _ = std::fs::remove_dir_all(&w);
+}

@@ -72,9 +72,13 @@ behaviour against, never a code source (see `00-rules.md`).
    `tests/rc_players.rs`): the player moves as on an NPC-server warp of
    stage 5, and the RCs get the new entry; a missing level is logged and
    the player stays. No real RC run yet; seihai-rc's lab notes still ask
-   what a real client gets on a warp to another level. Next: the ban
-   fields (on the ban file), then server options once a lab has their
-   layouts.
+   what a real client gets on a warp to another level. **The ban fields
+   built** (`tests/rc_accounts.rs`): the account dialog's banned and
+   reason, and the player ban (87 get as 64, 88 set), are the world's
+   `config/bans.txt`; an RC ban has no end and names the RC's account as
+   the admin, a ban set on a player online disconnects them, and their
+   next login meets the ban. Next: props of a player online through the
+   world, then server options once a lab has their layouts.
 5. NPC-server link for `seihai-npcserver`. **Built from source, lab run
    open** (`src/npclink.rs`, `src/world.rs`, `PROTOCOL.md`,
    `tests/npc_link.rs`, `tests/npc_messages.rs`,

@@ -50,11 +50,12 @@
 //! raw block (50), which `rcfiles::split` reads as one message.
 //!
 //! Slices 6 and 7, built: staff rights and comments (`rcaccounts.rs`) and
-//! player props (`rcprops.rs`).
+//! player props (`rcprops.rs`). The ban fields, built: the account
+//! dialog's and the player ban (87/88) read and write the ban file
+//! (`rcaccounts.rs`).
 //!
 //! NC (type 3) is still refused as "not served yet" in its own framing.
-//! Next: the ban fields (after the ban file),
-//! props of a player online through the world, server options (their
+//! Next: props of a player online through the world, server options (their
 //! layouts still need a lab), NC. Behaviour comes
 //! from seihai-rc's `docs/PROTOCOL.md` and lab notes.
 //!
