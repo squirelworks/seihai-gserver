@@ -390,7 +390,7 @@ impl Conn {
         inbuf.long = login
             .version
             .is_some_and(|v| v.profile().protocol.gen5_long_frames);
-        let label = login.version.map_or("unknown build", |v| v.label());
+        let label = login::build_label(login.client_type, login.version);
         let who = format!(
             "{} [{}{} {}, {:?}]",
             login.account,
