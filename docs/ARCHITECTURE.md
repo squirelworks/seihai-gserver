@@ -36,7 +36,7 @@ How the server is put together, and where each later stage plugs in. Read
 | `src/ping.rs` | `PLO_PING` (108) on a timer to the builds whose profile reads it, the `PLI_PONG` (162) answer timed, the miss count (issue #44) | 2 |
 | `src/rc.rs` | RC logins for `seihai-rc`: the `STAFF` and `IPRANGE` checks, the welcome (slice 1); the player list entries and RC chat lines the world task sends RCs (slice 2); private and admin messages and the disconnect (slice 3); NC still refused | 4 |
 | `src/npclink.rs` | the link to `seihai-npcserver` (`PROTOCOL.md`): `Hub` (players and server flags for the link, the world's inbox), `serve_link`, `supervise` for `npcserver = auto` | 5 |
-| `src/anticheat.rs` | the admin policy (`anticheat.*` settings), violation scores and kicks, the log; the speed, teleport, warp and message-rate checks (stage 2.9); item and damage checks to come (`docs/PLAN.md`, stage 7) | 2, 7 |
+| `src/anticheat.rs` | the admin policy (`anticheat.*` settings), violation scores and kicks, the log; the speed, teleport, warp and message-rate checks (stage 2.9); the items and hurt checks; all off by default (`docs/PLAN.md`, stage 7) | 2, 7 |
 
 The skeleton modules hold the plan for their stage as doc comments and the
 types the stage will fill in. They are compiled, so they stay in step with

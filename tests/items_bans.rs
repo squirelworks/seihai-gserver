@@ -29,7 +29,7 @@ fn a_gralat_raise_from_nowhere_is_put_back() {
     let w = world("items", "*\n");
     let cfg = w.join("config/server.txt");
     let mut text = std::fs::read_to_string(&cfg).unwrap();
-    text.push_str("anticheat.items = correct\n");
+    text.push_str("anticheat = on\nanticheat.items = correct\n");
     std::fs::write(&cfg, text).unwrap();
     let (addr, server) = start(&w);
     let log = server.anticheat.log_path().to_path_buf();

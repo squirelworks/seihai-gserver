@@ -74,7 +74,7 @@
 //! To do: the anti-cheat checks of stage 7 that guard these (movement,
 //! warps, items and counted props), see `docs/PLAN.md`.
 
-use crate::anticheat::{AntiCheat, Kind, Score, Walk, LINK_SLACK};
+use crate::anticheat::{AntiCheat, Kind, Score, Walk, HURT_RANGE, LINK_SLACK};
 use crate::baddies::Baddy;
 use crate::gmaps::{plays_gmaps, Gmaps, Place, GMAPLEVELX, GMAPLEVELY};
 use crate::levels::Level;
@@ -1911,8 +1911,9 @@ impl WorldTask {
     /// A hit on another player in the level: the victim gets
     /// `PLO_HURTPLAYER` (40) with the attacker's id, the hit as sent, and
     /// `ff ff ff` after it, as GServer-v2 beta4 sends it in the lab
-    /// (2026-11-05). The victim's client decides whether it takes it.
-    fn hurt_player(&self, id: u16, raw: &[u8]) {
+    /// (2026-11-05). The victim's client decides whether it takes it. A
+    /// hit from farther than [`HURT_RANGE`] tiles is a `hurt` violation.
+    fn hurt_player(&mut self, id: u16, raw: &[u8]) {
         let (Some(p), Some(hit)) = (self.players.get(&id), raw.get(2..5)) else {
             return;
         };
@@ -1928,6 +1929,17 @@ impl WorldTask {
         if v.level != p.level || !v.version.profile().protocol.plo.contains(PLO_HURTPLAYER) {
             return;
         }
+        let ((ax, ay), (vx, vy)) = (p.global(), v.global());
+        let d = (ax - vx).hypot(ay - vy);
+        if d > HURT_RANGE {
+            let what = format!("hit {} from {d:.1} tiles", v.account);
+            if self.report(id, Kind::Hurt, what) {
+                return;
+            }
+        }
+        let Some(v) = self.players.get(&victim) else {
+            return;
+        };
         let mut m = Vec::with_capacity(8);
         crate::wire::gshort(id, &mut m);
         m.extend_from_slice(hit);

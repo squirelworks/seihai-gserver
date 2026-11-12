@@ -204,8 +204,10 @@ anticheat.items = correct, log
 anticheat.rate = kick at 200 per second
 ```
 
-Defaults are `log` and `correct` only: no kicks or bans until an admin turns
-them on, so a check that is wrong for some build never locks real players out.
+Anti-cheat is off by default (Squirrel, issue #54, 2026-11-12): a check can
+only guess, and a wrong guess hurts honest players more than it stops a
+cheat. Turned on, every check only logs until the admin picks `correct` or
+a kick for it. Bans are moderation, not anti-cheat, and work either way.
 
 Landed in stage 2.9 (`src/anticheat.rs`): the policy layer (`off`, `log`,
 `correct`, `kick after N in S`; settings `anticheat`, `anticheat_log`,
@@ -225,9 +227,13 @@ logged, and with `correct` put back. Its default is `log`, not `correct`:
 classic level scripts run on the client and can pay gralats the server
 never sees. Bans by account in `config/bans.txt` (account, end time,
 admin, reason), read at every login (game and RC), with `seihai-gserver
-ban` / `unban`. Still open: hurt range and weapon (after #50), a `ban`
-action in the policy, bans by machine field, and the speed figures from a
-lab run. A player saved dead logs in at 0 hearts, as beta4 does (issue
+ban` / `unban`. Then the hurt check (`anticheat.hurt`): a
+`PLI_HURTPLAYER` from more than 24 tiles from the victim. #50 showed that
+real 2.05 and 2.22 clients do not send 26 for a sword: the victim's client
+hurts itself from the attacker's `sword` gani, so there is no hit message
+to check a weapon against. Everything is off by default since then. Still
+open, and only worth it if an admin asks: bans by machine field and the
+speed figures from a lab run. A player saved dead logs in at 0 hearts, as beta4 does (issue
 #51, lab run 2026-11-12); `revive_dead = true` gives full hearts instead.
 
 ### Where it lives

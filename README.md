@@ -42,9 +42,10 @@ What is built:
   others in the level and for players who arrive while they lie there;
   `PLI_ITEMTAKE` gives the item to the first taker only, and `PLI_ITEMDEL`
   clears it for everyone;
-* anti-cheat on the server: speed, teleports, warps with no link under the
-  player and message floods are logged and put back (`anticheat.*` in
-  `config/server.txt`; kicks only where the admin turns them on);
+* anti-cheat on the server, off by default: speed, teleports, warps with no
+  link under the player, item raises, hits from across the level and
+  message floods can be logged, put back or kicked (`anticheat.*` in
+  `config/server.txt`; it only logs until the admin says more);
 * packages: `.gpak` and `.gpake` for the builds that load them, the key
   (`PLO_FILEDECRYPTKEY`, 104) first from `config/gpakkeys.txt`, which is never
   served; `gpaks =` pushes packages at login;
