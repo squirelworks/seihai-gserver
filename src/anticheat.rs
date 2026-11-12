@@ -16,6 +16,15 @@
 //!   link in the player's level to that level, which the player stands on
 //!   (with [`LINK_SLACK`] tiles for a position a frame old), and to the
 //!   link's arrival; a gmap crossing only into a cell next to the player's.
+//! - **Items** (`world.rs`): the server keeps the counted props (max
+//!   hearts 1, hearts 2, gralats 3, arrows 4, bombs 5). A client's raise
+//!   of one is a violation unless the server already gave it: a floor item
+//!   the player took first (`PLI_ITEMTAKE`, or `PLI_ITEMDEL` from a build
+//!   before 1.38, which gives itself the item), a chest, the NPC-server,
+//!   or hearts back after a death (up to the max). Correcting sends the
+//!   server's value back and passes the raise on to nobody. Logged only by
+//!   default: classic level scripts run on the client and may grant
+//!   gralats the server never hears of.
 //! - **Rate** (`server.rs`): more than `anticheat_rate` messages in one
 //!   second on a connection, file checks (`PLI_WANTFILE`, `PLI_UPDATEFILE`)
 //!   left out: a client checks its whole cache at login. One run of
@@ -38,6 +47,7 @@
 //! anticheat.teleport = correct
 //! anticheat.warp = log
 //! anticheat.rate = correct, kick after 3 in 10
+//! anticheat.items = correct
 //! ```
 
 use std::collections::VecDeque;
@@ -65,10 +75,19 @@ pub enum Kind {
     Teleport,
     Warp,
     Rate,
+    /// A counted prop (hearts, max hearts, gralats, arrows, bombs) raised
+    /// with no source the server knows.
+    Items,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 4] = [Kind::Speed, Kind::Teleport, Kind::Warp, Kind::Rate];
+    pub const ALL: [Kind; 5] = [
+        Kind::Speed,
+        Kind::Teleport,
+        Kind::Warp,
+        Kind::Rate,
+        Kind::Items,
+    ];
 
     /// The name in the settings and the log.
     pub fn name(self) -> &'static str {
@@ -77,6 +96,7 @@ impl Kind {
             Kind::Teleport => "teleport",
             Kind::Warp => "warp",
             Kind::Rate => "rate",
+            Kind::Items => "items",
         }
     }
 
@@ -144,7 +164,7 @@ pub struct Policy {
     pub log: PathBuf,
     /// Messages a second a connection may send.
     pub rate: u32,
-    rules: [Rule; 4],
+    rules: [Rule; 5],
 }
 
 impl Default for Policy {
@@ -165,6 +185,13 @@ impl Default for Policy {
                 correct,
                 correct,
                 correct,
+                // Logged only: classic level NPC scripts run on the client
+                // and may pay or charge gralats (shops), which the server
+                // cannot see.
+                Rule {
+                    action: Action::Log,
+                    kick_after: None,
+                },
             ],
         }
     }
@@ -230,7 +257,7 @@ pub struct Verdict {
 /// One player's recent violations, by kind.
 #[derive(Debug, Default)]
 pub struct Score {
-    recent: [VecDeque<Instant>; 4],
+    recent: [VecDeque<Instant>; 5],
 }
 
 impl Score {

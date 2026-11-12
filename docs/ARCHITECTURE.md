@@ -12,6 +12,7 @@ How the server is put together, and where each later stage plugs in. Read
 | `src/lib.rs` | `load_world` (settings + allow-list), `run` (bind and serve) | 1 |
 | `src/config.rs` | `config/server.txt`, every setting with its default | 1 |
 | `src/allow.rs` | `config/allowedversions.txt` | 1 |
+| `src/bans.rs` | `config/bans.txt`: bans by account with an end time, the admin and a reason; read at each login | 7 |
 | `src/accounts.rs` | `accounts/<name>.txt`, PBKDF2 passwords, opened chests and player flags | 1 |
 | `src/login.rs` | the login line: type, key, token, account, password, tail | 1 |
 | `src/secure.rs` | the Seihai secure login (`SEI00001`): spots C1, answers S1, opens C2 and rebuilds the classic login frame | 1 |
@@ -156,6 +157,9 @@ Conn task ──Hub::joined / props / left──▶ Hub (Mutex: players + link s
   save on stop while players are online.
 - `tests/anticheat.rs`: a cheating client's teleport, fast step, unlinked
   warp and flood each get the configured action.
+- `tests/items_bans.rs`: a gralat and a heart-container raise put back
+  (a respawn to full hearts is not), a banned account refused with its
+  reason, and a player saved dead logging in with full hearts.
 - `tests/level_npcs.rs`, `tests/baddies.rs`, `tests/bombs_arrows.rs`,
   `tests/hurt_death.rs`: stage 3.1 to 3.4 between two clients in a level.
 - `tests/login_load.rs`, `tests/unserved_logins.rs`,
