@@ -38,9 +38,12 @@
 //! see the leave. The RC gets nothing back for any of them, as from the
 //! fork. The warp (82) waits for the server warp of stage 5.
 //!
+//! Slice 4, built: accounts (`rcaccounts.rs`): list, get, set, add and
+//! delete. The connection carries them out on the account files.
+//!
 //! NC (type 3) is still refused as "not served yet" in its own framing.
-//! Next slices: the RC warp, accounts (4), server options and files (5),
-//! NC (6). Behaviour comes
+//! Next: the RC warp and the ban fields (after stage 5 and the ban file),
+//! server options and files (5), NC (6). Behaviour comes
 //! from seihai-rc's `docs/PROTOCOL.md` and lab notes.
 //!
 //! Lessons from the real-RC capture against the gserver-v2 fork
@@ -232,6 +235,9 @@ pub enum RcEvent {
     AdminTo(u16, Vec<u8>),
     /// `PLI_RC_DISCONNECTPLAYER` (61).
     Kick(u16),
+    /// An account request (70 to 78, `rcaccounts.rs`). The connection
+    /// carries it out, not the world.
+    Account(crate::rcaccounts::Op),
 }
 
 /// `PLO_RC_ADMINMESSAGE` (35): `Admin <account>:`, `0xA7`, then the text,
@@ -290,7 +296,10 @@ impl RcSession {
                     Some(ev) => out.push(ev),
                     None => *self.unhandled.entry(PLI_PRIVATEMESSAGE).or_default() += 1,
                 },
-                other => *self.unhandled.entry(other).or_default() += 1,
+                other => match crate::rcaccounts::parse(other, rest) {
+                    Some(op) => out.push(RcEvent::Account(op)),
+                    None => *self.unhandled.entry(other).or_default() += 1,
+                },
             }
         }
         out

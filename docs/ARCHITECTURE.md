@@ -30,6 +30,7 @@ How the server is put together, and where each later stage plugs in. Read
 | `src/npcs.rs` | level NPCs: ids, props kept as wire bytes, the props each build reads, props a client may not set | 3 |
 | `src/baddies.rs` | baddies from the level file, `PLO_BADDYPROPS`, hits handed to the level leader, death and respawn | 3 |
 | `src/listlink.rs` | the listserver link over the encrypted channel (`SVLINK01`): register, player count with nickname and props, account check (`VERIACC2`), pong (`SVO_PING` 16), private messages, file start; two plain threads, reconnects every 15 s | link |
+| `src/rcaccounts.rs` | accounts from an RC: list, get, set, add, delete on the account files (slice 4) | 4 |
 | `src/ping.rs` | `PLO_PING` (108) on a timer to the builds whose profile reads it, the `PLI_PONG` (162) answer timed, the miss count (issue #44) | 2 |
 | `src/rc.rs` | RC logins for `seihai-rc`: the `STAFF` and `IPRANGE` checks, the welcome (slice 1); the player list entries and RC chat lines the world task sends RCs (slice 2); private and admin messages and the disconnect (slice 3); NC still refused | 4 |
 | `src/npclink.rs` | the link to `seihai-npcserver` (`PROTOCOL.md`): `Hub` (players and server flags for the link, the world's inbox), `serve_link`, `supervise` for `npcserver = auto` | 5 |
@@ -173,6 +174,8 @@ World task ◀──WorldIn::FromNpc (0x40 to 0x4C), NpcGone── link task
 - `tests/rc_login.rs`: RC logins of type 6 (gen 5) and type 1 (zlib), and
   type 6 through `SEI00001`, for a `STAFF` account; a non-staff account,
   a wrong password and an address outside `IPRANGE` refused.
+- `tests/rc_accounts.rs`: an RC lists, reads, sets, adds and deletes
+  accounts with `seihai-rc`'s own messages.
 - `tests/rc_players.rs`: two RCs (`seihai-rc`'s own client) and a player:
   the list on login, each RC listed to the other, RC chat, a nickname
   update and the leaves; then private and admin messages from an RC as two
