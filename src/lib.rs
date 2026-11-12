@@ -25,6 +25,7 @@ pub mod npclink;
 pub mod npcs;
 pub mod others;
 pub mod ping;
+pub mod profile;
 pub mod ratelimit;
 pub mod rc;
 pub mod rcaccounts;

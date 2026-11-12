@@ -42,42 +42,9 @@ pub fn package_kind(name: &str) -> PackageKind {
 pub fn client_loads(version: ClientVersion, kind: PackageKind) -> bool {
     match kind {
         PackageKind::None => true,
-        PackageKind::Encrypted => loads_gpake(version),
-        PackageKind::Plain => loads_gpak(version),
+        PackageKind::Encrypted => crate::profile::ServerProfile::of(version).loads_gpake,
+        PackageKind::Plain => crate::profile::ServerProfile::of(version).loads_gpak,
     }
-}
-
-fn loads_gpake(version: ClientVersion) -> bool {
-    matches!(
-        version,
-        ClientVersion::V420R8
-            | ClientVersion::V500R7
-            | ClientVersion::V512
-            | ClientVersion::V524R4
-            | ClientVersion::V530R3
-            | ClientVersion::V531R4
-            | ClientVersion::V600R2
-            | ClientVersion::V6015
-            | ClientVersion::V6034
-            | ClientVersion::V603R7
-            | ClientVersion::V603R7Linux
-    )
-}
-
-fn loads_gpak(version: ClientVersion) -> bool {
-    matches!(
-        version,
-        ClientVersion::V500R7
-            | ClientVersion::V512
-            | ClientVersion::V524R4
-            | ClientVersion::V530R3
-            | ClientVersion::V531R4
-            | ClientVersion::V600R2
-            | ClientVersion::V6015
-            | ClientVersion::V6034
-            | ClientVersion::V603R7
-            | ClientVersion::V603R7Linux
-    )
 }
 
 /// The key `config/gpakkeys.txt` gives `package`, if the line is 16 hex digits.
