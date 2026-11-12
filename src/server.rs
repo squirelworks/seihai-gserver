@@ -1156,7 +1156,7 @@ impl Session {
                 PLI_FIRESPY => server.world.relay(self.id, PLO_FIRESPY, true, payload),
                 PLI_EXPLOSION => server.world.relay(self.id, PLO_EXPLOSION, true, payload),
                 PLI_PLAYERPROPS => {
-                    let bow = self.version.profile().props.bow_prop10;
+                    let bow = crate::others::bow_prop10(self.version);
                     server.world.props(self.id, payload);
                     let props = parse_player_props_with(payload, bow);
                     if let Some(nick) = props.iter().find(|p| p.id == 0) {

@@ -9,8 +9,9 @@
 //! - The position goes as X2/Y2 (78/79) where the receiver reads them, else
 //!   as the classic half-tile bytes (15/16), so a 2.31 sender that only
 //!   sends 78/79 still moves on a 2.05 screen.
-//! - Prop 10 is the bow slot before 2.1 (`props.bow_prop10`): it is not kept
-//!   from those senders and not sent to those receivers.
+//! - Prop 10 is the bow slot before 2.1 (`props.bow_prop10`), except 2.05
+//!   rev 2, which uses it as the gani like 2.1 on ([`bow_prop10`]): it is
+//!   not kept from bow-slot senders and not sent to bow-slot receivers.
 //! - The player id (14) is in the message header, not a prop. 1.35 reads
 //!   it as one GCHAR; later builds read a GSHORT (`put_id`). Joining and
 //!   leaving (50 `JOINLEAVELVL`, 51 `PCONNECTED`) are the server's to say.
@@ -35,6 +36,16 @@ pub fn put_id(receiver: ClientVersion, id: u16, out: &mut Vec<u8>) {
     } else {
         gshort(id, out);
     }
+}
+
+/// Whether prop 10 is `receiver`'s bow slot rather than the gani (the
+/// profile's `props.bow_prop10`), except for 2.05 rev 2: a real one sends
+/// and reads prop 10 as gani text (`sword`, `hurt`), and the lab GServer
+/// relays it to and from a 2.22 unchanged, which is how the two hurt each
+/// other (`beta4-sword-and-dead-login-2026-11-12.md` in the project files).
+/// 2.00 to 2.04 were not tested and keep the profile's bow slot.
+pub fn bow_prop10(v: ClientVersion) -> bool {
+    v != ClientVersion::V205 && v.profile().props.bow_prop10
 }
 
 /// Builds whose `PLO_OTHERPLPROPS` id is one GCHAR.
@@ -181,7 +192,7 @@ impl Props {
     /// Apply a prop stream as `sender`'s build writes it; returns what
     /// changed.
     pub fn apply(&mut self, raw: &[u8], sender: ClientVersion) -> Change {
-        let bow = sender.profile().props.bow_prop10;
+        let bow = bow_prop10(sender);
         let mut c = Change::default();
         for p in parse_player_props_with(raw, bow) {
             match p.id {
@@ -311,7 +322,7 @@ pub fn message(
     let other = &prof.props.other;
     let mut body = Vec::new();
     let mut put = |pid: u8, v: &[u8]| {
-        if other.contains(pid) && !(pid == 10 && prof.props.bow_prop10) {
+        if other.contains(pid) && !(pid == 10 && bow_prop10(receiver)) {
             body.push(gchar(pid));
             body.extend_from_slice(v);
         }
@@ -519,7 +530,7 @@ mod tests {
             let prof = v.profile();
             let props = seihai_core::protocol::parse_player_props_in(
                 &m[1 + id_len..m.len() - 1],
-                prof.props.bow_prop10,
+                bow_prop10(v),
                 Some(&prof.props.other),
             );
             let len: usize = props.iter().map(|p| 1 + p.raw.len()).sum();
@@ -540,6 +551,36 @@ mod tests {
         assert_eq!(c.y, Some(0.0));
         let c = p.apply(&[gchar(Y), 0xFF], ClientVersion::V205);
         assert_eq!(c.y, Some(111.5));
+    }
+
+    #[test]
+    fn a_2_05_swing_reaches_a_2_22_and_back() {
+        // The bytes a real 2.05 rev 2 and a 2.22 sent (lab capture): prop
+        // 10, length 5, `sword`.
+        let swing = [gchar(10), gchar(5), b's', b'w', b'o', b'r', b'd'];
+        for (from, to) in [
+            (ClientVersion::V205, ClientVersion::V222),
+            (ClientVersion::V222, ClientVersion::V205),
+        ] {
+            let mut p = Props::default();
+            let c = p.apply(&swing, from);
+            assert_eq!(
+                c.values.get(&10).map(Vec::as_slice),
+                Some(&swing[1..]),
+                "{from:?}"
+            );
+            let m = message(to, 3, &c, &[]).unwrap();
+            let body = &seihai_core::protocol::split_messages(&m)[0];
+            let mut want = Vec::new();
+            put_id(to, 3, &mut want);
+            want.extend_from_slice(&swing);
+            assert_eq!(body.payload, want, "{from:?} to {to:?}");
+        }
+        // A build before 2.05 rev 2 keeps the bow slot: no gani to it.
+        assert!(bow_prop10(ClientVersion::V139));
+        let mut p = Props::default();
+        let c = p.apply(&swing, ClientVersion::V222);
+        assert!(message(ClientVersion::V139, 3, &c, &[]).is_none());
     }
 
     #[test]
