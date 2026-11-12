@@ -31,7 +31,7 @@ How the server is put together, and where each later stage plugs in. Read
 | `src/baddies.rs` | baddies from the level file, `PLO_BADDYPROPS`, hits handed to the level leader, death and respawn | 3 |
 | `src/listlink.rs` | the listserver link over the encrypted channel (`SVLINK01`): register, player count with nickname and props, account check (`VERIACC2`), pong (`SVO_PING` 16), private messages, file start; two plain threads, reconnects every 15 s | link |
 | `src/ping.rs` | `PLO_PING` (108) on a timer to the builds whose profile reads it, the `PLI_PONG` (162) answer timed, the miss count (issue #44) | 2 |
-| `src/rc.rs` | RC and NC logins for `seihai-rc` (skeleton) | 4 |
+| `src/rc.rs` | RC logins for `seihai-rc`: the `STAFF` and `IPRANGE` checks, the welcome, the idle RC link (slice 1); NC still refused | 4 |
 | `src/npclink.rs` | the link to `seihai-npcserver` (`PROTOCOL.md`): `Hub` (players and server flags for the link, the world's inbox), `serve_link`, `supervise` for `npcserver = auto` | 5 |
 | `src/anticheat.rs` | the admin policy (`anticheat.*` settings), violation scores and kicks, the log; the speed, teleport, warp and message-rate checks (stage 2.9); item and damage checks to come (`docs/PLAN.md`, stage 7) | 2, 7 |
 
@@ -170,6 +170,9 @@ World task ◀──WorldIn::FromNpc (0x40 to 0x4C), NpcGone── link task
   `tests/quiet_weapon_ids.rs`, `tests/sample_world.rs`: login limits, RC/NC
   refused in their own framing, ids 25 and 33 accepted quietly, the sample
   world loads clean.
+- `tests/rc_login.rs`: RC logins of type 6 (gen 5) and type 1 (zlib), and
+  type 6 through `SEI00001`, for a `STAFF` account; a non-staff account,
+  a wrong password and an address outside `IPRANGE` refused.
 - `tests/ping.rs`: a 4.20r8 is pinged, kept while it answers and dropped
   after `ping_misses` silent pings; a 2.22 is never pinged.
 - `tests/listserver_link.rs`: the encrypted listserver link against a fake

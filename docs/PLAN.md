@@ -39,7 +39,12 @@ behaviour against, never a code source (see `00-rules.md`).
    `docs/lab/stage3-2026-11-05.md`). Open from that run: real clients did not
    take or send player hits; a player saved with 0 hearts logs back in with 0;
    `PLI_THROWCARRIED`'s shape needs a capture.
-4. RC and NC endpoints for `seihai-rc`.
+4. RC and NC endpoints for `seihai-rc` (issue #52, in slices). **Slice 1
+   built** (`src/rc.rs`, `tests/rc_login.rs`): RC logins (types 1 and 6,
+   and through `SEI00001`) for accounts with `STAFF`, from the account's
+   `IPRANGE` (loopback only without one); refusals in the RC's framing; the
+   welcome (`PLO_SIGNATURE`, RC chat) and a quiet idle link. No real RC run
+   yet. Next: the player list and RC chat (slice 2).
 5. NPC-server link for `seihai-npcserver`. **Built from source, lab run
    open** (`src/npclink.rs`, `src/world.rs`, `PROTOCOL.md`,
    `tests/npc_link.rs`, `tests/npc_messages.rs`,
@@ -266,8 +271,9 @@ Next:
       `tests/listserver_link.rs`. No real client: these packets are only
       between this gserver and a listserver. `VERIACC2`'s type byte is
       the login's account type (`login.rs`: 0 for 1.21 to 2.17, 5 for
-      2.22 and later). RC (1, 6) and NC (3) send theirs once `rc.rs`
-      accepts those logins.
-- [ ] RC logins (`rc.rs`, type 1/6): the same handshake once `seihai-rc`
-      speaks it.
+      2.22 and later). RC logins send 1 or 6 (`rc.rs`); NC (3) will send
+      its own once it is served.
+- [x] RC logins (`rc.rs`, type 1/6): the same handshake
+      (`tests/rc_login.rs`, with Seihai's own handshake code standing in
+      for `seihai-rc`).
 - [ ] A `key-fingerprint` subcommand that prints the key without starting.
