@@ -32,6 +32,8 @@
 //! ADMINWORLDS main
 //! FOLDER rw levels/*
 //! FOLDER r config/*.txt
+//! RCRIGHTS 513
+//! COMMENT warned once for spam
 //! ```
 //!
 //! `FOLDER` lines are the RC file browser's rights (`rcfiles.rs`): `r` or
@@ -97,6 +99,11 @@ pub struct Account {
     pub ip_ranges: Vec<String>,
     /// `FOLDER` lines: the RC file browser's rights (`rcfiles.rs`).
     pub folder_rights: Vec<String>,
+    /// `RCRIGHTS`: the RC rights bits, as an RC sets them (not acted on
+    /// yet).
+    pub rc_rights: u32,
+    /// `COMMENT` lines: staff notes from an RC.
+    pub comments: Vec<String>,
     /// `EMAIL`, from the RC's account dialog.
     pub email: String,
     /// `LOADONLY`, from the RC's account dialog. Not acted on yet.
@@ -139,6 +146,8 @@ impl Account {
             staff: false,
             ip_ranges: Vec::new(),
             folder_rights: Vec::new(),
+            rc_rights: 0,
+            comments: Vec::new(),
             email: String::new(),
             load_only: false,
             admin_level: 0,
@@ -194,6 +203,8 @@ impl Account {
                 "FLAG" if !v.is_empty() => a.flags.push(v.to_string()),
                 "STAFF" => a.staff = !matches!(v, "0" | "false" | "no"),
                 "FOLDER" if !v.is_empty() => a.folder_rights.push(v.to_string()),
+                "RCRIGHTS" => a.rc_rights = v.parse().unwrap_or(0),
+                "COMMENT" => a.comments.push(v.to_string()),
                 "EMAIL" => a.email = v.to_string(),
                 "LOADONLY" => a.load_only = !matches!(v, "0" | "false" | "no"),
                 "ADMINLEVEL" => a.admin_level = v.parse().unwrap_or(0),
@@ -256,6 +267,12 @@ impl Account {
         let one_line = |s: &str| s.replace(['\n', '\r'], " ");
         for r in &self.folder_rights {
             kv("FOLDER", one_line(r));
+        }
+        if self.rc_rights != 0 {
+            kv("RCRIGHTS", self.rc_rights.to_string());
+        }
+        for c in &self.comments {
+            kv("COMMENT", one_line(c));
         }
         if !self.email.is_empty() {
             kv("EMAIL", one_line(&self.email));

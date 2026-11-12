@@ -18,6 +18,27 @@
 //! written here yet: the ban file (`bans.rs`) comes with the anti-cheat
 //! PR, and the next slice joins them. A get says not banned.
 //!
+//! Slice 6 adds a player's staff rights and comments, as seihai-rc saw
+//! them from a real RC (`GSERV024`) against the fork (its
+//! `docs/PROTOCOL.md`, "Comments, account ban, rights and props"):
+//!
+//! | RC sends | Server answers |
+//! |---|---|
+//! | 83 `RC_PLAYERRIGHTSGET`: the account | 62: `GSTRING` account, `GINT5` rights, `GSTRING` IP range, `GSHORT n`, `n` bytes of folder rights tokenized |
+//! | 84 `RC_PLAYERRIGHTSSET`: as 62 | nothing |
+//! | 85 `RC_PLAYERCOMMENTSGET`: the account | 63: `GSTRING` account, then the comments tokenized |
+//! | 86 `RC_PLAYERCOMMENTSSET`: `GSTRING` account, the comments tokenized | nothing |
+//!
+//! The folder rights go out tokenized, one quoted item per line, so a
+//! real RC keeps `rw levels/*` as one line (the fork once sent them plain
+//! and the RC split them at the space). They are the account's `FOLDER`
+//! lines (the file browser's rights, `rcfiles.rs`); the IP range is its
+//! `IPRANGE` (where its RC may log in from, `rc::ip_allowed`), commas
+//! between ranges; the rights bits are kept as `RCRIGHTS` and not acted on
+//! yet, so every staff RC may do every RC action. Comments are `COMMENT`
+//! lines. An RC session already open keeps the folder rights it logged in
+//! with.
+//!
 //! Conditions: `adminlevel` with `>`, `<` or `=` and a number is applied;
 //! any other condition is ignored and logged. A set or add of an account
 //! name that does not pass `login::valid_account_name`, an add of one that
@@ -32,6 +53,14 @@ use crate::wire::{gchar, gstring, latin1, msg, text};
 pub const PLO_RC_ACCOUNTLIST: u8 = 70;
 /// `PLO_RC_ACCOUNTGET` reply id.
 pub const PLO_RC_ACCOUNTGET: u8 = 73;
+/// `PLO_RC_PLAYERRIGHTSGET` reply id.
+pub const PLO_RC_PLAYERRIGHTSGET: u8 = 62;
+/// `PLO_RC_PLAYERCOMMENTSGET` reply id.
+pub const PLO_RC_PLAYERCOMMENTSGET: u8 = 63;
+pub const PLI_RC_PLAYERRIGHTSGET: u8 = 83;
+pub const PLI_RC_PLAYERRIGHTSSET: u8 = 84;
+pub const PLI_RC_PLAYERCOMMENTSGET: u8 = 85;
+pub const PLI_RC_PLAYERCOMMENTSSET: u8 = 86;
 
 pub const PLI_RC_ACCOUNTADD: u8 = 70;
 pub const PLI_RC_ACCOUNTDEL: u8 = 71;
@@ -62,6 +91,37 @@ pub enum Op {
     Set(Fields),
     Add(Fields),
     Delete(String),
+    RightsGet(String),
+    RightsSet(Rights),
+    CommentsGet(String),
+    CommentsSet { account: String, lines: Vec<String> },
+}
+
+/// A player's staff rights as 62 and 84 carry them.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Rights {
+    pub account: String,
+    pub rights: u32,
+    pub ip_range: String,
+    /// One per line, `rw levels/*`.
+    pub folders: Vec<String>,
+}
+
+fn lines(t: &[u8]) -> Vec<String> {
+    crate::wire::detokenize(t).iter().map(|l| text(l)).collect()
+}
+
+fn tokenized(lines: &[String]) -> Vec<u8> {
+    let l: Vec<Vec<u8>> = lines.iter().map(|l| latin1(l)).collect();
+    crate::wire::tokenize(&l)
+}
+
+fn read_gint5(b: &[u8], i: &mut usize) -> Option<u32> {
+    let v = b.get(*i..*i + 5)?;
+    *i += 5;
+    Some(v.iter().fold(0u64, |a, &c| {
+        (a << 7) | u64::from(c.wrapping_sub(0x20) & 0x7F)
+    }) as u32)
 }
 
 fn read_gstring(b: &[u8], i: &mut usize) -> Option<Vec<u8>> {
@@ -86,6 +146,30 @@ pub fn parse(id: u8, rest: &[u8]) -> Option<Op> {
             })
         }
         PLI_RC_ACCOUNTGET if !name().is_empty() => Some(Op::Get(name())),
+        PLI_RC_PLAYERRIGHTSGET if !name().is_empty() => Some(Op::RightsGet(name())),
+        PLI_RC_PLAYERCOMMENTSGET if !name().is_empty() => Some(Op::CommentsGet(name())),
+        PLI_RC_PLAYERRIGHTSSET => {
+            let mut i = 0;
+            let account = text(&read_gstring(rest, &mut i)?);
+            let rights = read_gint5(rest, &mut i)?;
+            let ip_range = text(&read_gstring(rest, &mut i)?);
+            let n = usize::from(seihai_core::protocol::read_gshort(rest.get(i..)?)?);
+            let folders = lines(rest.get(i + 2..i + 2 + n)?);
+            Some(Op::RightsSet(Rights {
+                account,
+                rights,
+                ip_range,
+                folders,
+            }))
+        }
+        PLI_RC_PLAYERCOMMENTSSET => {
+            let mut i = 0;
+            let account = text(&read_gstring(rest, &mut i)?);
+            Some(Op::CommentsSet {
+                account,
+                lines: lines(&rest[i..]),
+            })
+        }
         PLI_RC_ACCOUNTDEL if !name().is_empty() => Some(Op::Delete(name())),
         PLI_RC_ACCOUNTSET | PLI_RC_ACCOUNTADD => {
             let mut i = 0;
@@ -243,6 +327,71 @@ pub fn run(store: &Store, online: &[String], start: Start, op: Op) -> Done {
             }
             _ => log(format!("account add {}: it exists", f.account)),
         },
+        Op::RightsGet(name) | Op::CommentsGet(name) if !valid_account_name(&name) => {
+            log(format!("account {name}: not a valid name"))
+        }
+        Op::RightsGet(name) => match store.load(&name) {
+            Ok(Some(a)) => {
+                let mut p = Vec::new();
+                gstring(&latin1(&a.name), &mut p);
+                crate::wire::gint5(u64::from(a.rc_rights), &mut p);
+                gstring(&latin1(&a.ip_ranges.join(",")), &mut p);
+                let folders = tokenized(&a.folder_rights);
+                let folders = &folders[..folders.len().min(usize::from(u16::MAX >> 2))];
+                crate::wire::gshort(folders.len() as u16, &mut p);
+                p.extend_from_slice(folders);
+                Done {
+                    reply: msg(PLO_RC_PLAYERRIGHTSGET, &p),
+                    log: None,
+                }
+            }
+            _ => log(format!("rights get {name}: no such account")),
+        },
+        Op::CommentsGet(name) => match store.load(&name) {
+            Ok(Some(a)) => {
+                let mut p = Vec::new();
+                gstring(&latin1(&a.name), &mut p);
+                p.extend(tokenized(&a.comments));
+                Done {
+                    reply: msg(PLO_RC_PLAYERCOMMENTSGET, &p),
+                    log: None,
+                }
+            }
+            _ => log(format!("comments get {name}: no such account")),
+        },
+        Op::RightsSet(r) => match valid_account_name(&r.account).then(|| store.load(&r.account)) {
+            Some(Ok(Some(mut a))) => {
+                a.rc_rights = r.rights;
+                a.ip_ranges = r
+                    .ip_range
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+                    .collect();
+                a.folder_rights = r
+                    .folders
+                    .iter()
+                    .map(|l| l.trim().to_string())
+                    .filter(|l| !l.is_empty())
+                    .collect();
+                let what = format!(
+                    "rights set {}: {:#x}, from {:?}, folders {:?}",
+                    a.name, a.rc_rights, a.ip_ranges, a.folder_rights
+                );
+                saved(store, &a, what)
+            }
+            _ => log(format!("rights set {}: no such account", r.account)),
+        },
+        Op::CommentsSet { account, lines } => {
+            match valid_account_name(&account).then(|| store.load(&account)) {
+                Some(Ok(Some(mut a))) => {
+                    a.comments = lines;
+                    saved(store, &a, format!("comments set {}", a.name))
+                }
+                _ => log(format!("comments set {account}: no such account")),
+            }
+        }
         Op::Delete(name) => {
             if !valid_account_name(&name) {
                 return log(format!("account delete {name}: not a valid name"));

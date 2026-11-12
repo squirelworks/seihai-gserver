@@ -61,9 +61,13 @@ behaviour against, never a code source (see `00-rules.md`).
    `tests/rc_files.rs`): the file browser (list 90, get 92, put 93 in a raw
    block) in the world folder within the account's `FOLDER` rights (`r` or
    `rw`, a folder and a mask; none sees nothing), plain files of at most
-   60 KiB. No real RC run yet. Next: the RC warp (82, on the server warp of
-   stage 5), the ban fields (on the ban file), folder rights, comments and
-   props from an RC, then server options once a lab has their layouts.
+   60 KiB. **Slice 6 built** (`rcaccounts.rs`): a player's staff rights
+   (83/84 and 62: rights bits as `RCRIGHTS`, not acted on yet; the IP
+   range as `IPRANGE`; folder rights as `FOLDER`, tokenized out) and
+   comments (85/86 and 63, `COMMENT` lines). No real RC run yet. Next:
+   the RC warp (82, on the server warp of stage 5), the ban fields (on the
+   ban file), player props from an RC (73/74/76), then server options
+   once a lab has their layouts.
 5. NPC-server link for `seihai-npcserver`. **Gserver to NPC-server half done,
    ahead of stage 2** (`src/npclink.rs`, `PROTOCOL.md`, `tests/npc_link.rs`,
    `docs/lab/npclink-2026-10-31.md`): `npcserver = off | external | auto`, the

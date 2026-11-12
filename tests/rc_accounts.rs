@@ -95,3 +95,66 @@ fn an_rc_lists_reads_writes_adds_and_deletes_accounts() {
     assert_eq!(list(&mut s, "%", ""), ["bob", "boss"]);
     let _ = std::fs::remove_dir_all(&w);
 }
+
+#[test]
+fn an_rc_sets_rights_and_comments_and_the_rights_open_folders() {
+    use seihai_rc::players::{
+        comments_get, comments_set, parse_comments, parse_rights, rights_get, rights_set, Rights,
+    };
+    let w = world("rcrights", "*\n");
+    std::fs::create_dir_all(w.join("levels")).unwrap();
+    std::fs::write(w.join("levels/a.nw"), "GLEVNW01\n").unwrap();
+    let store = Store::new(w.join("accounts"));
+    for name in ["boss", "helper"] {
+        let mut a = File::new(name, "onlinestartlocal.nw", 30.0, 30.0);
+        a.set_password(PASSWORD.as_bytes());
+        a.staff = true;
+        store.save(&a).unwrap();
+    }
+    let (addr, _server) = start(&w);
+    let login = |account: &str| {
+        Session::login(
+            &addr,
+            &LoginParams {
+                kind: RcKind::Gen5,
+                token: RcKind::Gen5.default_token().into(),
+                account: account.into(),
+                password: PASSWORD.into(),
+                key: 3,
+                nickname: None,
+            },
+            Duration::from_secs(10),
+        )
+        .unwrap()
+    };
+    let mut s = login("boss");
+
+    // The helper has no folder rights yet: no folder opens.
+    let mut h = login("helper");
+    assert!(h.list_dir("levels", Duration::from_secs(10)).is_err());
+    drop(h);
+
+    let want = Rights {
+        account: "helper".into(),
+        rights: 1 | 1 << 9,
+        ip_range: "127.0.0.1".into(),
+        folders: vec!["rw levels/*".into()],
+    };
+    s.send_messages(&[rights_set(&want).unwrap()]).unwrap();
+    s.send_messages(&[rights_get("helper").unwrap()]).unwrap();
+    assert_eq!(parse_rights(&reply(&mut s, 62)).unwrap(), want);
+
+    s.send_messages(&[comments_set("helper", "new staff\nmentor: boss").unwrap()])
+        .unwrap();
+    s.send_messages(&[comments_get("helper").unwrap()]).unwrap();
+    let c = parse_comments(&reply(&mut s, 63)).unwrap();
+    assert_eq!(c.lines, ["new staff", "mentor: boss"]);
+
+    // Logged in again, the helper opens the folder its rights name.
+    let mut h = login("helper");
+    assert_eq!(
+        h.list_dir("levels", Duration::from_secs(10)).unwrap(),
+        ["a.nw"]
+    );
+    let _ = std::fs::remove_dir_all(&w);
+}
