@@ -26,8 +26,9 @@ use std::collections::BTreeMap;
 
 /// Writes the player id that heads `PLO_OTHERPLPROPS` the way `receiver`
 /// reads it. Original 1.35 reads one GCHAR before the props (exact-build
-/// static evidence, graal-client-repro#179); 1.36 on read a GSHORT. A 1.35
-/// id is capped at 223, the largest GCHAR.
+/// static evidence, graal-client-repro#179), and so do the builds before
+/// it, 1.21 to 1.34 (graal-client-repro#221 to #227); 1.36 on read a
+/// GSHORT. A one-byte id is capped at 223, the largest GCHAR.
 pub fn put_id(receiver: ClientVersion, id: u16, out: &mut Vec<u8>) {
     if one_byte_id(receiver) {
         out.push(gchar(id.min(223) as u8));
@@ -36,9 +37,11 @@ pub fn put_id(receiver: ClientVersion, id: u16, out: &mut Vec<u8>) {
     }
 }
 
-/// Builds whose `PLO_OTHERPLPROPS` id is one GCHAR.
+/// Builds whose `PLO_OTHERPLPROPS` id is one GCHAR: 1.35 and every build
+/// before it.
 pub fn one_byte_id(v: ClientVersion) -> bool {
-    v == ClientVersion::V135
+    use ClientVersion::*;
+    matches!(v, V121 | V128B2 | V13T | V131 | V132 | V133 | V134 | V135)
 }
 
 pub const JOINLEAVELVL: u8 = 50;
@@ -407,6 +410,20 @@ mod tests {
     /// Every build reads the whole message, and sees the nickname and the
     /// position where it reads them.
     #[test]
+    fn the_id_is_one_byte_up_to_1_35() {
+        use ClientVersion::*;
+        for v in [V121, V128B2, V13T, V131, V132, V133, V134, V135] {
+            assert!(one_byte_id(v), "{v:?}");
+            let mut out = Vec::new();
+            put_id(v, 300, &mut out);
+            assert_eq!(out, [gchar(223)], "{v:?}: capped");
+        }
+        for v in [V136, V139, V141, V205, V222] {
+            assert!(!one_byte_id(v), "{v:?}");
+        }
+    }
+
+    #[test]
     fn every_build_reads_a_join() {
         let p = alice();
         for &v in ClientVersion::all_versions() {
@@ -418,8 +435,9 @@ mod tests {
                 continue;
             };
             let other = v.profile().props.other;
-            // 1.35's id is one GCHAR; seihai-core's session model reads a
-            // GSHORT for every build, so it is not an oracle for 1.35.
+            // 1.35's id and its elders' are one GCHAR; seihai-core's session
+            // model reads a GSHORT for every build, so it is not an oracle
+            // for them.
             let id_len = if one_byte_id(v) { 1 } else { 2 };
             if one_byte_id(v) {
                 assert_eq!(m[1], gchar(7), "{v:?}");
