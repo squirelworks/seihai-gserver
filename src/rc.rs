@@ -58,10 +58,11 @@
 //! (`rcserver.rs`): options are `config/server.txt`, folders
 //! `config/foldersconfig.txt`, flags the world's server flags.
 //!
-//! NC (type 3) is still refused as "not served yet" in its own framing.
+//! NC (type 3), built: `nc.rs`. An RC's `PLI_NPCSERVERQUERY` (94) is
+//! answered with `PLO_NPCSERVERADDR` (79) naming the address the RC
+//! reached this server on, since NC logins come here too.
 //! Props of a player online go through the world (`rcprops.rs`).
-//! Next: NC. Behaviour comes from seihai-rc's `docs/PROTOCOL.md` and lab
-//! notes.
+//! Behaviour comes from seihai-rc's `docs/PROTOCOL.md` and lab notes.
 //!
 //! Lessons from the real-RC capture against the gserver-v2 fork
 //! (2026-11-04, lab notes `rc-capture-2026-11-04/rc-layouts.md`):
@@ -272,6 +273,23 @@ pub enum RcEvent {
     /// Server options, folder config or server flags (51 to 54, 68, 69,
     /// `rcserver.rs`), carried out by the connection.
     Server(crate::rcserver::Op),
+    /// `PLI_NPCSERVERQUERY` (94): `GSHORT` player id, then `location`.
+    /// Answered by the connection with `PLO_NPCSERVERADDR` (79): NC logins
+    /// come to this server's own port (`nc.rs`).
+    NpcServerQuery(u16),
+}
+
+/// `PLI_NPCSERVERQUERY` (94).
+const PLI_NPCSERVERQUERY: u8 = 94;
+/// `PLO_NPCSERVERADDR` (79).
+pub const PLO_NPCSERVERADDR: u8 = 79;
+
+/// The 79 for `id`: the player id, then `host,port`, where NC logins go.
+pub fn npcserver_addr(id: u16, host: &str, port: u16) -> Vec<u8> {
+    let mut p = Vec::new();
+    gshort(id, &mut p);
+    p.extend_from_slice(&latin1(&format!("{host},{port}")));
+    msg(PLO_NPCSERVERADDR, &p)
 }
 
 /// `PLO_RC_ADMINMESSAGE` (35): `Admin <account>:`, `0xA7`, then the text,
@@ -330,6 +348,11 @@ impl RcSession {
                     Some(ev) => out.push(ev),
                     None => *self.unhandled.entry(PLI_RC_WARPPLAYER).or_default() += 1,
                 },
+                PLI_NPCSERVERQUERY if rest.len() >= 2 => {
+                    if let Some(id) = read_gshort(rest) {
+                        out.push(RcEvent::NpcServerQuery(id));
+                    }
+                }
                 PLI_PRIVATEMESSAGE => match pm(rest) {
                     Some(ev) => out.push(ev),
                     None => *self.unhandled.entry(PLI_PRIVATEMESSAGE).or_default() += 1,

@@ -32,7 +32,7 @@ use seihai_core::protocol::parse_player_props_with;
 use seihai_npcserver::link::{self, tokens_match, Message, LINK_VERSION, TOKEN_ENV};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 use crate::world::WorldIn;
 
@@ -42,6 +42,8 @@ const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
 const PING_AFTER: Duration = Duration::from_secs(30);
 /// Drop the link after this long without hearing from it.
 const DEAD_AFTER: Duration = Duration::from_secs(90);
+/// How long an NPC Control request waits for the NPC-server.
+const NC_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A player as the link describes it.
 #[derive(Debug, Clone, Default)]
@@ -72,6 +74,28 @@ struct HubState {
     /// The server flags as the world holds them (`name=value`), for a
     /// `SERVER_FLAGS` when an NPC-server connects.
     server_flags: Vec<Vec<u8>>,
+    /// NPC Control: the NPC-server's NPC list (`NC_NPC`), by id.
+    nc_npcs: BTreeMap<u32, NcNpc>,
+    /// NPC Control: `NC_GET`s waiting for their `NC_TEXT`, by request.
+    nc_waiting: BTreeMap<u32, oneshot::Sender<Option<Vec<u8>>>>,
+    nc_next: u32,
+    /// NPC Control sessions that hear list changes.
+    nc_watchers: Vec<mpsc::UnboundedSender<NcChange>>,
+}
+
+/// One NPC as NPC Control lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NcNpc {
+    pub name: Vec<u8>,
+    pub kind: Vec<u8>,
+    pub level: Vec<u8>,
+}
+
+/// A change to the NPC Control list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NcChange {
+    Added(u32, NcNpc),
+    Deleted(u32),
 }
 
 /// Shared link state. One per server; cheap when no NPC-server connects.
@@ -211,6 +235,103 @@ impl Hub {
         let mut st = self.state.lock().unwrap();
         if st.players.remove(&id).is_some() {
             send(&mut st, Message::PlayerLeft { player_id: id });
+        }
+    }
+
+    /// NPC Control: the NPC list now, and a receiver for its changes.
+    pub fn nc_watch(&self) -> (Vec<(u32, NcNpc)>, mpsc::UnboundedReceiver<NcChange>) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let mut st = self.state.lock().unwrap();
+        st.nc_watchers.push(tx);
+        let list = st.nc_npcs.iter().map(|(i, n)| (*i, n.clone())).collect();
+        (list, rx)
+    }
+
+    /// NPC Control: ask the NPC-server for an NPC's script or attributes
+    /// (`link::nc_get`). `None` when there is no NPC-server, no such NPC,
+    /// or no answer.
+    pub async fn nc_get(&self, npc_id: u32, what: u8) -> Option<Vec<u8>> {
+        let rx = {
+            let mut st = self.state.lock().unwrap();
+            st.link.as_ref()?;
+            st.nc_next = st.nc_next.wrapping_add(1);
+            let request = st.nc_next;
+            let (tx, rx) = oneshot::channel();
+            st.nc_waiting.insert(request, tx);
+            send(
+                &mut st,
+                Message::NcGet {
+                    request,
+                    npc_id,
+                    what,
+                },
+            );
+            rx
+        };
+        tokio::time::timeout(NC_TIMEOUT, rx).await.ok()?.ok()?
+    }
+
+    /// NPC Control: a new script, or a delete. False with no NPC-server.
+    pub fn nc_send(&self, m: Message) -> bool {
+        let mut st = self.state.lock().unwrap();
+        if st.link.is_none() {
+            return false;
+        }
+        send(&mut st, m);
+        true
+    }
+
+    /// NPC Control messages from the NPC-server. `NPC_DELETED` does not
+    /// come here: a level restart sends it for NPCs that come back. An NPC
+    /// leaves the NC list on `NC_NPC_DELETE`.
+    fn nc_from_npc(&self, m: &Message) {
+        let mut st = self.state.lock().unwrap();
+        let change = match m {
+            Message::NcNpc {
+                npc_id,
+                name,
+                kind,
+                level,
+            } => {
+                let n = NcNpc {
+                    name: name.clone(),
+                    kind: kind.clone(),
+                    level: level.clone(),
+                };
+                if st.nc_npcs.get(npc_id) == Some(&n) {
+                    return;
+                }
+                st.nc_npcs.insert(*npc_id, n.clone());
+                NcChange::Added(*npc_id, n)
+            }
+            Message::NcNpcDelete { npc_id } => {
+                if st.nc_npcs.remove(npc_id).is_none() {
+                    return;
+                }
+                NcChange::Deleted(*npc_id)
+            }
+            Message::NcText {
+                request,
+                found,
+                text,
+            } => {
+                if let Some(tx) = st.nc_waiting.remove(request) {
+                    let _ = tx.send(found.then(|| text.clone()));
+                }
+                return;
+            }
+            _ => return,
+        };
+        st.nc_watchers.retain(|w| w.send(change.clone()).is_ok());
+    }
+
+    /// The NPC-server went: its NPCs leave the NPC Control list.
+    fn nc_gone(st: &mut HubState) {
+        let gone: Vec<u32> = std::mem::take(&mut st.nc_npcs).into_keys().collect();
+        st.nc_waiting.clear();
+        for id in gone {
+            st.nc_watchers
+                .retain(|w| w.send(NcChange::Deleted(id)).is_ok());
         }
     }
 
@@ -411,6 +532,10 @@ async fn handle(hub: &Hub, mut stream: TcpStream, peer: SocketAddr) -> io::Resul
                 }
                 Message::Pong { .. } => {}
                 Message::Bye { reason } => done = Some(format!("bye: {}", link::show(&reason))),
+                // NPC Control: kept here for NC logins.
+                m @ (Message::NcNpc { .. }
+                | Message::NcText { .. }
+                | Message::NcNpcDelete { .. }) => hub.nc_from_npc(&m),
                 // The NPC-server's own messages: the world applies them.
                 m if (0x40..=0x4C).contains(&m.id()) && !matches!(m, Message::Unknown { .. }) => {
                     if !hub.to_world(WorldIn::FromNpc(m)) && !world_gone {
@@ -442,6 +567,7 @@ async fn handle(hub: &Hub, mut stream: TcpStream, peer: SocketAddr) -> io::Resul
             // next NPC-server sends.
             hub.to_world(WorldIn::NpcGone);
             st.link = None;
+            Hub::nc_gone(&mut st);
         }
     }
     drop(tx);

@@ -421,6 +421,10 @@ impl Conn {
         if login::is_rc(login.client_type) {
             return self.run_rc(&login, codec, inbuf, &who, after).await;
         }
+        // NPC Control (stage 4 slice 6): staff only, like an RC.
+        if login::is_nc(login.client_type) {
+            return self.run_nc(&login, codec, inbuf, &who, after).await;
+        }
 
         if !self.server.allow.allows(&login.token) {
             self.server
@@ -775,7 +779,10 @@ impl Conn {
             for e in events {
                 use crate::rc::RcEvent;
                 let what = match &e {
-                    RcEvent::Account(_) | RcEvent::Files(_) | RcEvent::Server(_) => {
+                    RcEvent::Account(_)
+                    | RcEvent::Files(_)
+                    | RcEvent::Server(_)
+                    | RcEvent::NpcServerQuery(_) => {
                         ops.push(e);
                         continue;
                     }
@@ -806,6 +813,8 @@ impl Conn {
             }
             ops
         };
+        // Where this RC reached us: NC logins go to the same place.
+        let here = self.stream.local_addr()?;
         let browser = Arc::new(Mutex::new(crate::rcfiles::Browser::new(
             &self.server.cfg.world,
             &account.folder_rights,
@@ -860,6 +869,14 @@ impl Conn {
                                 let (r, l) = browser.lock().unwrap().run(op);
                                 (r, Some(format!("files: {l}")))
                             }
+                            crate::rc::RcEvent::NpcServerQuery(pid) => (
+                                vec![crate::rc::npcserver_addr(
+                                    pid,
+                                    &here.ip().to_string(),
+                                    here.port(),
+                                )],
+                                Some(format!("asks where NC logins go (player {pid})")),
+                            ),
                             crate::rc::RcEvent::Server(op) => match op {
                                 crate::rcserver::Op::FlagsGet => {
                                     let f = server.world.server_flags_blocking();
@@ -964,6 +981,149 @@ impl Conn {
         // The leave is logged here; an error passed up would also log
         // "closed before login", as the lab run of 2026-11-12 saw.
         Ok(())
+    }
+
+    /// An NPC Control login (`nc.rs`): checked as an RC is, then served
+    /// from the NPC-server's list (`npclink::Hub`) until it closes.
+    async fn run_nc(
+        &mut self,
+        login: &Login,
+        mut codec: Codec,
+        mut inbuf: InBuf,
+        who: &str,
+        after: &[u8],
+    ) -> io::Result<()> {
+        let account = match self.check_account(login, false).await? {
+            Ok(a) => a,
+            Err(why) => {
+                self.server.log(&self.peer, &format!("NC {who}: {why}"));
+                return self.refuse(&mut codec, why).await;
+            }
+        };
+        if let Err(why) = crate::rc::admit(&account, self.peer.ip()) {
+            self.server.log(&self.peer, &format!("NC {who}: {why}"));
+            return self.refuse(&mut codec, why).await;
+        }
+        if let Some(text) = self.banned(&account.name) {
+            self.server.log(&self.peer, &format!("NC {who}: banned"));
+            return self.refuse(&mut codec, &text).await;
+        }
+        self.server.log(&self.peer, &format!("NC {who} logged in"));
+        let hub = self.server.npc.clone();
+        let (list, mut changes) = hub.nc_watch();
+        let mut first: Vec<u8> = Vec::new();
+        for (id, n) in &list {
+            first.extend(crate::nc::npc_add(*id, n));
+        }
+        if !first.is_empty() {
+            self.send(&mut codec, &first).await?;
+        }
+        let mut unhandled: BTreeMap<u8, u32> = BTreeMap::new();
+        let mut pending: Vec<Vec<u8>> = crate::rcfiles::split(after);
+        let idle = self.server.cfg.idle_timeout;
+        let mut last_heard = Instant::now();
+        let result = loop {
+            for m in std::mem::take(&mut pending) {
+                let op = match crate::nc::parse(&m) {
+                    Ok(Some(op)) => op,
+                    Ok(None) => continue,
+                    Err(id) => {
+                        *unhandled.entry(id).or_default() += 1;
+                        continue;
+                    }
+                };
+                let reply = self.nc_op(&hub, &account.name, op).await;
+                if let Some(r) = reply {
+                    self.send(&mut codec, &r).await?;
+                }
+            }
+            let idle_left = (!idle.is_zero()).then(|| idle.saturating_sub(last_heard.elapsed()));
+            tokio::select! {
+                r = read_more(&mut self.stream, &mut inbuf.buf) => {
+                    if let Err(e) = r {
+                        break Err(e);
+                    }
+                    last_heard = Instant::now();
+                    while let Some(frame) = inbuf.take_frame()? {
+                        let body = codec.decode(&frame)?;
+                        pending.extend(crate::rcfiles::split(&body));
+                    }
+                }
+                Some(change) = changes.recv() => {
+                    let m = match change {
+                        crate::npclink::NcChange::Added(id, n) => crate::nc::npc_add(id, &n),
+                        crate::npclink::NcChange::Deleted(id) => crate::nc::npc_delete(id),
+                    };
+                    if let Err(e) = self.send(&mut codec, &m).await {
+                        break Err(e);
+                    }
+                }
+                _ = sleep_opt(idle_left) => {
+                    self.server.log(&self.peer, "NC idle timeout");
+                    let _ = self.refuse(&mut codec, "Disconnected for being idle.").await;
+                    break Ok(());
+                }
+            }
+        };
+        let unhandled: Vec<String> = unhandled
+            .iter()
+            .map(|(id, n)| format!("{id} x{n}"))
+            .collect();
+        self.server.log(
+            &self.peer,
+            &format!(
+                "NC {} left ({}){}",
+                account.name,
+                result
+                    .as_ref()
+                    .err()
+                    .map_or("closed".to_string(), |e| e.to_string()),
+                if unhandled.is_empty() {
+                    String::new()
+                } else {
+                    format!(" (not answered: {})", unhandled.join(", "))
+                }
+            ),
+        );
+        Ok(())
+    }
+
+    /// One NC request: the reply, if it has one.
+    async fn nc_op(
+        &self,
+        hub: &crate::npclink::Hub,
+        account: &str,
+        op: crate::nc::Op,
+    ) -> Option<Vec<u8>> {
+        use crate::nc::Op;
+        use seihai_npcserver::link::{nc_get, Message};
+        let log = |what: String| self.server.log(&self.peer, &format!("NC {account} {what}"));
+        match op {
+            Op::Attributes(id) => {
+                let t = hub.nc_get(id, nc_get::ATTRIBUTES).await;
+                Some(crate::nc::attributes(&t.unwrap_or_default()))
+            }
+            Op::Script(id) => {
+                let t = hub.nc_get(id, nc_get::SCRIPT).await;
+                Some(crate::nc::script(id, &t.unwrap_or_default()))
+            }
+            Op::SetScript(id, script) => {
+                log(format!("sets the script of NPC {id}"));
+                if !hub.nc_send(Message::NcScriptSet { npc_id: id, script }) {
+                    log("no NPC-server connected".into());
+                }
+                None
+            }
+            Op::Delete(id) => {
+                // The 159 comes when the NPC-server has taken it out.
+                log(format!("deletes NPC {id}"));
+                if !hub.nc_send(Message::NcNpcDelete { npc_id: id }) {
+                    log("no NPC-server connected".into());
+                }
+                None
+            }
+            Op::WeaponList => Some(crate::nc::no_weapons()),
+        }
     }
 
     /// The text for a banned account (`config/bans.txt`), or `None`. A
