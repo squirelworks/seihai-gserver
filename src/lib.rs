@@ -30,6 +30,7 @@ pub mod rc;
 pub mod rcaccounts;
 pub mod rcfiles;
 pub mod rcprops;
+pub mod rcserver;
 pub mod secure;
 pub mod server;
 pub mod wire;

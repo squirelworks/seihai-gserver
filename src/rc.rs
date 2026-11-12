@@ -54,11 +54,14 @@
 //! dialog's and the player ban (87/88) read and write the ban file
 //! (`rcaccounts.rs`).
 //!
+//! Server options, folder config and server flags, built
+//! (`rcserver.rs`): options are `config/server.txt`, folders
+//! `config/foldersconfig.txt`, flags the world's server flags.
+//!
 //! NC (type 3) is still refused as "not served yet" in its own framing.
 //! Props of a player online go through the world (`rcprops.rs`).
-//! Next: server options (their layouts still need a lab), NC. Behaviour
-//! comes
-//! from seihai-rc's `docs/PROTOCOL.md` and lab notes.
+//! Next: NC. Behaviour comes from seihai-rc's `docs/PROTOCOL.md` and lab
+//! notes.
 //!
 //! Lessons from the real-RC capture against the gserver-v2 fork
 //! (2026-11-04, lab notes `rc-capture-2026-11-04/rc-layouts.md`):
@@ -266,6 +269,9 @@ pub enum RcEvent {
     /// A file browser request (90, 92, 93, `rcfiles.rs`), carried out by
     /// the connection too.
     Files(crate::rcfiles::Op),
+    /// Server options, folder config or server flags (51 to 54, 68, 69,
+    /// `rcserver.rs`), carried out by the connection.
+    Server(crate::rcserver::Op),
 }
 
 /// `PLO_RC_ADMINMESSAGE` (35): `Admin <account>:`, `0xA7`, then the text,
@@ -329,7 +335,9 @@ impl RcSession {
                     None => *self.unhandled.entry(PLI_PRIVATEMESSAGE).or_default() += 1,
                 },
                 other => {
-                    if let Some(op) = crate::rcaccounts::parse(other, rest) {
+                    if let Some(op) = crate::rcserver::parse(other, rest) {
+                        out.push(RcEvent::Server(op));
+                    } else if let Some(op) = crate::rcaccounts::parse(other, rest) {
                         out.push(RcEvent::Account(op));
                     } else if let Some(op) = crate::rcfiles::parse(other, rest) {
                         out.push(RcEvent::Files(op));

@@ -111,6 +111,7 @@ impl Server {
         world.set_anticheat(anticheat.clone());
         // The world feeds the NPC-server link and applies what it sends.
         world.set_npc(npc.clone());
+        world.set_server_flags_file(cfg.world.join("config").join("serverflags.txt"));
         let login_rate = crate::ratelimit::LoginRate::new(cfg.login_rate, cfg.login_rate_loopback);
         let password_checks = crate::ratelimit::PasswordChecks::new(cfg.password_check_slots());
         Server {
@@ -774,7 +775,7 @@ impl Conn {
             for e in events {
                 use crate::rc::RcEvent;
                 let what = match &e {
-                    RcEvent::Account(_) | RcEvent::Files(_) => {
+                    RcEvent::Account(_) | RcEvent::Files(_) | RcEvent::Server(_) => {
                         ops.push(e);
                         continue;
                     }
@@ -859,6 +860,24 @@ impl Conn {
                                 let (r, l) = browser.lock().unwrap().run(op);
                                 (r, Some(format!("files: {l}")))
                             }
+                            crate::rc::RcEvent::Server(op) => match op {
+                                crate::rcserver::Op::FlagsGet => {
+                                    let f = server.world.server_flags_blocking();
+                                    (
+                                        vec![crate::rcserver::flags_reply(&f)],
+                                        Some("reads the server flags".to_string()),
+                                    )
+                                }
+                                crate::rcserver::Op::FlagsSet(f) => {
+                                    let n = f.len();
+                                    server.world.set_server_flags_blocking(f);
+                                    (Vec::new(), Some(format!("sets {n} server flag(s)")))
+                                }
+                                op => match crate::rcserver::Files::new(&cfg.world).run(&op) {
+                                    Some(d) => (d.replies, Some(d.log)),
+                                    None => continue,
+                                },
+                            },
                             _ => continue,
                         };
                         if let Some(l) = log {
