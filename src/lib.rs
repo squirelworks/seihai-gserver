@@ -27,6 +27,7 @@ pub mod ping;
 pub mod ratelimit;
 pub mod rc;
 pub mod rcaccounts;
+pub mod rcfiles;
 pub mod secure;
 pub mod server;
 pub mod wire;
