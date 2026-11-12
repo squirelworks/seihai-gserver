@@ -22,6 +22,7 @@ pub mod login;
 pub mod npclink;
 pub mod npcs;
 pub mod others;
+pub mod ping;
 pub mod ratelimit;
 pub mod rc;
 pub mod secure;
