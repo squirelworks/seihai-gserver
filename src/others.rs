@@ -9,15 +9,16 @@
 //! - The position goes as X2/Y2 (78/79) where the receiver reads them, else
 //!   as the classic half-tile bytes (15/16), so a 2.31 sender that only
 //!   sends 78/79 still moves on a 2.05 screen.
-//! - Prop 10 is the bow slot before 2.1 (`props.bow_prop10`), except 2.05
-//!   rev 2, which uses it as the gani like 2.1 on ([`bow_prop10`]): it is
-//!   not kept from bow-slot senders and not sent to bow-slot receivers.
+//! - Prop 10 is the bow slot before 2.1, except 2.05 rev 2, which uses it
+//!   as the gani like 2.1 on (`ServerProfile::prop10_bow`): it is not kept
+//!   from bow-slot senders and not sent to bow-slot receivers.
 //! - The player id (14) is in the message header, not a prop. 1.35 reads
 //!   it as one GCHAR; later builds read a GSHORT (`put_id`). Joining and
 //!   leaving (50 `JOINLEAVELVL`, 51 `PCONNECTED`) are the server's to say.
 //!   On logout the lab GServer sent 50 = 0, then 51, to 2.22
 //!   (Seihai `lab-verification.md`), and this does the same.
 
+use crate::profile::ServerProfile;
 use crate::wire::{gchar, gshort, ids::PLO_OTHERPLPROPS, msg};
 use seihai_core::protocol::{
     decode_pos_precise, encode_pos_precise, parse_player_props_with, read_gint3, read_gshort,
@@ -38,14 +39,10 @@ pub fn put_id(receiver: ClientVersion, id: u16, out: &mut Vec<u8>) {
     }
 }
 
-/// Whether prop 10 is `receiver`'s bow slot rather than the gani (the
-/// profile's `props.bow_prop10`), except for 2.05 rev 2: a real one sends
-/// and reads prop 10 as gani text (`sword`, `hurt`), and the lab GServer
-/// relays it to and from a 2.22 unchanged, which is how the two hurt each
-/// other (`beta4-sword-and-dead-login-2026-11-12.md` in the project files).
-/// 2.00 to 2.04 were not tested and keep the profile's bow slot.
+/// Whether prop 10 is `v`'s bow slot rather than the gani
+/// (`ServerProfile::prop10_bow`, which has the 2.05 rev 2 exception).
 pub fn bow_prop10(v: ClientVersion) -> bool {
-    v != ClientVersion::V205 && v.profile().props.bow_prop10
+    ServerProfile::of(v).prop10_bow
 }
 
 /// Builds whose `PLO_OTHERPLPROPS` id is one GCHAR.
