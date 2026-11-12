@@ -64,13 +64,17 @@ behaviour against, never a code source (see `00-rules.md`).
    60 KiB. **Slice 6 built** (`rcaccounts.rs`): a player's staff rights
    (83/84 and 62: rights bits as `RCRIGHTS`, not acted on yet; the IP
    range as `IPRANGE`; folder rights as `FOLDER`, tokenized out) and
-   comments (85/86 and 63, `COMMENT` lines). No real RC run yet. Next:
-   the RC warp (82, on the server warp of stage 5), the ban fields (on the
-   ban file), then server options once a lab has their layouts. **Slice 7
+   comments (85/86 and 63, `COMMENT` lines). **Slice 7
    built** (`src/rcprops.rs`): a player's props by id (73) or account
    (74) as 72, from the account file, and a set (76) of an offline
    account's props and flags; a set on a player online is refused until
-   it can go through the world.
+   it can go through the world. **The RC warp built** (82,
+   `tests/rc_players.rs`): the player moves as on an NPC-server warp of
+   stage 5, and the RCs get the new entry; a missing level is logged and
+   the player stays. No real RC run yet; seihai-rc's lab notes still ask
+   what a real client gets on a warp to another level. Next: the ban
+   fields (on the ban file), then server options once a lab has their
+   layouts.
 5. NPC-server link for `seihai-npcserver`. **Built from source, lab run
    open** (`src/npclink.rs`, `src/world.rs`, `PROTOCOL.md`,
    `tests/npc_link.rs`, `tests/npc_messages.rs`,

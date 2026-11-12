@@ -36,7 +36,11 @@
 //! to all, 64 to one) as `PLO_RC_ADMINMESSAGE` (35, [`admin_message`]);
 //! a disconnect (61) kicks the player with `PLO_DISCMESSAGE`, and the RCs
 //! see the leave. The RC gets nothing back for any of them, as from the
-//! fork. The warp (82) waits for the server warp of stage 5.
+//! fork. The warp (82, [`RcEvent::Warp`]) moves the player as an
+//! NPC-server warp does (stage 5): `PLO_PLAYERWARP` inside the level, the
+//! new level otherwise, and the RCs get the player's new entry. A level
+//! that does not exist is logged and the player stays. The RC gets nothing
+//! back, as from the fork.
 //!
 //! Slice 4, built: accounts (`rcaccounts.rs`): list, get, set, add and
 //! delete. The connection carries them out on the account files.
@@ -49,7 +53,7 @@
 //! player props (`rcprops.rs`).
 //!
 //! NC (type 3) is still refused as "not served yet" in its own framing.
-//! Next: the RC warp and the ban fields (after stage 5 and the ban file),
+//! Next: the ban fields (after the ban file),
 //! props of a player online through the world, server options (their
 //! layouts still need a lab), NC. Behaviour comes
 //! from seihai-rc's `docs/PROTOCOL.md` and lab notes.
@@ -91,6 +95,9 @@ const PLI_PRIVATEMESSAGE: u8 = 28;
 const PLI_RC_DISCONNECTPLAYER: u8 = 61;
 /// `PLI_RC_ADMINMESSAGE` (63): the text.
 const PLI_RC_ADMINMESSAGE: u8 = 63;
+/// `PLI_RC_WARPPLAYER` (82): `GSHORT id`, `GCHAR x`, `GCHAR y` (half
+/// tiles), then the level name.
+const PLI_RC_WARPPLAYER: u8 = 82;
 /// `PLI_RC_PRIVADMINMESSAGE` (64): `GSHORT id`, the text.
 const PLI_RC_PRIVADMINMESSAGE: u8 = 64;
 /// `PLO_ADDPLAYER` (55): one entry of the RC's player list.
@@ -243,6 +250,14 @@ pub enum RcEvent {
     AdminTo(u16, Vec<u8>),
     /// `PLI_RC_DISCONNECTPLAYER` (61).
     Kick(u16),
+    /// `PLI_RC_WARPPLAYER` (82): player `id` to `level` at `x2`, `y2` in
+    /// half tiles. The level name is Latin-1.
+    Warp {
+        id: u16,
+        level: Vec<u8>,
+        x2: u8,
+        y2: u8,
+    },
     /// An account request (70 to 78, `rcaccounts.rs`). The connection
     /// carries it out, not the world.
     Account(crate::rcaccounts::Op),
@@ -303,6 +318,10 @@ impl RcSession {
                         out.push(RcEvent::Kick(id));
                     }
                 }
+                PLI_RC_WARPPLAYER => match warp(rest) {
+                    Some(ev) => out.push(ev),
+                    None => *self.unhandled.entry(PLI_RC_WARPPLAYER).or_default() += 1,
+                },
                 PLI_PRIVATEMESSAGE => match pm(rest) {
                     Some(ev) => out.push(ev),
                     None => *self.unhandled.entry(PLI_PRIVATEMESSAGE).or_default() += 1,
@@ -320,6 +339,24 @@ impl RcSession {
         }
         out
     }
+}
+
+/// `PLI_RC_WARPPLAYER`: `GSHORT id`, `GCHAR x`, `GCHAR y` in half tiles,
+/// then a level name that is not empty.
+fn warp(rest: &[u8]) -> Option<RcEvent> {
+    let id = read_gshort(rest)?;
+    let [x, y, level @ ..] = rest.get(2..)? else {
+        return None;
+    };
+    if level.is_empty() {
+        return None;
+    }
+    Some(RcEvent::Warp {
+        id,
+        level: level.to_vec(),
+        x2: x.wrapping_sub(0x20),
+        y2: y.wrapping_sub(0x20),
+    })
 }
 
 /// `PLI_PRIVATEMESSAGE`: `GSHORT n`, n `GSHORT` ids, then the text.
@@ -409,7 +446,7 @@ mod tests {
             nick,
             msg(PLI_RC_CHAT, b"hello"),
             msg(PLI_RC_CHAT, b""),
-            msg(82, b"a warp"),
+            msg(PLI_RC_WARPPLAYER, b" '"),
         ]);
         assert_eq!(
             out,
@@ -419,7 +456,7 @@ mod tests {
             ]
         );
         assert_eq!(s.unhandled.get(&PLI_RC_CHAT), Some(&1), "the empty line");
-        assert_eq!(s.unhandled.get(&82), Some(&1));
+        assert_eq!(s.unhandled.get(&PLI_RC_WARPPLAYER), Some(&1), "no level");
         assert!(!s.unhandled.contains_key(&PLI_PONG));
     }
 
@@ -470,5 +507,26 @@ mod tests {
         assert_eq!(s.unhandled.get(&PLI_RC_ADMINMESSAGE), Some(&1));
         let m = admin_message("boss", b"hi");
         assert_eq!(split_messages(&m)[0].payload, b"Admin boss:\xa7hi");
+    }
+    #[test]
+    fn warp_is_half_tiles_then_level() {
+        let mut s = RcSession::default();
+        // Player 7 to (20.5, 31) in house.nw; then one with no level.
+        let mut ok = vec![0x20, 0x27, 0x20 + 41, 0x20 + 62];
+        ok.extend(b"house.nw");
+        let out = s.handle(&[
+            msg(PLI_RC_WARPPLAYER, &ok),
+            msg(PLI_RC_WARPPLAYER, &[0x20, 0x27, 0x20, 0x20]),
+        ]);
+        assert_eq!(
+            out,
+            [RcEvent::Warp {
+                id: 7,
+                level: b"house.nw".to_vec(),
+                x2: 41,
+                y2: 62
+            }]
+        );
+        assert_eq!(s.unhandled.get(&PLI_RC_WARPPLAYER), Some(&1));
     }
 }

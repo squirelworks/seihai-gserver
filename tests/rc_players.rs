@@ -233,3 +233,54 @@ fn an_rc_messages_and_disconnects_players() {
     );
     let _ = std::fs::remove_dir_all(&w);
 }
+
+#[test]
+fn an_rc_warps_a_player() {
+    use seihai_rc::players::warp_player;
+    let w = world("rcwarp", "*\n");
+    std::fs::create_dir_all(w.join("levels")).unwrap();
+    std::fs::write(w.join("levels/onlinestartlocal.nw"), "GLEVNW01\n").unwrap();
+    std::fs::write(w.join("levels/house.nw"), "GLEVNW01\n").unwrap();
+    staff(&w, "boss");
+    let (addr, _server) = start(&w);
+
+    let v = ClientVersion::V222;
+    let mut c = login_gserver(&addr, v, random_key(), "cash", PASSWORD, false).unwrap();
+    let rx = c.conn.spawn_reader().unwrap();
+    let mut st = SessionState::for_version(v);
+    read_until(&rx, &mut st, Duration::from_secs(10), |s| s.board.is_some()).unwrap();
+
+    let mut boss = rc(&addr, RcKind::Gen5, "boss", None);
+    until(
+        &mut boss,
+        |e| matches!(e, Event::RcChat(t) if t == "New RC: boss"),
+    );
+    let cash = b_id(&boss, "cash");
+
+    // Inside the level: the player is told where to stand.
+    boss.send_messages(&[warp_player(cash, "onlinestartlocal.nw", 12.5, 40.0).unwrap()])
+        .unwrap();
+    read_until(&rx, &mut st, Duration::from_secs(10), |s| {
+        s.player_x == Some(12.5) && s.player_y == Some(40.0)
+    })
+    .unwrap();
+
+    // A level that does not exist: nothing happens, the next warp still
+    // goes. Into another level: the player gets it, the RC the new entry.
+    boss.send_messages(&[
+        warp_player(cash, "nowhere.nw", 1.0, 1.0).unwrap(),
+        warp_player(cash, "house.nw", 20.0, 24.0).unwrap(),
+    ])
+    .unwrap();
+    read_until(&rx, &mut st, Duration::from_secs(10), |s| {
+        s.current_level_name().as_deref() == Some("house.nw")
+            && s.player_x == Some(20.0)
+            && s.player_y == Some(24.0)
+    })
+    .unwrap();
+    until(
+        &mut boss,
+        |e| matches!(e, Event::UpdatePlayer(p) if p.id == cash && p.level == "house.nw"),
+    );
+    let _ = std::fs::remove_dir_all(&w);
+}

@@ -995,6 +995,20 @@ impl WorldTask {
                     let _ = p.outbox.send(Vec::new());
                 }
             }
+            RcEvent::Warp { id, level, x2, y2 } => {
+                // As an NPC-server warp: no warp check; a level change
+                // lists the player again for every RC (`meet`).
+                self.warp_to(
+                    Warp {
+                        player: id,
+                        level: latin1_text(&level),
+                        x: f32::from(x2) / 2.0,
+                        y: f32::from(y2) / 2.0,
+                        mod_time: None,
+                    },
+                    true,
+                );
+            }
         }
     }
 

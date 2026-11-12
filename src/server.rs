@@ -759,6 +759,12 @@ impl Conn {
                         Some(format!("admin message to {id}: {}", crate::wire::text(t)))
                     }
                     RcEvent::Kick(id) => Some(format!("disconnects player {id}")),
+                    RcEvent::Warp { id, level, x2, y2 } => Some(format!(
+                        "warps player {id} to {} {} {}",
+                        crate::wire::text(level),
+                        f32::from(*x2) / 2.0,
+                        f32::from(*y2) / 2.0
+                    )),
                 };
                 if let Some(what) = what {
                     server.log(&peer, &format!("RC {} {what}", account.name));
