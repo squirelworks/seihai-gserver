@@ -203,10 +203,8 @@ pub enum WorldIn {
         outbox: Outbox,
         reply: oneshot::Sender<Option<u16>>,
     },
-    /// An RC's new nickname, Latin-1.
-    RcNick { rc: u16, nick: Vec<u8> },
-    /// A line of RC chat, Latin-1.
-    RcChat { rc: u16, text: Vec<u8> },
+    /// What an RC sent: a nickname, chat, a player action.
+    Rc { rc: u16, ev: crate::rc::RcEvent },
     /// An RC's link closed.
     RcLeft { rc: u16 },
     /// A message from the NPC-server (`0x40` to `0x4C`), from the link.
@@ -524,14 +522,9 @@ impl World {
         answer.await.ok().flatten()
     }
 
-    /// An RC's new nickname.
-    pub fn rc_nick(&self, rc: u16, nick: Vec<u8>) {
-        let _ = self.tx.send(WorldIn::RcNick { rc, nick });
-    }
-
-    /// A line of RC chat.
-    pub fn rc_chat(&self, rc: u16, text: Vec<u8>) {
-        let _ = self.tx.send(WorldIn::RcChat { rc, text });
+    /// What an RC sent.
+    pub fn rc_event(&self, rc: u16, ev: crate::rc::RcEvent) {
+        let _ = self.tx.send(WorldIn::Rc { rc, ev });
     }
 
     /// An RC's link closed.
@@ -914,19 +907,7 @@ impl WorldTask {
                     self.rcs.remove(&id);
                 }
             }
-            WorldIn::RcNick { rc, nick } => {
-                if let Some(r) = self.rcs.get_mut(&rc) {
-                    r.nick = crate::rc::rc_nick(&r.account, Some(&nick));
-                    let entry = self.rc_entry(rc);
-                    self.to_rcs(Some(rc), entry);
-                }
-            }
-            WorldIn::RcChat { rc, text } => {
-                if let Some(r) = self.rcs.get(&rc) {
-                    let line = crate::rc::chat_line(&r.nick, &text);
-                    self.to_rcs(None, Some(line));
-                }
-            }
+            WorldIn::Rc { rc, ev } => self.rc_event(rc, ev),
             WorldIn::RcLeft { rc } => {
                 if self.rcs.remove(&rc).is_some() {
                     self.to_rcs(None, Some(crate::rc::delplayer(rc)));
@@ -934,6 +915,73 @@ impl WorldTask {
             }
             WorldIn::FromNpc(m) => self.apply_npc(m),
             WorldIn::NpcGone => self.npc_gone(),
+        }
+    }
+
+    /// What RC `rc` sent. A player id that is not online (or is an RC) is
+    /// passed over, as the fork did; the RC gets nothing back.
+    fn rc_event(&mut self, rc: u16, ev: crate::rc::RcEvent) {
+        use crate::rc::RcEvent;
+        let Some(r) = self.rcs.get_mut(&rc) else {
+            return;
+        };
+        match ev {
+            RcEvent::Nick(nick) => {
+                r.nick = crate::rc::rc_nick(&r.account, Some(&nick));
+                let entry = self.rc_entry(rc);
+                self.to_rcs(Some(rc), entry);
+            }
+            RcEvent::Chat(text) => {
+                let line = crate::rc::chat_line(&r.nick, &text);
+                self.to_rcs(None, Some(line));
+            }
+            RcEvent::Pm { to, text } => {
+                let nick = r.nick.get(1..).unwrap_or_default();
+                let account = crate::wire::latin1(&r.account);
+                let mut done = HashSet::new();
+                for id in to {
+                    let Some(p) = self.players.get(&id).filter(|_| done.insert(id)) else {
+                        continue;
+                    };
+                    let m = others::private_message(p.version, rc, nick, &account, &text);
+                    if !m.is_empty() {
+                        let _ = p.outbox.send(vec![m]);
+                    }
+                }
+            }
+            RcEvent::AdminAll(text) => {
+                let m = crate::rc::admin_message(&r.account, &text);
+                for p in self.players.values() {
+                    if p.version
+                        .profile()
+                        .protocol
+                        .plo
+                        .contains(crate::rc::PLO_RC_ADMINMESSAGE)
+                    {
+                        let _ = p.outbox.send(vec![m.clone()]);
+                    }
+                }
+            }
+            RcEvent::AdminTo(id, text) => {
+                let m = crate::rc::admin_message(&r.account, &text);
+                if let Some(p) = self.players.get(&id) {
+                    if p.version
+                        .profile()
+                        .protocol
+                        .plo
+                        .contains(crate::rc::PLO_RC_ADMINMESSAGE)
+                    {
+                        let _ = p.outbox.send(vec![m]);
+                    }
+                }
+            }
+            RcEvent::Kick(id) => {
+                // The connection says why and closes; its leave lists the
+                // player out for every RC.
+                if let Some(p) = self.players.get(&id) {
+                    let _ = p.outbox.send(Vec::new());
+                }
+            }
         }
     }
 

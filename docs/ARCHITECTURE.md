@@ -31,7 +31,7 @@ How the server is put together, and where each later stage plugs in. Read
 | `src/baddies.rs` | baddies from the level file, `PLO_BADDYPROPS`, hits handed to the level leader, death and respawn | 3 |
 | `src/listlink.rs` | the listserver link over the encrypted channel (`SVLINK01`): register, player count with nickname and props, account check (`VERIACC2`), pong (`SVO_PING` 16), private messages, file start; two plain threads, reconnects every 15 s | link |
 | `src/ping.rs` | `PLO_PING` (108) on a timer to the builds whose profile reads it, the `PLI_PONG` (162) answer timed, the miss count (issue #44) | 2 |
-| `src/rc.rs` | RC logins for `seihai-rc`: the `STAFF` and `IPRANGE` checks, the welcome (slice 1); the player list entries and RC chat lines the world task sends RCs (slice 2); NC still refused | 4 |
+| `src/rc.rs` | RC logins for `seihai-rc`: the `STAFF` and `IPRANGE` checks, the welcome (slice 1); the player list entries and RC chat lines the world task sends RCs (slice 2); private and admin messages and the disconnect (slice 3); NC still refused | 4 |
 | `src/npclink.rs` | the link to `seihai-npcserver` (`PROTOCOL.md`): `Hub` (players and server flags for the link, the world's inbox), `serve_link`, `supervise` for `npcserver = auto` | 5 |
 | `src/anticheat.rs` | the admin policy (`anticheat.*` settings), violation scores and kicks, the log; the speed, teleport, warp and message-rate checks (stage 2.9); item and damage checks to come (`docs/PLAN.md`, stage 7) | 2, 7 |
 
@@ -175,6 +175,8 @@ World task ◀──WorldIn::FromNpc (0x40 to 0x4C), NpcGone── link task
   a wrong password and an address outside `IPRANGE` refused.
 - `tests/rc_players.rs`: two RCs (`seihai-rc`'s own client) and a player:
   the list on login, each RC listed to the other, RC chat, a nickname
+  update and the leaves; then private and admin messages from an RC as two
+  2.22 players read them, and a disconnect.
   update and the leaves.
 - `tests/ping.rs`: a 4.20r8 is pinged, kept while it answers and dropped
   after `ping_misses` silent pings; a 2.22 is never pinged.

@@ -12,7 +12,7 @@ use crate::config::{Config, NpcMode};
 use crate::listlink::{Delivery, ListedPlayer};
 use crate::login::{self, Login};
 use crate::secure;
-use crate::wire::{gchar, gint4, gshort, gstring, ids::*, latin1, msg};
+use crate::wire::{gchar, gint4, gstring, ids::*, latin1, msg};
 use seihai_core::protocol::{
     parse_player_props_with, zlib_decompress, ClientVersion, EncryptionGen,
 };
@@ -624,9 +624,10 @@ impl Conn {
                     return self.refuse(&mut codec, "Disconnected for being idle.").await;
                 }
                 Some(frames) = from_world.recv() => {
-                    // An empty item: the anti-cheat kicks the player.
+                    // An empty item: the anti-cheat or an RC kicks the
+                    // player (the world's log or the RC's says which).
                     if frames.is_empty() {
-                        self.server.log(&self.peer, "kicked by the anti-cheat");
+                        self.server.log(&self.peer, "kicked by the server");
                         return self.refuse(&mut codec, "Disconnected by the server.").await;
                     }
                     // The world decides the frames (gen 2 needs the board
@@ -765,16 +766,26 @@ impl Conn {
         };
         let tell = |events: Vec<crate::rc::RcEvent>| {
             for e in events {
-                match e {
-                    crate::rc::RcEvent::Nick(n) => world.rc_nick(id, n),
-                    crate::rc::RcEvent::Chat(t) => {
-                        server.log(
-                            &peer,
-                            &format!("RC chat {}: {}", account.name, crate::wire::text(&t)),
-                        );
-                        world.rc_chat(id, t);
+                use crate::rc::RcEvent;
+                let what = match &e {
+                    RcEvent::Nick(_) => None,
+                    RcEvent::Chat(t) => Some(format!("chat: {}", crate::wire::text(t))),
+                    RcEvent::Pm { to, text } => Some(format!(
+                        "private message to {to:?}: {}",
+                        crate::wire::text(text)
+                    )),
+                    RcEvent::AdminAll(t) => {
+                        Some(format!("admin message to all: {}", crate::wire::text(t)))
                     }
+                    RcEvent::AdminTo(id, t) => {
+                        Some(format!("admin message to {id}: {}", crate::wire::text(t)))
+                    }
+                    RcEvent::Kick(id) => Some(format!("disconnects player {id}")),
+                };
+                if let Some(what) = what {
+                    server.log(&peer, &format!("RC {} {what}", account.name));
                 }
+                world.rc_event(id, e);
             }
         };
         tell(early);
@@ -1133,7 +1144,6 @@ impl Session {
             return Vec::new();
         };
         let prof = self.version.profile();
-        let plo = &prof.protocol.plo;
         let mut out = Vec::new();
         for delivery in link.take(self.id) {
             match delivery {
@@ -1143,33 +1153,15 @@ impl Session {
                     account,
                     text,
                 } => {
-                    if plo.contains(PLO_OTHERPLPROPS) {
-                        let mut p = Vec::new();
-                        crate::others::put_id(self.version, from_id, &mut p);
-                        if prof.props.other.contains(0) {
-                            p.push(gchar(0));
-                            gstring(&latin1(&nick), &mut p);
-                        }
-                        if prof.props.other.contains(34) {
-                            p.push(gchar(34));
-                            gstring(&latin1(&account), &mut p);
-                        }
-                        out.extend(msg(PLO_OTHERPLPROPS, &p));
-                    }
-                    if plo.contains(PLO_PRIVATEMESSAGE) {
-                        let mut p = Vec::new();
-                        gshort(from_id, &mut p);
-                        // One quoted field, so a newline in the text stays
-                        // one message. `""` is one quote.
-                        let body = format!(
-                            "{},{},{}",
-                            quoted(""),
-                            quoted("Private message:"),
-                            quoted(&text)
-                        );
-                        p.extend(body.into_bytes());
-                        out.extend(msg(PLO_PRIVATEMESSAGE, &p));
-                    }
+                    // One quoted field, so a newline in the text stays
+                    // one message. `""` is one quote.
+                    out.extend(crate::others::private_message(
+                        self.version,
+                        from_id,
+                        &latin1(&nick),
+                        &latin1(&account),
+                        quoted(&text).as_bytes(),
+                    ));
                 }
                 Delivery::Image { kind, name } => {
                     server.remember_image(&self.account, kind, &name);

@@ -28,9 +28,19 @@
 //! `nickname: text` on `PLO_RC_CHAT` (74). That form is ours: no capture
 //! has a line from one RC as another RC sees it yet.
 //!
+//! Slice 3, built: player actions, with the layouts seihai-rc confirmed
+//! against the fork (its `docs/PROTOCOL.md`, "Player actions"). A private
+//! message (28) goes to each player named as `PLO_PRIVATEMESSAGE` (37)
+//! from the RC's id, with the RC's nickname and account first in
+//! `PLO_OTHERPLPROPS`, as a listserver message is; an admin message (63
+//! to all, 64 to one) as `PLO_RC_ADMINMESSAGE` (35, [`admin_message`]);
+//! a disconnect (61) kicks the player with `PLO_DISCMESSAGE`, and the RCs
+//! see the leave. The RC gets nothing back for any of them, as from the
+//! fork. The warp (82) waits for the server warp of stage 5.
+//!
 //! NC (type 3) is still refused as "not served yet" in its own framing.
-//! Next slices: player actions (3: messages, admin messages, kick, warp),
-//! accounts (4), server options and files (5), NC (6). Behaviour comes
+//! Next slices: the RC warp, accounts (4), server options and files (5),
+//! NC (6). Behaviour comes
 //! from seihai-rc's `docs/PROTOCOL.md` and lab notes.
 //!
 //! Lessons from the real-RC capture against the gserver-v2 fork
@@ -50,6 +60,7 @@
 
 use crate::accounts::Account;
 use crate::wire::{gchar, gshort, gstring, latin1, msg};
+use seihai_core::protocol::read_gshort;
 use std::collections::BTreeMap;
 use std::net::IpAddr;
 
@@ -63,6 +74,14 @@ const PLI_PLAYERPROPS: u8 = 2;
 const PLI_PONG: u8 = 162;
 /// `PLI_RC_CHAT` (79): a line of RC chat, the rest of the message.
 const PLI_RC_CHAT: u8 = 79;
+/// `PLI_PRIVATEMESSAGE` (28): `GSHORT n`, n `GSHORT` ids, the text.
+const PLI_PRIVATEMESSAGE: u8 = 28;
+/// `PLI_RC_DISCONNECTPLAYER` (61): `GSHORT id`.
+const PLI_RC_DISCONNECTPLAYER: u8 = 61;
+/// `PLI_RC_ADMINMESSAGE` (63): the text.
+const PLI_RC_ADMINMESSAGE: u8 = 63;
+/// `PLI_RC_PRIVADMINMESSAGE` (64): `GSHORT id`, the text.
+const PLI_RC_PRIVADMINMESSAGE: u8 = 64;
 /// `PLO_ADDPLAYER` (55): one entry of the RC's player list.
 pub const PLO_ADDPLAYER: u8 = 55;
 /// `PLO_DELPLAYER` (56): `GSHORT id`, gone from the list.
@@ -196,13 +215,35 @@ pub fn chat_line(nick: &[u8], text: &[u8]) -> Vec<u8> {
     msg(PLO_RC_CHAT, &line)
 }
 
-/// What an RC sent that the world must hear.
+/// What an RC sent that the world must hear. Text is Latin-1.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RcEvent {
-    /// A new nickname, Latin-1.
+    /// A new nickname.
     Nick(Vec<u8>),
-    /// A line of RC chat, Latin-1.
+    /// A line of RC chat.
     Chat(Vec<u8>),
+    /// `PLI_PRIVATEMESSAGE` (28) to players `to`. `text` stays tokenized
+    /// as the RC sent it: it goes on as the last item of the player's
+    /// `PLO_PRIVATEMESSAGE`.
+    Pm { to: Vec<u16>, text: Vec<u8> },
+    /// `PLI_RC_ADMINMESSAGE` (63): to every player.
+    AdminAll(Vec<u8>),
+    /// `PLI_RC_PRIVADMINMESSAGE` (64): to one player.
+    AdminTo(u16, Vec<u8>),
+    /// `PLI_RC_DISCONNECTPLAYER` (61).
+    Kick(u16),
+}
+
+/// `PLO_RC_ADMINMESSAGE` (35): `Admin <account>:`, `0xA7`, then the text,
+/// as the fork sent it to the player in the lab.
+pub const PLO_RC_ADMINMESSAGE: u8 = 35;
+
+/// The admin message a player gets from RC `account`.
+pub fn admin_message(account: &str, text: &[u8]) -> Vec<u8> {
+    let mut p = latin1(&format!("Admin {account}:"));
+    p.push(0xA7);
+    p.extend_from_slice(text);
+    msg(PLO_RC_ADMINMESSAGE, &p)
 }
 
 /// One RC link after its login.
@@ -232,11 +273,43 @@ impl RcSession {
                     }
                 }
                 PLI_RC_CHAT if !rest.is_empty() => out.push(RcEvent::Chat(rest.to_vec())),
+                PLI_RC_ADMINMESSAGE if !rest.is_empty() => {
+                    out.push(RcEvent::AdminAll(rest.to_vec()))
+                }
+                PLI_RC_PRIVADMINMESSAGE if rest.len() > 2 => {
+                    if let Some(id) = read_gshort(rest) {
+                        out.push(RcEvent::AdminTo(id, rest[2..].to_vec()));
+                    }
+                }
+                PLI_RC_DISCONNECTPLAYER if rest.len() >= 2 => {
+                    if let Some(id) = read_gshort(rest) {
+                        out.push(RcEvent::Kick(id));
+                    }
+                }
+                PLI_PRIVATEMESSAGE => match pm(rest) {
+                    Some(ev) => out.push(ev),
+                    None => *self.unhandled.entry(PLI_PRIVATEMESSAGE).or_default() += 1,
+                },
                 other => *self.unhandled.entry(other).or_default() += 1,
             }
         }
         out
     }
+}
+
+/// `PLI_PRIVATEMESSAGE`: `GSHORT n`, n `GSHORT` ids, then the text.
+fn pm(rest: &[u8]) -> Option<RcEvent> {
+    let n = usize::from(read_gshort(rest)?);
+    let ids = rest.get(2..2 + 2 * n)?;
+    let text = rest.get(2 + 2 * n..)?;
+    if n == 0 || text.is_empty() {
+        return None;
+    }
+    let to = ids.chunks(2).filter_map(read_gshort).collect();
+    Some(RcEvent::Pm {
+        to,
+        text: text.to_vec(),
+    })
 }
 
 #[cfg(test)]
@@ -311,7 +384,7 @@ mod tests {
             nick,
             msg(PLI_RC_CHAT, b"hello"),
             msg(PLI_RC_CHAT, b""),
-            msg(63, b"to all"),
+            msg(82, b"a warp"),
         ]);
         assert_eq!(
             out,
@@ -321,7 +394,7 @@ mod tests {
             ]
         );
         assert_eq!(s.unhandled.get(&PLI_RC_CHAT), Some(&1), "the empty line");
-        assert_eq!(s.unhandled.get(&63), Some(&1));
+        assert_eq!(s.unhandled.get(&82), Some(&1));
         assert!(!s.unhandled.contains_key(&PLI_PONG));
     }
 
@@ -343,5 +416,34 @@ mod tests {
         assert_eq!(split_messages(&delplayer(7))[0].payload, [0x20, 0x27]);
         let c = chat_line(&rc_nick("admin", Some(b"Boss")), b"hi all");
         assert_eq!(split_messages(&c)[0].payload, b"Boss: hi all");
+    }
+
+    #[test]
+    fn player_actions() {
+        let mut s = RcSession::default();
+        let out = s.handle(&[
+            msg(PLI_RC_ADMINMESSAGE, b"server restart"),
+            msg(PLI_RC_PRIVADMINMESSAGE, b" 'just you"),
+            msg(PLI_RC_DISCONNECTPLAYER, b" '"),
+            msg(PLI_PRIVATEMESSAGE, b" \" ' (\"hi\""),
+            msg(PLI_PRIVATEMESSAGE, b" \" '"),
+            msg(PLI_RC_ADMINMESSAGE, b""),
+        ]);
+        assert_eq!(
+            out,
+            [
+                RcEvent::AdminAll(b"server restart".to_vec()),
+                RcEvent::AdminTo(7, b"just you".to_vec()),
+                RcEvent::Kick(7),
+                RcEvent::Pm {
+                    to: vec![7, 8],
+                    text: b"\"hi\"".to_vec()
+                },
+            ]
+        );
+        assert_eq!(s.unhandled.get(&PLI_PRIVATEMESSAGE), Some(&1), "no text");
+        assert_eq!(s.unhandled.get(&PLI_RC_ADMINMESSAGE), Some(&1));
+        let m = admin_message("boss", b"hi");
+        assert_eq!(split_messages(&m)[0].payload, b"Admin boss:\xa7hi");
     }
 }

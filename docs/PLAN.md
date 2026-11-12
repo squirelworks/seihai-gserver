@@ -49,8 +49,12 @@ behaviour against, never a code source (see `00-rules.md`).
    `PLO_ADDPLAYER` for every player and other RC on login, then live
    `ADDPLAYER` on a login, level change or nickname change and
    `PLO_DELPLAYER` on a leave; "New RC: account" and RC chat lines
-   (`nickname: text`, our own form) go to every RC. No real RC run yet.
-   Next: player actions (slice 3: messages, admin messages, kick, warp).
+   (`nickname: text`, our own form) go to every RC. **Slice 3 built**
+   (same test file): private messages (28) to players from the RC's id and
+   nickname, admin messages to all (63) and to one (64) as
+   `PLO_RC_ADMINMESSAGE`, and the disconnect (61), which kicks through the
+   world task so the RCs see the leave. No real RC run yet. Next: the RC
+   warp (82, on the server warp of stage 5), then accounts (slice 4).
 5. NPC-server link for `seihai-npcserver`. **Built from source, lab run
    open** (`src/npclink.rs`, `src/world.rs`, `PROTOCOL.md`,
    `tests/npc_link.rs`, `tests/npc_messages.rs`,
