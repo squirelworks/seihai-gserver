@@ -399,6 +399,7 @@ fn an_npc_server_nickname_reaches_rcs() {
             password: PASSWORD.into(),
             key: 0x2A,
             nickname: None,
+            identity: None,
         },
         Duration::from_secs(10),
     )

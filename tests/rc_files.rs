@@ -36,6 +36,7 @@ fn an_rc_lists_gets_and_puts_files_within_its_rights() {
             password: PASSWORD.into(),
             key: 77,
             nickname: None,
+            identity: None,
         },
         T,
     )

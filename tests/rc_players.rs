@@ -29,6 +29,7 @@ fn rc(addr: &str, kind: RcKind, account: &str, nick: Option<&str>) -> Session {
             password: PASSWORD.into(),
             key: 0x2A,
             nickname: nick.map(String::from),
+            identity: None,
         },
         Duration::from_secs(10),
     )

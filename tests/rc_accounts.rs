@@ -57,6 +57,7 @@ fn an_rc_lists_reads_writes_adds_and_deletes_accounts() {
             password: PASSWORD.into(),
             key: 9,
             nickname: None,
+            identity: None,
         },
         Duration::from_secs(10),
     )
@@ -122,6 +123,7 @@ fn an_rc_sets_rights_and_comments_and_the_rights_open_folders() {
                 password: PASSWORD.into(),
                 key: 3,
                 nickname: None,
+                identity: None,
             },
             Duration::from_secs(10),
         )
@@ -187,6 +189,7 @@ fn an_rc_reads_and_sets_player_props() {
             password: PASSWORD.into(),
             key: 5,
             nickname: None,
+            identity: None,
         },
         Duration::from_secs(10),
     )
@@ -308,6 +311,7 @@ fn an_rc_bans_and_lifts_through_the_ban_file() {
             password: PASSWORD.into(),
             key: 9,
             nickname: None,
+            identity: None,
         },
         Duration::from_secs(10),
     )
