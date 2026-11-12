@@ -30,7 +30,12 @@
 //! LOADONLY 1
 //! ADMINLEVEL 2
 //! ADMINWORLDS main
+//! FOLDER rw levels/*
+//! FOLDER r config/*.txt
 //! ```
+//!
+//! `FOLDER` lines are the RC file browser's rights (`rcfiles.rs`): `r` or
+//! `rw`, then a folder and a file mask.
 //!
 //! `EMAIL`, `LOADONLY`, `ADMINLEVEL` and `ADMINWORLDS` are the RC account
 //! dialog's fields (`rcaccounts.rs`). They are kept and shown to an RC;
@@ -90,6 +95,8 @@ pub struct Account {
     pub staff: bool,
     /// `IPRANGE`: where its RC may come from (see `rc::ip_allowed`).
     pub ip_ranges: Vec<String>,
+    /// `FOLDER` lines: the RC file browser's rights (`rcfiles.rs`).
+    pub folder_rights: Vec<String>,
     /// `EMAIL`, from the RC's account dialog.
     pub email: String,
     /// `LOADONLY`, from the RC's account dialog. Not acted on yet.
@@ -131,6 +138,7 @@ impl Account {
             flags: Vec::new(),
             staff: false,
             ip_ranges: Vec::new(),
+            folder_rights: Vec::new(),
             email: String::new(),
             load_only: false,
             admin_level: 0,
@@ -185,6 +193,7 @@ impl Account {
                 }
                 "FLAG" if !v.is_empty() => a.flags.push(v.to_string()),
                 "STAFF" => a.staff = !matches!(v, "0" | "false" | "no"),
+                "FOLDER" if !v.is_empty() => a.folder_rights.push(v.to_string()),
                 "EMAIL" => a.email = v.to_string(),
                 "LOADONLY" => a.load_only = !matches!(v, "0" | "false" | "no"),
                 "ADMINLEVEL" => a.admin_level = v.parse().unwrap_or(0),
@@ -245,6 +254,9 @@ impl Account {
             kv("IPRANGE", self.ip_ranges.join(","));
         }
         let one_line = |s: &str| s.replace(['\n', '\r'], " ");
+        for r in &self.folder_rights {
+            kv("FOLDER", one_line(r));
+        }
         if !self.email.is_empty() {
             kv("EMAIL", one_line(&self.email));
         }

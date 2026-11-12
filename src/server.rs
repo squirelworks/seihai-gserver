@@ -728,7 +728,7 @@ impl Conn {
         let welcome = crate::rc::welcome(&self.server.cfg.name, &account.name);
         self.send(&mut codec, &welcome).await?;
         let mut rc = crate::rc::RcSession::default();
-        let mut early = rc.handle(&codec.messages(after));
+        let mut early = rc.handle(&crate::rcfiles::split(after));
         // The nickname an RC sends straight after its login goes into its
         // first list entry.
         let nick = early.iter().rev().find_map(|e| match e {
@@ -743,14 +743,15 @@ impl Conn {
         let Some(id) = world.rc_join(account.name.clone(), nick, outbox).await else {
             return self.refuse(&mut codec, "The server is full.").await;
         };
-        // Hands the world what it serves; account requests come back.
+        // Hands the world what it serves; account and file requests come
+        // back, for this connection to carry out.
         let tell = |events: Vec<crate::rc::RcEvent>| {
             let mut ops = Vec::new();
             for e in events {
                 use crate::rc::RcEvent;
                 let what = match &e {
-                    RcEvent::Account(op) => {
-                        ops.push(op.clone());
+                    RcEvent::Account(_) | RcEvent::Files(_) => {
+                        ops.push(e);
                         continue;
                     }
                     RcEvent::Nick(_) => None,
@@ -774,10 +775,16 @@ impl Conn {
             }
             ops
         };
-        // Account requests, off the async threads (a password set hashes).
-        let accounts = |ops: Vec<crate::rcaccounts::Op>| {
+        let browser = Arc::new(Mutex::new(crate::rcfiles::Browser::new(
+            &self.server.cfg.world,
+            &account.folder_rights,
+        )));
+        // Account and file requests, in order, off the async threads (a
+        // password set hashes, a file is read or written).
+        let accounts = |ops: Vec<crate::rc::RcEvent>| {
             let server = server.clone();
             let name = account.name.clone();
+            let browser = browser.clone();
             async move {
                 if ops.is_empty() {
                     return Vec::new();
@@ -788,13 +795,21 @@ impl Conn {
                     let online = server.online_accounts();
                     let mut replies = Vec::new();
                     for op in ops {
-                        let d = crate::rcaccounts::run(&server.store, &online, start, op);
-                        if let Some(l) = d.log {
+                        let (reply, log) = match op {
+                            crate::rc::RcEvent::Account(op) => {
+                                let d = crate::rcaccounts::run(&server.store, &online, start, op);
+                                (vec![d.reply], d.log)
+                            }
+                            crate::rc::RcEvent::Files(op) => {
+                                let (r, l) = browser.lock().unwrap().run(op);
+                                (r, Some(format!("files: {l}")))
+                            }
+                            _ => continue,
+                        };
+                        if let Some(l) = log {
                             server.log(&peer, &format!("RC {name} {l}"));
                         }
-                        if !d.reply.is_empty() {
-                            replies.push(d.reply);
-                        }
+                        replies.extend(reply.into_iter().filter(|r| !r.is_empty()));
                     }
                     replies
                 })
@@ -818,7 +833,7 @@ impl Conn {
                     let mut events = Vec::new();
                     while let Some(frame) = inbuf.take_frame()? {
                         let body = codec.decode(&frame)?;
-                        events.extend(rc.handle(&codec.messages(&body)));
+                        events.extend(rc.handle(&crate::rcfiles::split(&body)));
                     }
                     let mut sent = Ok(());
                     for r in accounts(tell(events)).await {

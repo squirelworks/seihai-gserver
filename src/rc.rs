@@ -41,9 +41,14 @@
 //! Slice 4, built: accounts (`rcaccounts.rs`): list, get, set, add and
 //! delete. The connection carries them out on the account files.
 //!
+//! Slice 5, built: the file browser (`rcfiles.rs`): list, get and put in
+//! the world folder within the account's `FOLDER` rights. A put comes in a
+//! raw block (50), which `rcfiles::split` reads as one message.
+//!
 //! NC (type 3) is still refused as "not served yet" in its own framing.
 //! Next: the RC warp and the ban fields (after stage 5 and the ban file),
-//! server options and files (5), NC (6). Behaviour comes
+//! folder rights, comments and props from an RC, server options (their
+//! layouts still need a lab), NC (6). Behaviour comes
 //! from seihai-rc's `docs/PROTOCOL.md` and lab notes.
 //!
 //! Lessons from the real-RC capture against the gserver-v2 fork
@@ -238,6 +243,9 @@ pub enum RcEvent {
     /// An account request (70 to 78, `rcaccounts.rs`). The connection
     /// carries it out, not the world.
     Account(crate::rcaccounts::Op),
+    /// A file browser request (90, 92, 93, `rcfiles.rs`), carried out by
+    /// the connection too.
+    Files(crate::rcfiles::Op),
 }
 
 /// `PLO_RC_ADMINMESSAGE` (35): `Admin <account>:`, `0xA7`, then the text,
@@ -296,10 +304,15 @@ impl RcSession {
                     Some(ev) => out.push(ev),
                     None => *self.unhandled.entry(PLI_PRIVATEMESSAGE).or_default() += 1,
                 },
-                other => match crate::rcaccounts::parse(other, rest) {
-                    Some(op) => out.push(RcEvent::Account(op)),
-                    None => *self.unhandled.entry(other).or_default() += 1,
-                },
+                other => {
+                    if let Some(op) = crate::rcaccounts::parse(other, rest) {
+                        out.push(RcEvent::Account(op));
+                    } else if let Some(op) = crate::rcfiles::parse(other, rest) {
+                        out.push(RcEvent::Files(op));
+                    } else {
+                        *self.unhandled.entry(other).or_default() += 1;
+                    }
+                }
             }
         }
         out

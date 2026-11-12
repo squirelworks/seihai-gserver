@@ -57,9 +57,13 @@ behaviour against, never a code source (see `00-rules.md`).
    (`src/rcaccounts.rs`, `tests/rc_accounts.rs`): account list (with `%`
    patterns and `adminlevel` conditions), get, set, add and delete; the
    dialog's e-mail, load only, admin level and admin worlds are kept in
-   the account file and not acted on. No real RC run yet. Next: the RC
-   warp (82, on the server warp of stage 5) and the ban fields (on the ban
-   file), then server options and files (slice 5).
+   the account file and not acted on. **Slice 5 built** (`src/rcfiles.rs`,
+   `tests/rc_files.rs`): the file browser (list 90, get 92, put 93 in a raw
+   block) in the world folder within the account's `FOLDER` rights (`r` or
+   `rw`, a folder and a mask; none sees nothing), plain files of at most
+   60 KiB. No real RC run yet. Next: the RC warp (82, on the server warp of
+   stage 5), the ban fields (on the ban file), folder rights, comments and
+   props from an RC, then server options once a lab has their layouts.
 5. NPC-server link for `seihai-npcserver`. **Gserver to NPC-server half done,
    ahead of stage 2** (`src/npclink.rs`, `PROTOCOL.md`, `tests/npc_link.rs`,
    `docs/lab/npclink-2026-10-31.md`): `npcserver = off | external | auto`, the
