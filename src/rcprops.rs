@@ -22,10 +22,17 @@
 //!
 //! A set applies the props an account keeps (`apply`) and replaces the
 //! flags, as the fork does; chests are kept. The values are the account
-//! file's: for a player online, the file as their last login left it, and
-//! a set on a player online is refused (in the log, as the RC gets no
-//! reply), because their logout would write over it. Changing an online
-//! player's props goes through the world in a later slice.
+//! file's.
+//!
+//! A player online is read and set through the world. A get shows the
+//! file with what the world holds now put over it (level, position, the
+//! counted props, chests and flags, as their logout would write them). A
+//! set sends the [`LIVE`] props to the player as the NPC-server's
+//! `SET_PLAYER_PROPS` does (the player and their level see them at once)
+//! and replaces the world's flags, then writes the file too, so the props
+//! the logout does not write (head, colours, sword and the rest) stay.
+//! Level and position are left to the warp (82); the logout writes the
+//! world's. The player's client is not sent the new flags.
 
 use crate::accounts::Account;
 use crate::wire::{gchar, gint3, gint5, gshort, gstring, latin1, msg, text};
@@ -36,6 +43,10 @@ pub const PLI_RC_PLAYERPROPSGET2: u8 = 73;
 pub const PLI_RC_PLAYERPROPSGET3: u8 = 74;
 pub const PLI_RC_PLAYERPROPSSET2: u8 = 76;
 pub const PLO_RC_PLAYERPROPSGET: u8 = 72;
+
+/// The props of a 76 that go to a player online: what [`apply`] keeps,
+/// without the level and position.
+pub const LIVE: [u8; 13] = [1, 2, 3, 4, 5, 6, 8, 9, 11, 13, 18, 32, 35];
 
 /// What a 76 carries that this server reads.
 #[derive(Debug, Clone, PartialEq, Eq)]

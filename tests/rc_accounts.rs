@@ -218,7 +218,8 @@ fn an_rc_reads_and_sets_player_props() {
     assert_eq!(file.level, "onlinestartlocal.nw");
     assert_eq!(again.props.len(), got.props.len());
 
-    // Online, by player id: read; a set is refused and the file kept.
+    // Online, by player id: a set goes to the player at once and to the
+    // file; a read shows what the world holds, not the file.
     let v = ClientVersion::V222;
     let mut c = login_gserver(&addr, v, random_key(), "test1", PASSWORD, false).unwrap();
     let rx = c.conn.spawn_reader().unwrap();
@@ -236,13 +237,45 @@ fn an_rc_reads_and_sets_player_props() {
     s.send_messages(&[props_get(id).unwrap()]).unwrap();
     let online = parse_props(&reply(&mut s, 72)).unwrap();
     assert_eq!((online.id, online.account.as_str()), (id, "test1"));
-    let edits = [parse_prop_edit("gralats=999").unwrap()];
+    let edits = [
+        parse_prop_edit("gralats=999").unwrap(),
+        parse_prop_edit("bombs=12").unwrap(),
+    ];
+    assert_eq!(online.flags, ["labflag=1"]);
+    // The set's flags replace the player's in the world.
+    let mut online = online;
+    online.flags = vec!["quest=3".into()];
     s.send_messages(&[props_set(&online, &edits).unwrap()])
         .unwrap();
-    s.send_messages(&[props_get_account("test1").unwrap()])
-        .unwrap();
-    reply(&mut s, 72);
-    assert_eq!(store.load("test1").unwrap().unwrap().rupees, 5);
+    read_until(&rx, &mut st, Duration::from_secs(10), |s| {
+        s.own_rupees == Some(999) && s.own_bombs == Some(12)
+    })
+    .unwrap();
+    let rupees = |s: &mut Session, get: Vec<u8>| {
+        s.send_messages(&[get]).unwrap();
+        let r = parse_props(&reply(s, 72)).unwrap();
+        r.props.iter().find(|p| p.id == 3).map(|p| p.raw.clone())
+    };
+    let want = {
+        let mut v = Vec::new();
+        seihai_gserver::wire::gint3(999, &mut v);
+        Some(v)
+    };
+    assert_eq!(store.load("test1").unwrap().unwrap().rupees, 999);
+    // A stale file under a player online: the read is the world's.
+    let mut stale = store.load("test1").unwrap().unwrap();
+    stale.rupees = 1;
+    store.save(&stale).unwrap();
+    assert_eq!(rupees(&mut s, props_get(id).unwrap()), want);
+    assert_eq!(rupees(&mut s, props_get_account("test1").unwrap()), want);
+    // The logout writes the world's value back.
+    drop(c);
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while store.load("test1").unwrap().unwrap().rupees != 999 {
+        assert!(std::time::Instant::now() < deadline, "not saved at logout");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(store.load("test1").unwrap().unwrap().flags, ["quest=3"]);
     let _ = std::fs::remove_dir_all(&w);
 }
 
