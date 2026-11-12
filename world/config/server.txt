@@ -21,6 +21,11 @@ create_accounts = false
 
 # Seconds between world-time messages (keeps idle links busy; 0 = off).
 heartbeat = 5
+# Seconds between pings (PLO_PING 108) to the builds that read one, 4.20
+# for now (0 = off), and unanswered pings in a row before a client is
+# dropped (0 = never).
+ping = 30
+ping_misses = 0
 # Close a connection silent for this many seconds (0 = never).
 idle_timeout = 0
 login_timeout = 10

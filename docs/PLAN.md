@@ -174,6 +174,19 @@ budget for steps read in a backlog, 16 tiles for a teleport) are a first
 guess for the lab run to tune. After a warp the client may send the spot it
 left once more; that position is dropped, not counted.
 
+Landed next (issue #54): the items check (`anticheat.items`, Kind `items`)
+on the counted props (max hearts, hearts, gralats, arrows, bombs): a raise
+the server did not give (floor item taken first, a pre-1.38 build's own
+take, a chest, the NPC-server, hearts back to the max after a death) is
+logged, and with `correct` put back. Its default is `log`, not `correct`:
+classic level scripts run on the client and can pay gralats the server
+never sees. Bans by account in `config/bans.txt` (account, end time,
+admin, reason), read at every login (game and RC), with `seihai-gserver
+ban` / `unban`. Still open: hurt range and weapon (after #50), a `ban`
+action in the policy, bans by machine field, and the speed figures from a
+lab run. A player saved dead logs in with full hearts (issue #51; the
+beta4 value is still to be checked).
+
 ### Where it lives
 
 - `src/anticheat.rs`: the `Violation` type, the per-player score, and the
