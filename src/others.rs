@@ -25,9 +25,10 @@ use seihai_core::protocol::{
 use std::collections::BTreeMap;
 
 /// Writes the player id that heads `PLO_OTHERPLPROPS` the way `receiver`
-/// reads it. Original 1.35 reads one GCHAR before the props (exact-build
-/// static evidence, graal-client-repro#179); 1.36 on read a GSHORT. A 1.35
-/// id is capped at 223, the largest GCHAR.
+/// reads it. Builds up to 1.35 read one GCHAR before the props (1.35 from
+/// exact-build static evidence, graal-client-repro#179; 1.21 to 1.34 from
+/// the packet interface notes, one GCHAR through 1.35); 1.36 on read a
+/// GSHORT. A one-byte id is capped at 223, the largest GCHAR.
 pub fn put_id(receiver: ClientVersion, id: u16, out: &mut Vec<u8>) {
     if one_byte_id(receiver) {
         out.push(gchar(id.min(223) as u8));
@@ -38,7 +39,8 @@ pub fn put_id(receiver: ClientVersion, id: u16, out: &mut Vec<u8>) {
 
 /// Builds whose `PLO_OTHERPLPROPS` id is one GCHAR.
 pub fn one_byte_id(v: ClientVersion) -> bool {
-    v == ClientVersion::V135
+    use ClientVersion::*;
+    matches!(v, V121 | V128B2 | V13T | V131 | V132 | V133 | V134 | V135)
 }
 
 pub const JOINLEAVELVL: u8 = 50;
@@ -418,8 +420,8 @@ mod tests {
                 continue;
             };
             let other = v.profile().props.other;
-            // 1.35's id is one GCHAR; seihai-core's session model reads a
-            // GSHORT for every build, so it is not an oracle for 1.35.
+            // Up to 1.35 the id is one GCHAR; seihai-core's session model reads a
+            // GSHORT for those builds, so it is not an oracle for them.
             let id_len = if one_byte_id(v) { 1 } else { 2 };
             if one_byte_id(v) {
                 assert_eq!(m[1], gchar(7), "{v:?}");
