@@ -144,3 +144,92 @@ fn b_id(s: &Session, account: &str) -> u16 {
         .unwrap()
         .id
 }
+
+#[test]
+fn an_rc_messages_and_disconnects_players() {
+    use seihai_core::protocol::ChatKind;
+    use seihai_rc::players::{
+        admin_message, disconnect_player, private_admin_message, private_message,
+    };
+    let w = world("rcactions", "*\n");
+    staff(&w, "boss");
+    let (addr, _server) = start(&w);
+
+    let v = ClientVersion::V222;
+    let login = |name: &str| {
+        let mut c = login_gserver(&addr, v, random_key(), name, PASSWORD, false).unwrap();
+        let rx = c.conn.spawn_reader().unwrap();
+        let mut st = SessionState::for_version(v);
+        read_until(&rx, &mut st, Duration::from_secs(10), |s| s.board.is_some()).unwrap();
+        (c, rx, st)
+    };
+    let (_a, a_rx, mut a) = login("alice");
+    let (_b, b_rx, mut b) = login("bob");
+
+    let mut boss = rc(&addr, RcKind::Gen5, "boss", Some("Boss"));
+    until(
+        &mut boss,
+        |e| matches!(e, Event::RcChat(t) if t == "New RC: boss"),
+    );
+    let alice = b_id(&boss, "alice");
+    let bob = b_id(&boss, "bob");
+
+    // A private message, named by the RC's nickname.
+    boss.send_messages(&[private_message(&[alice], "hi \"you\"").unwrap()])
+        .unwrap();
+    read_until(&a_rx, &mut a, Duration::from_secs(10), |s| {
+        s.chat_log.iter().any(|l| l.kind == ChatKind::Private)
+    })
+    .unwrap();
+    let pm = a
+        .chat_log
+        .iter()
+        .find(|l| l.kind == ChatKind::Private)
+        .unwrap();
+    assert_eq!((pm.from.as_str(), pm.text.as_str()), ("Boss", "hi \"you\""));
+
+    // An admin message to everyone, then one to Bob only.
+    boss.send_messages(&[admin_message("restart soon").unwrap()])
+        .unwrap();
+    boss.send_messages(&[private_admin_message(bob, "just you").unwrap()])
+        .unwrap();
+    read_until(&b_rx, &mut b, Duration::from_secs(10), |s| {
+        s.chat_log
+            .iter()
+            .filter(|l| l.kind == ChatKind::Admin)
+            .count()
+            == 2
+    })
+    .unwrap();
+    let admin: Vec<_> = b
+        .chat_log
+        .iter()
+        .filter(|l| l.kind == ChatKind::Admin)
+        .map(|l| (l.from.as_str(), l.text.as_str()))
+        .collect();
+    assert_eq!(
+        admin,
+        [("Admin boss", "restart soon"), ("Admin boss", "just you")]
+    );
+    read_until(&a_rx, &mut a, Duration::from_secs(10), |s| {
+        s.chat_log.iter().any(|l| l.kind == ChatKind::Admin)
+    })
+    .unwrap();
+
+    // A disconnect: Bob is told and dropped, the RC sees him leave.
+    boss.send_messages(&[disconnect_player(bob).unwrap()])
+        .unwrap();
+    until(&mut boss, |e| *e == Event::DelPlayer(bob));
+    let _ = read_until(&b_rx, &mut b, Duration::from_secs(10), |s| {
+        s.disconnect_message.is_some()
+    });
+    assert_eq!(
+        b.disconnect_message.as_deref(),
+        Some("Disconnected by the server.")
+    );
+    assert!(
+        !a.chat_log.iter().any(|l| l.text == "just you"),
+        "the private admin message went to Bob only"
+    );
+    let _ = std::fs::remove_dir_all(&w);
+}

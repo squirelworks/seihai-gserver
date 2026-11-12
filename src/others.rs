@@ -95,6 +95,46 @@ impl Change {
     }
 }
 
+/// A private message from `from` (a player or an RC id) to a `receiver`
+/// build: `PLO_OTHERPLPROPS` with the sender's nickname (0) and account
+/// (34), where the build reads them, so the client can name the sender,
+/// then `PLO_PRIVATEMESSAGE` (37): `GSHORT from`, then `"","Private
+/// message:",` and `text`, which is already tokenized (one quoted item or
+/// more). A build without either message gets nothing of it.
+pub fn private_message(
+    receiver: ClientVersion,
+    from: u16,
+    nick: &[u8],
+    account: &[u8],
+    text: &[u8],
+) -> Vec<u8> {
+    use crate::wire::{gstring, ids::PLO_PRIVATEMESSAGE};
+    let prof = receiver.profile();
+    let plo = &prof.protocol.plo;
+    let mut out = Vec::new();
+    if plo.contains(PLO_OTHERPLPROPS) {
+        let mut p = Vec::new();
+        put_id(receiver, from, &mut p);
+        if prof.props.other.contains(0) {
+            p.push(gchar(0));
+            gstring(nick, &mut p);
+        }
+        if prof.props.other.contains(34) {
+            p.push(gchar(34));
+            gstring(account, &mut p);
+        }
+        out.extend(msg(PLO_OTHERPLPROPS, &p));
+    }
+    if plo.contains(PLO_PRIVATEMESSAGE) {
+        let mut p = Vec::new();
+        gshort(from, &mut p);
+        p.extend_from_slice(b"\"\",\"Private message:\",");
+        p.extend_from_slice(text);
+        out.extend(msg(PLO_PRIVATEMESSAGE, &p));
+    }
+    out
+}
+
 /// A classic `X`/`Y` byte in tiles. A byte under 0x20 is a step off
 /// the level's left or top edge: a 2.05 walking past the edge where no
 /// link is writes -0.5 as 0x1F, which must not read as 127.5.
