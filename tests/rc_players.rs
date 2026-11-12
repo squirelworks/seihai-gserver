@@ -174,7 +174,21 @@ fn an_rc_messages_and_disconnects_players() {
     let alice = b_id(&boss, "alice");
     let bob = b_id(&boss, "bob");
 
-    // A private message, named by the RC's nickname.
+    // The RC is in each player's list before any PM, as beta4 sends it
+    // (lab run 2026-11-12): the account in capitals as its nickname
+    // (not the RC's own), and the account. A real 2.22 queues an RC's PM
+    // under that entry.
+    let listed = |s: &SessionState| {
+        s.others
+            .iter()
+            .any(|o| o.account.as_deref() == Some("boss") && o.nick.as_deref() == Some("BOSS"))
+    };
+    read_until(&a_rx, &mut a, Duration::from_secs(10), listed).unwrap();
+    // A player who logs in after the RC gets it too.
+    let (_c, c_rx, mut c) = login("carol");
+    read_until(&c_rx, &mut c, Duration::from_secs(10), listed).unwrap();
+
+    // A private message, under the same name.
     boss.send_messages(&[private_message(&[alice], "hi \"you\"").unwrap()])
         .unwrap();
     read_until(&a_rx, &mut a, Duration::from_secs(10), |s| {
@@ -186,7 +200,7 @@ fn an_rc_messages_and_disconnects_players() {
         .iter()
         .find(|l| l.kind == ChatKind::Private)
         .unwrap();
-    assert_eq!((pm.from.as_str(), pm.text.as_str()), ("Boss", "hi \"you\""));
+    assert_eq!((pm.from.as_str(), pm.text.as_str()), ("BOSS", "hi \"you\""));
 
     // An admin message to everyone, then one to Bob only.
     boss.send_messages(&[admin_message("restart soon").unwrap()])
@@ -231,6 +245,10 @@ fn an_rc_messages_and_disconnects_players() {
         !a.chat_log.iter().any(|l| l.text == "just you"),
         "the private admin message went to Bob only"
     );
+
+    // The RC leaves: off the players' lists.
+    drop(boss);
+    read_until(&c_rx, &mut c, Duration::from_secs(10), |s| !listed(s)).unwrap();
     let _ = std::fs::remove_dir_all(&w);
 }
 

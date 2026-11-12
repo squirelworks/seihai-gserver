@@ -594,6 +594,13 @@ impl World {
 }
 
 /// One RC as the world lists it.
+/// An RC's nickname as players see it: the account in capitals, whatever
+/// nickname the RC set, as GServer-v2 beta4 lists a real RC2 (lab run
+/// 2026-11-12: account `xrc` listed and named on PMs as `XRC`).
+fn rc_player_nick(account: &str) -> Vec<u8> {
+    crate::wire::latin1(&account.to_uppercase())
+}
+
 struct OnlineRc {
     /// The account name as the account file has it.
     account: String,
@@ -984,6 +991,13 @@ impl WorldTask {
             WorldIn::RcLeft { rc } => {
                 if self.rcs.remove(&rc).is_some() {
                     self.to_rcs(None, Some(crate::rc::delplayer(rc)));
+                    // Off the players' lists, as a player who logs out.
+                    for p in self.players.values() {
+                        let gone = &Change::default();
+                        if let Some(m) = others::message(p.version, rc, gone, &others::LOGGED_OUT) {
+                            let _ = p.outbox.send(vec![m]);
+                        }
+                    }
                 }
             }
             WorldIn::FromNpc(m) => self.apply_npc(m),
@@ -1009,14 +1023,14 @@ impl WorldTask {
                 self.to_rcs(None, Some(line));
             }
             RcEvent::Pm { to, text } => {
-                let nick = r.nick.get(1..).unwrap_or_default();
+                let nick = rc_player_nick(&r.account);
                 let account = crate::wire::latin1(&r.account);
                 let mut done = HashSet::new();
                 for id in to {
                     let Some(p) = self.players.get(&id).filter(|_| done.insert(id)) else {
                         continue;
                     };
-                    let m = others::private_message(p.version, rc, nick, &account, &text);
+                    let m = others::private_message(p.version, rc, &nick, &account, &text);
                     if !m.is_empty() {
                         let _ = p.outbox.send(vec![m]);
                     }
@@ -1093,6 +1107,7 @@ impl WorldTask {
             let _ = me.outbox.send(vec![list]);
         }
         self.to_rcs(Some(id), self.rc_entry(id));
+        self.rc_to_players(id);
         let line = crate::wire::latin1(&format!("New RC: {}", me.account));
         self.to_rcs(None, Some(crate::wire::msg(crate::rc::PLO_RC_CHAT, &line)));
     }
@@ -1124,6 +1139,26 @@ impl WorldTask {
             crate::rc::RC_LEVEL,
             &r.nick,
         ))
+    }
+
+    /// RC `rc` as an entry in `to`'s player list (`others::rc_entry`).
+    fn rc_for_player(&self, rc: u16, to: ClientVersion) -> Option<Vec<u8>> {
+        let r = self.rcs.get(&rc)?;
+        others::rc_entry(
+            to,
+            rc,
+            &rc_player_nick(&r.account),
+            &crate::wire::latin1(&r.account),
+        )
+    }
+
+    /// RC `rc`'s entry to every player.
+    fn rc_to_players(&self, rc: u16) {
+        for p in self.players.values() {
+            if let Some(m) = self.rc_for_player(rc, p.version) {
+                let _ = p.outbox.send(vec![m]);
+            }
+        }
     }
 
     /// `body` to every RC but `except`.
@@ -1753,6 +1788,13 @@ impl WorldTask {
             }
             if let Some(m) = others::message(p.version, id, &mine, &others::JOINED) {
                 let _ = p.outbox.send(vec![m]);
+            }
+        }
+        // The RCs online, in the player's list (again at each level:
+        // an entry with no level is not dropped by a level change).
+        for &rc in self.rcs.keys() {
+            if let Some(m) = self.rc_for_player(rc, me.version) {
+                let _ = me.outbox.send(vec![m]);
             }
         }
         // The RCs list the player in the new level.

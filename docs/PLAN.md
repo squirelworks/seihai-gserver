@@ -66,7 +66,8 @@ behaviour against, never a code source (see `00-rules.md`).
    `tests/rc_files.rs`): the file browser (list 90, get 92, put 93 in a raw
    block) in the world folder within the account's `FOLDER` rights (`r` or
    `rw`, a folder and a mask; none sees nothing), plain files of at most
-   60 KiB. **Slice 6 built** (`rcaccounts.rs`): a player's staff rights
+   60 KiB; move 96, delete 97 and rename 98 as seihai-rc sends them
+   (not yet captured from a real RC). **Slice 6 built** (`rcaccounts.rs`): a player's staff rights
    (83/84 and 62: rights bits as `RCRIGHTS`, not acted on yet; the IP
    range as `IPRANGE`; folder rights as `FOLDER`, tokenized out) and
    comments (85/86 and 63, `COMMENT` lines). **Slice 7

@@ -97,6 +97,53 @@ impl Change {
     }
 }
 
+/// The head an RC has in a player's list, as on beta4 (lab run
+/// 2026-11-12).
+pub const RC_HEAD: &[u8] = b"head25.png";
+
+/// An RC (or a far player) as an entry in a player's list: its nickname
+/// (prop 0), head (11, [`RC_HEAD`]) and account (34) in
+/// `PLO_OTHERPLPROPS`, with no level. GServer-v2
+/// beta4 sends one for an RC to every player when the RC logs in, and a
+/// real 2.22 queues a PM from the RC under that entry in its player list
+/// (lab run 2026-11-12). `None` for a build that has no such list.
+pub fn rc_entry(receiver: ClientVersion, id: u16, nick: &[u8], account: &[u8]) -> Option<Vec<u8>> {
+    list_entry(receiver, id, nick, account, Some(RC_HEAD))
+}
+
+/// A sender with no level as an entry in a player's list: nickname (0),
+/// `head` (11) if given, account (34).
+fn list_entry(
+    receiver: ClientVersion,
+    id: u16,
+    nick: &[u8],
+    account: &[u8],
+    head: Option<&[u8]>,
+) -> Option<Vec<u8>> {
+    use crate::wire::gstring;
+    let prof = receiver.profile();
+    if !prof.protocol.plo.contains(PLO_OTHERPLPROPS) {
+        return None;
+    }
+    let mut p = Vec::new();
+    put_id(receiver, id, &mut p);
+    if prof.props.other.contains(0) {
+        p.push(gchar(0));
+        gstring(nick, &mut p);
+    }
+    if let Some(head) = head.filter(|_| prof.props.other.contains(11)) {
+        // `GCHAR` 100 + length, then the name.
+        p.push(gchar(11));
+        p.push(gchar(100 + head.len().min(123) as u8));
+        p.extend_from_slice(&head[..head.len().min(123)]);
+    }
+    if prof.props.other.contains(34) {
+        p.push(gchar(34));
+        gstring(account, &mut p);
+    }
+    Some(msg(PLO_OTHERPLPROPS, &p))
+}
+
 /// A private message from `from` (a player or an RC id) to a `receiver`
 /// build: `PLO_OTHERPLPROPS` with the sender's nickname (0) and account
 /// (34), where the build reads them, so the client can name the sender,
@@ -110,23 +157,9 @@ pub fn private_message(
     account: &[u8],
     text: &[u8],
 ) -> Vec<u8> {
-    use crate::wire::{gstring, ids::PLO_PRIVATEMESSAGE};
-    let prof = receiver.profile();
-    let plo = &prof.protocol.plo;
-    let mut out = Vec::new();
-    if plo.contains(PLO_OTHERPLPROPS) {
-        let mut p = Vec::new();
-        put_id(receiver, from, &mut p);
-        if prof.props.other.contains(0) {
-            p.push(gchar(0));
-            gstring(nick, &mut p);
-        }
-        if prof.props.other.contains(34) {
-            p.push(gchar(34));
-            gstring(account, &mut p);
-        }
-        out.extend(msg(PLO_OTHERPLPROPS, &p));
-    }
+    use crate::wire::ids::PLO_PRIVATEMESSAGE;
+    let plo = &receiver.profile().protocol.plo;
+    let mut out = list_entry(receiver, from, nick, account, None).unwrap_or_default();
     if plo.contains(PLO_PRIVATEMESSAGE) {
         let mut p = Vec::new();
         gshort(from, &mut p);
@@ -570,5 +603,18 @@ mod tests {
             st.apply_body(&message(v, 9, &Change::default(), &LOGGED_OUT).unwrap());
             assert!(st.others.is_empty(), "{v:?}");
         }
+    }
+
+    #[test]
+    fn an_rc_entry_as_beta4_sends_it() {
+        // beta4 to a real 2.22 (lab run 2026-11-12): id, prop 0 `XRC`,
+        // prop 11 `head25.png` as 0x8e and the name, ..., prop 34 `xrc`.
+        let m = rc_entry(ClientVersion::V222, 4, b"XRC", b"xrc").unwrap();
+        let body = &seihai_core::protocol::split_messages(&m)[0].payload;
+        assert!(body.starts_with(b" $ #XRC+\x8ehead25.png"), "{body:?}");
+        assert!(body.ends_with(b"B#xrc"));
+        // A far player's PM carries no head.
+        let pm = private_message(ClientVersion::V222, 4, b"Far", b"far", b"\"hi\"");
+        assert!(!pm.windows(4).any(|w| w == b"head"));
     }
 }
