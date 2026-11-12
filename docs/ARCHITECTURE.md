@@ -24,6 +24,7 @@ How the server is put together, and where each later stage plugs in. Read
 | `src/world.rs` | the world task: who is online and player ids, the levels read so far, other players in a level, links between levels, gmap cells and crossings, opened chests and player flags, items on the floor, the account save on logout, NPCs, baddies and level leaders, bombs and hits, the 50 ms tick (`TICK`) | 2, 3 |
 | `src/levels.rs` | level files (`.nw`, `.graal`, `.zelda`) through `seihai_core::assets`, the level name check, the link, sign and chest writers | 2 |
 | `src/gmaps.rs` | `.gmap` files in `levels/` (`seihai_core::gmap::Gmap`), which builds play gmaps, a level's cell | 2 |
+| `src/profile.rs` | the server's per-build rules in one table (issue #45): package loading, and where a lab with a real client showed the server must differ from `seihai-core`'s profile (2.05's file mod time and baddy images) | 2 |
 | `src/others.rs` | other players' props: kept in one form, sent as `PLO_OTHERPLPROPS` (8) per receiver's build; join (50 = 1), logout (50 = 0, 51); chest items given as own props (`PLO_PLAYERPROPS` 9) | 2 |
 | `src/files.rs` | `WANTFILE`/`UPDATEFILE` served from `<world>/files/` and the `.gmap` files in `levels/`: the name check, the case-insensitive index, `PLO_FILE` per build, large files, packages | 2 |
 | `src/gpak.rs` | `.gpak` / `.gpake`: who loads them, `config/gpakkeys.txt`, the `PLO_FILEDECRYPTKEY` (104) packet | 2 |

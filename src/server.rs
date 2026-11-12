@@ -390,7 +390,7 @@ impl Conn {
         inbuf.long = login
             .version
             .is_some_and(|v| v.profile().protocol.gen5_long_frames);
-        let label = login.version.map_or("unknown build", |v| v.label());
+        let label = login::build_label(login.client_type, login.version);
         let who = format!(
             "{} [{}{} {}, {:?}]",
             login.account,
@@ -1316,7 +1316,7 @@ impl Session {
                 PLI_FIRESPY => server.world.relay(self.id, PLO_FIRESPY, true, payload),
                 PLI_EXPLOSION => server.world.relay(self.id, PLO_EXPLOSION, true, payload),
                 PLI_PLAYERPROPS => {
-                    let bow = self.version.profile().props.bow_prop10;
+                    let bow = crate::others::bow_prop10(self.version);
                     server.world.props(self.id, payload);
                     let props = parse_player_props_with(payload, bow);
                     if let Some(nick) = props.iter().find(|p| p.id == 0) {

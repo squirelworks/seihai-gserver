@@ -362,6 +362,12 @@ pub mod ids {
     pub const PLI_PROCESSLIST: u8 = 44;
     /// Entered a level. Confirmed: read and not answered.
     pub const PLI_ENTERLEVEL: u8 = 46;
+    /// A GINT5 checksum of the GANI the client has (0 for none), then the
+    /// name without `.gani`. Confirmed: real 5.24r4 and 6.03r7 send
+    /// `idle` after the login (lab, 2026-11-12, #45), next to a
+    /// [`PLI_WANTFILE`] for `idle.gani`, which already gets the file or a
+    /// not-found. Read and not answered.
+    pub const PLI_UPDATEGANI: u8 = 157;
     /// The script name. Confirmed: the client asks again when its cache does not match.
     pub const PLI_UPDATESCRIPT: u8 = 158;
     /// Game clients: `!` and a GSHORT of the [`PLO_PING`] value, capped at
@@ -382,6 +388,7 @@ pub mod ids {
                 | PLI_PROCESSLIST
                 | PLI_SHOWIMG
                 | PLI_ENTERLEVEL
+                | PLI_UPDATEGANI
         )
     }
 }
@@ -456,6 +463,7 @@ mod tests {
         assert_eq!(ids::PLI_WEAPONADD, 33);
         assert!(ids::stage1_quiet(ids::PLI_TOWEAPON));
         assert!(ids::stage1_quiet(ids::PLI_WEAPONADD));
+        assert!(ids::stage1_quiet(ids::PLI_UPDATEGANI));
         assert!(!ids::stage1_quiet(7));
         assert_eq!(ids::PLI_PONG, 162);
         assert_eq!(ids::PLO_FILEDECRYPTKEY, 104);
