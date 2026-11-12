@@ -1,6 +1,6 @@
 //! The ping (issue #44) on 127.0.0.1 with Seihai's own client code: a
 //! 4.20r8 gets `PLO_PING` and is kept while it answers, dropped when it
-//! stops; a 2.22 is never sent one.
+//! stops; a 2.22 and a 5.00r7 are never sent one, a 6.03r7 is.
 
 mod common;
 
@@ -86,5 +86,31 @@ fn a_420_is_pinged_and_dropped_when_it_stops_answering() {
         st.disconnect_message.as_deref(),
         Some("Disconnected for not answering.")
     );
+    let _ = std::fs::remove_dir_all(&w);
+}
+
+#[test]
+fn a_603r7_is_pinged_and_a_500r7_is_not() {
+    let w = world("ping6", "*\n");
+    let cfg = w.join("config/server.txt");
+    let mut text = std::fs::read_to_string(&cfg).unwrap();
+    text.push_str("ping = 0.2\n");
+    std::fs::write(&cfg, text).unwrap();
+    let (addr, _server) = start(&w);
+
+    // 5.00r7 to 5.31r4 neither handle 108 nor send 162.
+    let v = ClientVersion::V500R7;
+    let mut five = login_gserver(&addr, v, random_key(), "five", PASSWORD, false).unwrap();
+    let five_rx = five.conn.spawn_reader().unwrap();
+    let mut five_st = SessionState::for_version(v);
+    assert!(pings(&five_rx, &mut five_st, Duration::from_millis(900)).is_empty());
+
+    // 6.03r7 takes 108 before its main switch, as 4.20 does.
+    let v = ClientVersion::V603R7;
+    let mut six = login_gserver(&addr, v, random_key(), "six", PASSWORD, false).unwrap();
+    let six_rx = six.conn.spawn_reader().unwrap();
+    let mut six_st = SessionState::for_version(v);
+    let got = pings(&six_rx, &mut six_st, Duration::from_millis(900));
+    assert!(!got.is_empty(), "no ping to 6.03r7");
     let _ = std::fs::remove_dir_all(&w);
 }

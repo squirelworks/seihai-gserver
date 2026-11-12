@@ -1,11 +1,13 @@
 //! The ping (issue #44): `PLO_PING` (108) out on a timer, the client's
 //! `PLI_PONG` (162) back, the round trip timed.
 //!
-//! Only builds whose profile handles 108 are sent it: 4.20r6 and 4.20r8
-//! in `seihai-core` v0.0.6. Nothing before 4.20 and no 5.x reads it. The
-//! Graal_analysis note `protocol/unknown-ids-2026-11-06.md` also lists
-//! 6.01r1 and 6.03r7, but their profiles do not have 108 yet, so they wait
-//! for the profile. The layout is `{108}{GCHAR 0}{GSHORT value}`; with sub
+//! Only builds that read 108 are sent it (`profile::ServerProfile::ping`):
+//! 4.20r6 and 4.20r8 by their `seihai-core` profiles, and 6.015, 6.034
+//! and 6.03r7 (Windows and Linux), which take 108 before their main
+//! switch as 4.20 does, so their profiles' PLO lists leave it out; the
+//! server table adds them until `seihai-core` does. Nothing before 4.20,
+//! no 5.x and not 6.00r2 is sent it. The layout is
+//! `{108}{GCHAR 0}{GSHORT value}`; with sub
 //! 0 the client answers `{162}{'!'}{GSHORT min(value, 0x6FFF)}`. Sub 1 is
 //! never sent: what the client does with it was not traced. No lab has
 //! seen the answer on the wire yet.

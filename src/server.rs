@@ -247,6 +247,15 @@ struct InBuf {
 }
 
 impl InBuf {
+    /// Whether a whole frame (or one too big, which `take_frame` refuses)
+    /// is already in.
+    fn has_frame(&self) -> bool {
+        frame_header(&self.buf, self.long).is_some_and(|(head, len)| {
+            self.buf.len() >= head + len
+                || len > MAX_IN_FRAME.max(if self.long { 1 << 20 } else { 0 })
+        })
+    }
+
     /// The next whole frame's bytes after its header, if one is in.
     fn take_frame(&mut self) -> io::Result<Option<Vec<u8>>> {
         let Some((head, len)) = frame_header(&self.buf, self.long) else {
@@ -556,7 +565,7 @@ impl Conn {
             score: Default::default(),
             flooding: None,
             kicked: false,
-            ping: (!cfg.ping.is_zero() && version.profile().protocol.plo.contains(PLO_PING))
+            ping: (!cfg.ping.is_zero() && crate::profile::ServerProfile::of(version).ping)
                 .then(crate::ping::Pinger::default),
         };
         for f in session.handle(&self.server, &self.peer, &early) {
@@ -589,7 +598,7 @@ impl Conn {
             let idle_left = (!cfg.idle_timeout.is_zero())
                 .then(|| cfg.idle_timeout.saturating_sub(last_heard.elapsed()));
             tokio::select! {
-                r = read_more(&mut self.stream, &mut inbuf.buf) => {
+                r = fill(&mut self.stream, &mut inbuf) => {
                     r?;
                     last_heard = Instant::now();
                     let mut reply: Vec<Vec<u8>> = Vec::new();
@@ -916,7 +925,7 @@ impl Conn {
         let result = loop {
             let idle_left = (!idle.is_zero()).then(|| idle.saturating_sub(last_heard.elapsed()));
             tokio::select! {
-                r = read_more(&mut self.stream, &mut inbuf.buf) => {
+                r = fill(&mut self.stream, &mut inbuf) => {
                     if let Err(e) = r {
                         break Err(e);
                     }
@@ -1039,7 +1048,7 @@ impl Conn {
             }
             let idle_left = (!idle.is_zero()).then(|| idle.saturating_sub(last_heard.elapsed()));
             tokio::select! {
-                r = read_more(&mut self.stream, &mut inbuf.buf) => {
+                r = fill(&mut self.stream, &mut inbuf) => {
                     if let Err(e) = r {
                         break Err(e);
                     }
@@ -1504,6 +1513,17 @@ async fn list_ready(link: Option<&crate::listlink::ListLink>) {
         Some(l) => l.notifier().notified().await,
         None => std::future::pending().await,
     }
+}
+
+/// More bytes for a session loop, unless a whole frame is already in: a
+/// client may send its first messages in the same packet as its login (or
+/// as the sealed login, `SEI00001`), and those must not wait for the
+/// next packet.
+async fn fill(stream: &mut TcpStream, inbuf: &mut InBuf) -> io::Result<()> {
+    if inbuf.has_frame() {
+        return Ok(());
+    }
+    read_more(stream, &mut inbuf.buf).await
 }
 
 async fn read_more(stream: &mut TcpStream, buf: &mut Vec<u8>) -> io::Result<()> {
