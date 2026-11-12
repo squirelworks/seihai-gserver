@@ -1,4 +1,4 @@
-//! Ids 25 and 33 are accepted and not recorded as unhandled.
+//! Ids 25, 33 and 157 are accepted and not recorded as unhandled.
 //!
 //! Seihai's 1.33 and 1.39 profiles send them on loopback. No archived client
 //! was run.
@@ -69,4 +69,11 @@ fn seen_probe(version: ClientVersion, account: &str, quiet: u8, probe: u8) {
 fn upload_25_and_add_33_are_not_unhandled() {
     seen_probe(ClientVersion::V133, "w133", ids::PLI_TOWEAPON, 7);
     seen_probe(ClientVersion::V139, "w139", ids::PLI_WEAPONADD, 7);
+}
+
+/// Real 5.24r4 and 6.03r7 send 157 `idle` after the login (lab,
+/// 2026-11-12, #45).
+#[test]
+fn update_gani_157_is_not_unhandled() {
+    seen_probe(ClientVersion::V524R4, "w524", ids::PLI_UPDATEGANI, 7);
 }
