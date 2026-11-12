@@ -264,7 +264,13 @@ fn an_rc_reads_and_sets_player_props() {
         seihai_gserver::wire::gint3(999, &mut v);
         Some(v)
     };
-    assert_eq!(store.load("test1").unwrap().unwrap().rupees, 999);
+    // The client sees the new props before the server has saved them, so
+    // wait for the save rather than read the file at once.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while store.load("test1").unwrap().unwrap().rupees != 999 {
+        assert!(std::time::Instant::now() < deadline, "test1 not saved");
+        std::thread::sleep(Duration::from_millis(20));
+    }
     // A stale file under a player online: the read is the world's.
     let mut stale = store.load("test1").unwrap().unwrap();
     stale.rupees = 1;

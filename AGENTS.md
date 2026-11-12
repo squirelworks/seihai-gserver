@@ -53,3 +53,7 @@ request seems to ask otherwise; ask the owner (Squirrel, GitHub `squirelworks`) 
   once CI exists; open a PR and let CI pass.
 - Commit messages: a short summary line, then why. Say which real clients were
   checked.
+
+## macOS builds
+
+macOS is built and tested on the lab's Sequoia (macOS 15) VM with the same build and test commands the Linux job runs; GitHub CI covers Linux and Windows.
