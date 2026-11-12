@@ -97,6 +97,8 @@ fn staff_accounts_log_in_with_an_rc() {
     account(&w, "boss", true, &[]);
     account(&w, "player", false, &[]);
     account(&w, "faraway", true, &["10.0.0.0/8"]);
+    account(&w, "exiled", true, &[]);
+    std::fs::write(w.join("config/bans.txt"), "exiled\t-\tboss\tgone\n").unwrap();
     let (addr, _server) = start(&w);
 
     // Type 6, key 0x2A: gen-5 both ways. The allow-list names only a game
@@ -137,6 +139,12 @@ fn staff_accounts_log_in_with_an_rc() {
     assert_eq!(
         disc(&read_zlib_frame(&mut s).unwrap()),
         "RC logins for this account are not allowed from your address."
+    );
+    // A banned staff account gets the ban text.
+    let mut s = connect(&addr, &line(1, None, "GSERV023", "exiled", PASSWORD));
+    assert_eq!(
+        disc(&read_zlib_frame(&mut s).unwrap()),
+        "You are banned from this server: gone."
     );
     // No account file is made for an RC, even with create_accounts on.
     let mut s = connect(&addr, &line(1, None, "GSERV023", "newcomer", PASSWORD));
