@@ -234,7 +234,7 @@ Next:
       it"): `src/listlink.rs`, `listserver_secure` on by default,
       `tests/listserver_link.rs`, lab run in
       `docs/lab/listserver-link-2026-10-31.md`.
-- [x] `seihai-core` is on tag `v0.0.6`. `seihai-npcserver` `v0.1.0` still brings in `v0.0.5` until its next tag.
+- [x] `seihai-core` is on tag `v0.0.6`, and `seihai-npcserver` `v0.1.1` uses the same tag, so only one copy is built.
 - [x] Listserver link: answer the listserver's ping (99) with an empty
       `SVO_PING` (16), and do not send 16 on its own. `src/listlink.rs`,
       `tests/listserver_link.rs`. No real client: the packet is only
