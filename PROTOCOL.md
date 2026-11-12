@@ -215,7 +215,7 @@ logs and skips them, as for any unknown id.
 | `0x81` | `NC_GET` | GS → NPC | `request: u32`, `npc_id: u32`, `what: u8` (0 script, 1 attributes) |
 | `0x82` | `NC_TEXT` | NPC → GS | `request: u32`, `found: u8` (1 yes, 0 no such NPC), `text: blob` |
 | `0x83` | `NC_SCRIPT_SET` | GS → NPC | `npc_id: u32`, `script: blob` |
-| `0x84` | `NC_NPC_DELETE` | GS → NPC | `npc_id: u32` |
+| `0x84` | `NC_NPC_DELETE` | both | `npc_id: u32` |
 
 - `NC_NPC` names one database NPC. The NPC-server sends one for every NPC
   after the `NPC_ADDED` messages when its scripts start, and again for each
@@ -228,11 +228,15 @@ logs and skips them, as for any unknown id.
 - `NC_SCRIPT_SET` writes the script into the NPC's file and starts the
   NPCs of that level again: they go (`NPC_DELETED`), come back
   (`NPC_ADDED`, `NC_NPC`) and run `created` with the new script.
-- `NC_NPC_DELETE` renames the NPC's file to `.txt.deleted`, which is not
-  read on the next start, sends `NPC_DELETED`, and restarts the other NPCs
-  of that level the same way.
-- Neither set nor delete has a reply. A refusal (no such NPC, a file that
-  cannot be written) is logged by the NPC-server.
+- `NC_NPC_DELETE` from the gserver renames the NPC's file to
+  `.txt.deleted`, which is not read on the next start, sends
+  `NPC_DELETED`, and restarts the other NPCs of that level the same way.
+  Then the NPC-server sends `NC_NPC_DELETE` back with the same id: the NPC
+  is out of the database, and NPC Control drops it from its list.
+  `NPC_DELETED` does not mean that, since a restart sends it for NPCs that
+  come back.
+- A set has no reply; a delete has only the one above. A refusal (no such
+  NPC, a file that cannot be written) is logged by the NPC-server.
 
 ### 0x90 to 0xFF: *reserved*
 

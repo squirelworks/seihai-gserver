@@ -281,8 +281,9 @@ impl Hub {
         true
     }
 
-    /// NPC Control messages from the NPC-server; `NPC_DELETED` comes here
-    /// too (and still goes to the world).
+    /// NPC Control messages from the NPC-server. `NPC_DELETED` does not
+    /// come here: a level restart sends it for NPCs that come back. An NPC
+    /// leaves the NC list on `NC_NPC_DELETE`.
     fn nc_from_npc(&self, m: &Message) {
         let mut st = self.state.lock().unwrap();
         let change = match m {
@@ -303,7 +304,7 @@ impl Hub {
                 st.nc_npcs.insert(*npc_id, n.clone());
                 NcChange::Added(*npc_id, n)
             }
-            Message::NpcDeleted { npc_id } => {
+            Message::NcNpcDelete { npc_id } => {
                 if st.nc_npcs.remove(npc_id).is_none() {
                     return;
                 }
@@ -532,12 +533,11 @@ async fn handle(hub: &Hub, mut stream: TcpStream, peer: SocketAddr) -> io::Resul
                 Message::Pong { .. } => {}
                 Message::Bye { reason } => done = Some(format!("bye: {}", link::show(&reason))),
                 // NPC Control: kept here for NC logins.
-                m @ (Message::NcNpc { .. } | Message::NcText { .. }) => hub.nc_from_npc(&m),
+                m @ (Message::NcNpc { .. }
+                | Message::NcText { .. }
+                | Message::NcNpcDelete { .. }) => hub.nc_from_npc(&m),
                 // The NPC-server's own messages: the world applies them.
                 m if (0x40..=0x4C).contains(&m.id()) && !matches!(m, Message::Unknown { .. }) => {
-                    if matches!(m, Message::NpcDeleted { .. }) {
-                        hub.nc_from_npc(&m);
-                    }
                     if !hub.to_world(WorldIn::FromNpc(m)) && !world_gone {
                         world_gone = true;
                         hub.log(&peer, "no world task; NPC-server messages are dropped");

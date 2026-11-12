@@ -164,14 +164,14 @@ fn an_nc_lists_reads_sets_and_deletes_npcs() {
         std::thread::sleep(Duration::from_millis(20));
     }
     nc.send(&[npc_script_get_message(1).unwrap()]).unwrap();
-    let got = wait_for(
-        &mut nc,
-        "the new script",
-        |e| matches!(e, NcEvent::NpcScript { script, .. } if script.contains("dong")),
-    );
+    // The set restarts the level, but the NPC stays on the list.
+    let got = wait_for(&mut nc, "the new script", |e| {
+        assert_ne!(*e, NcEvent::NpcRemoved(1), "a script set removed the NPC");
+        matches!(e, NcEvent::NpcScript { script, .. } if script.contains("dong"))
+    });
     assert!(matches!(got, NcEvent::NpcScript { id: 1, .. }));
 
-    // Deleted: 159 comes back, and the file is put aside.
+    // Deleted: 159 comes back once the file is put aside.
     nc.send(&[npc_delete_message(1).unwrap()]).unwrap();
     wait_for(&mut nc, "the delete", |e| *e == NcEvent::NpcRemoved(1));
     assert!(w.join("npcs/bell.txt.deleted").exists());
