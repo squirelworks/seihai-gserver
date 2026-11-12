@@ -28,6 +28,9 @@ pub struct ServerProfile {
     pub loads_gpak: bool,
     /// Loads encrypted `.gpake` packages (after `PLO_FILEDECRYPTKEY`).
     pub loads_gpake: bool,
+    /// Prop 10 is the bow slot, not the gani: it is not kept from these
+    /// senders and not sent to these receivers (`others.rs`).
+    pub prop10_bow: bool,
 }
 
 /// Builds that load `.gpake`: 4.20r8 through 6.03r7 (lab, 2026-11-06).
@@ -55,6 +58,7 @@ impl ServerProfile {
             // Plain `.gpak` from 5.x and 6.x (lab, 2026-11-06).
             loads_gpak: GPAKE.contains(&version) && version != ClientVersion::V420R8,
             loads_gpake: GPAKE.contains(&version),
+            prop10_bow: core.props.bow_prop10,
         };
         if version == ClientVersion::V205 {
             // Real 2.05 rev 2 takes a file only with the mod time; sent
@@ -66,6 +70,12 @@ impl ServerProfile {
             // `baddygray.gif` it draws the shadow but no soldier, and asks
             // for the file (Wine lab, 2026-11-05). beta4 sends `.png` too.
             p.baddy_image_ext = ".png";
+            // 2.05 rev 2 sends and reads prop 10 as the gani (`sword`,
+            // `hurt`), as 2.1 on do; the lab GServer relays it to and from
+            // a 2.22 unchanged, and that is how the two hurt each other
+            // (Wine lab, 2026-11-12, `docs/lab/hurt-2026-11-12.md`). 2.00
+            // to 2.04 were not tested and keep the bow slot.
+            p.prop10_bow = false;
         }
         p
     }
@@ -82,9 +92,11 @@ mod tests {
             if v == ClientVersion::V205 {
                 assert!(p.file_modtime && !core.files.modtime);
                 assert_eq!(p.baddy_image_ext, ".png");
+                assert!(!p.prop10_bow && core.props.bow_prop10);
             } else {
                 assert_eq!(p.file_modtime, core.files.modtime, "{v:?}");
                 assert_eq!(p.baddy_image_ext, core.files.image_ext, "{v:?}");
+                assert_eq!(p.prop10_bow, core.props.bow_prop10, "{v:?}");
             }
             assert!(!p.loads_gpak || p.loads_gpake, "{v:?}");
         }
