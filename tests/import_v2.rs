@@ -162,6 +162,7 @@ fn a_gserver_v2_folder_becomes_a_world() {
             password: PASSWORD.into(),
             key: 3,
             nickname: None,
+            identity: None,
         },
         Duration::from_secs(10),
     )
