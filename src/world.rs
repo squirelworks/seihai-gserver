@@ -885,6 +885,8 @@ impl WorldTask {
                     }
                 }
             }
+            // The connection carries these out.
+            RcEvent::Account(_) => {}
             RcEvent::Kick(id) => {
                 // The connection says why and closes; its leave lists the
                 // player out for every RC.

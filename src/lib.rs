@@ -24,6 +24,7 @@ pub mod npcs;
 pub mod others;
 pub mod ratelimit;
 pub mod rc;
+pub mod rcaccounts;
 pub mod secure;
 pub mod server;
 pub mod wire;

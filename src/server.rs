@@ -743,10 +743,16 @@ impl Conn {
         let Some(id) = world.rc_join(account.name.clone(), nick, outbox).await else {
             return self.refuse(&mut codec, "The server is full.").await;
         };
+        // Hands the world what it serves; account requests come back.
         let tell = |events: Vec<crate::rc::RcEvent>| {
+            let mut ops = Vec::new();
             for e in events {
                 use crate::rc::RcEvent;
                 let what = match &e {
+                    RcEvent::Account(op) => {
+                        ops.push(op.clone());
+                        continue;
+                    }
                     RcEvent::Nick(_) => None,
                     RcEvent::Chat(t) => Some(format!("chat: {}", crate::wire::text(t))),
                     RcEvent::Pm { to, text } => Some(format!(
@@ -766,8 +772,39 @@ impl Conn {
                 }
                 world.rc_event(id, e);
             }
+            ops
         };
-        tell(early);
+        // Account requests, off the async threads (a password set hashes).
+        let accounts = |ops: Vec<crate::rcaccounts::Op>| {
+            let server = server.clone();
+            let name = account.name.clone();
+            async move {
+                if ops.is_empty() {
+                    return Vec::new();
+                }
+                let done = tokio::task::spawn_blocking(move || {
+                    let cfg = &server.cfg;
+                    let start = (cfg.start_level.as_str(), cfg.start_x, cfg.start_y);
+                    let online = server.online_accounts();
+                    let mut replies = Vec::new();
+                    for op in ops {
+                        let d = crate::rcaccounts::run(&server.store, &online, start, op);
+                        if let Some(l) = d.log {
+                            server.log(&peer, &format!("RC {name} {l}"));
+                        }
+                        if !d.reply.is_empty() {
+                            replies.push(d.reply);
+                        }
+                    }
+                    replies
+                })
+                .await;
+                done.unwrap_or_default()
+            }
+        };
+        for r in accounts(tell(early)).await {
+            self.send(&mut codec, &r).await?;
+        }
         let idle = self.server.cfg.idle_timeout;
         let mut last_heard = Instant::now();
         let result = loop {
@@ -783,7 +820,16 @@ impl Conn {
                         let body = codec.decode(&frame)?;
                         events.extend(rc.handle(&codec.messages(&body)));
                     }
-                    tell(events);
+                    let mut sent = Ok(());
+                    for r in accounts(tell(events)).await {
+                        sent = self.send(&mut codec, &r).await;
+                        if sent.is_err() {
+                            break;
+                        }
+                    }
+                    if let Err(e) = sent {
+                        break Err(e);
+                    }
                 }
                 Some(frames) = from_world.recv() => {
                     let mut sent = Ok(());

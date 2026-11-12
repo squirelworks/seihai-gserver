@@ -53,8 +53,13 @@ behaviour against, never a code source (see `00-rules.md`).
    (same test file): private messages (28) to players from the RC's id and
    nickname, admin messages to all (63) and to one (64) as
    `PLO_RC_ADMINMESSAGE`, and the disconnect (61), which kicks through the
-   world task so the RCs see the leave. No real RC run yet. Next: the RC
-   warp (82, on the server warp of stage 5), then accounts (slice 4).
+   world task so the RCs see the leave. **Slice 4 built**
+   (`src/rcaccounts.rs`, `tests/rc_accounts.rs`): account list (with `%`
+   patterns and `adminlevel` conditions), get, set, add and delete; the
+   dialog's e-mail, load only, admin level and admin worlds are kept in
+   the account file and not acted on. No real RC run yet. Next: the RC
+   warp (82, on the server warp of stage 5) and the ban fields (on the ban
+   file), then server options and files (slice 5).
 5. NPC-server link for `seihai-npcserver`. **Gserver to NPC-server half done,
    ahead of stage 2** (`src/npclink.rs`, `PROTOCOL.md`, `tests/npc_link.rs`,
    `docs/lab/npclink-2026-10-31.md`): `npcserver = off | external | auto`, the
