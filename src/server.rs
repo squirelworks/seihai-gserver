@@ -489,6 +489,7 @@ impl Conn {
             chests: account.chests.clone(),
             kills: account.kills,
             flags: account.flags.clone(),
+            staff: account.staff,
         };
         let (id, level, gmap, leader) = match self.server.world.join(joining, outbox).await {
             Some(Ok(j)) => (j.id, j.level, j.gmap, j.leader),
@@ -563,6 +564,7 @@ impl Conn {
             shield_power: account.shield.0,
             rate: Default::default(),
             score: Default::default(),
+            staff: account.staff,
             flooding: None,
             kicked: false,
             ping: (!cfg.ping.is_zero() && crate::profile::ServerProfile::of(version).ping)
@@ -1192,6 +1194,8 @@ struct Session {
     /// Messages in the last second, for the anti-cheat's rate check.
     rate: crate::anticheat::Rate,
     score: crate::anticheat::Score,
+    /// A staff account, for the anti-cheat's `staff exempt`.
+    staff: bool,
     /// Over the rate now: whether to drop (one violation per run of
     /// messages over the limit, not one per message).
     flooding: Option<bool>,
@@ -1215,16 +1219,12 @@ impl Session {
             return drop;
         }
         let kind = crate::anticheat::Kind::Rate;
-        let v = self.score.report(&ac.policy, kind, now);
+        let v = self.score.report(&ac.policy, kind, now, self.staff);
         if v.log {
-            let what = format!(
-                "over {} a second{}",
-                ac.policy.rate,
-                if v.kick { "; kicked" } else { "" }
-            );
+            let what = format!("over {} a second{}", ac.policy.rate, v.suffix());
             ac.log(&self.account, self.version.label(), "", kind, &what);
         }
-        self.kicked |= v.kick;
+        self.kicked |= ac.enforce(&self.account, kind, &v);
         self.flooding = Some(v.correct);
         v.correct || v.kick
     }

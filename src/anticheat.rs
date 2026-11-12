@@ -37,8 +37,12 @@
 //!
 //! Actions: `off`, `log` (a line in the log file), `correct` (also put it
 //! back: the position is sent back to the player and not passed on, the
-//! warp is not answered, the message is dropped), and `kick after N in S`
-//! on top of either (N violations of that kind within S seconds).
+//! warp is not answered, the message is dropped), and on top of either
+//! `kick after N in S` (N violations of that kind within S seconds) and
+//! `ban after N in S` or `ban SPAN after N in S` (`SPAN` as `30m`, `12h`,
+//! `3d`, `2w`): the account goes in `config/bans.txt` with `anti-cheat` as
+//! the admin and the kind as the reason, and is kicked. `staff exempt`
+//! leaves staff accounts (`STAFF 1`) out of that check.
 //!
 //! **Off by default.** A check can only guess, and a wrong guess hurts an
 //! honest player more than it stops a cheat, so nothing runs until the
@@ -56,8 +60,8 @@
 //! anticheat.teleport = correct
 //! anticheat.warp = log
 //! anticheat.rate = correct, kick after 3 in 10
-//! anticheat.items = correct
 //! anticheat.hurt = correct
+//! anticheat.items = log, ban 1d after 10 in 600, staff exempt
 //! ```
 
 use std::collections::VecDeque;
@@ -69,10 +73,15 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 /// Tiles a second the speed check allows. A walk is half a tile every
 /// 50 ms tick, 10 tiles a second (14 on a diagonal), as read live in 2.05
 /// rev 2 (Seihai's `WALK_STEP_MS`); this leaves room over the diagonal.
+/// The lab run of 2026-11-12 (1.39, 2.05 rev 2, 2.17.1, 2.22, 2.31) saw at
+/// most 15.6 tiles in any second of walking, and 1.58 tiles in one step.
 pub const MAX_SPEED: f32 = 24.0;
-/// The most the speed budget holds, in tiles: a few seconds of steps that
-/// the server reads together after a stall on either side.
-pub const BURST: f32 = 30.0;
+/// The most the speed budget holds, in tiles: steps that the server reads
+/// together after a stall on the server or the network (a frozen client
+/// does not catch up). The lab run of 2026-11-12 read 31 tiles at once
+/// after a 3 s stall and 38 after 5 s; 30 kicked a 2.05 for the first, so
+/// this holds about 6 s of walking.
+pub const BURST: f32 = 60.0;
 /// A longer step in one update is a teleport, in tiles.
 pub const TELEPORT: f32 = 16.0;
 /// How far from a link a warp through it may start, in tiles.
@@ -136,10 +145,29 @@ pub struct Rule {
     pub action: Action,
     /// Kick after this many violations within this long.
     pub kick_after: Option<(u32, Duration)>,
+    /// Ban (and kick) after this many violations within this long, for
+    /// this many seconds (`None`: no end).
+    pub ban_after: Option<(u32, Duration, Option<u64>)>,
+    /// Staff accounts are not checked for this kind.
+    pub staff_exempt: bool,
 }
 
 impl Rule {
-    /// `off`, `log` or `correct`, then optionally `, kick after N in S`.
+    const LOG: Rule = Rule {
+        action: Action::Log,
+        kick_after: None,
+        ban_after: None,
+        staff_exempt: false,
+    };
+    const OFF: Rule = Rule {
+        action: Action::Off,
+        ..Rule::LOG
+    };
+
+    /// `off`, `log` or `correct`, then any of `kick after N in S`,
+    /// `ban after N in S` (no end), `ban SPAN after N in S` (`SPAN` as
+    /// `30m`, `12h`, `3d`, `2w` or seconds) and `staff exempt`, each after
+    /// a comma.
     pub fn parse(v: &str) -> Result<Rule, String> {
         let mut parts = v.split(',').map(str::trim);
         let action = match parts.next().unwrap_or("").to_ascii_lowercase().as_str() {
@@ -148,28 +176,48 @@ impl Rule {
             "correct" => Action::Correct,
             other => return Err(format!("`{other}`: expected off, log or correct")),
         };
-        let mut kick_after = None;
-        if let Some(k) = parts.next() {
-            let w: Vec<&str> = k.split_whitespace().collect();
+        let mut rule = Rule {
+            action,
+            ..Rule::LOG
+        };
+        let count = |n: &str, s: &str| -> Result<(u32, Duration), String> {
+            let n: u32 = n.parse().map_err(|_| format!("`{n}`: not a count"))?;
+            let s: u64 = s.parse().map_err(|_| format!("`{s}`: not seconds"))?;
+            if n == 0 || s == 0 {
+                return Err("after needs a count and seconds above 0".into());
+            }
+            Ok((n, Duration::from_secs(s)))
+        };
+        for k in parts {
+            let lower = k.to_ascii_lowercase();
+            let w: Vec<&str> = lower.split_whitespace().collect();
             match w.as_slice() {
-                ["kick", "after", n, "in", s] => {
-                    let n: u32 = n.parse().map_err(|_| format!("`{n}`: not a count"))?;
-                    let s: u64 = s.parse().map_err(|_| format!("`{s}`: not seconds"))?;
-                    if n == 0 || s == 0 {
-                        return Err("kick after needs a count and seconds above 0".into());
-                    }
-                    kick_after = Some((n, Duration::from_secs(s)));
+                ["kick", "after", n, "in", s] if rule.kick_after.is_none() => {
+                    rule.kick_after = Some(count(n, s)?);
                 }
-                _ => return Err(format!("`{k}`: expected `kick after N in S`")),
+                ["ban", "after", n, "in", s] if rule.ban_after.is_none() => {
+                    let (n, s) = count(n, s)?;
+                    rule.ban_after = Some((n, s, None));
+                }
+                ["ban", span, "after", n, "in", s] if rule.ban_after.is_none() => {
+                    let len = crate::bans::parse_span(span)
+                        .ok_or_else(|| format!("`{span}`: not a time like 3d"))?;
+                    let (n, s) = count(n, s)?;
+                    rule.ban_after = Some((n, s, Some(len)));
+                }
+                ["staff", "exempt"] if !rule.staff_exempt => rule.staff_exempt = true,
+                _ => {
+                    return Err(format!(
+                        "`{k}`: expected `kick after N in S`, `ban [SPAN] after N in S` \
+                         or `staff exempt`, each once"
+                    ))
+                }
             }
         }
-        if parts.next().is_some() {
-            return Err("too many parts".into());
+        if action == Action::Off && (rule.kick_after.is_some() || rule.ban_after.is_some()) {
+            return Err("`off` cannot kick or ban".into());
         }
-        if action == Action::Off && kick_after.is_some() {
-            return Err("`off` cannot kick".into());
-        }
-        Ok(Rule { action, kick_after })
+        Ok(rule)
     }
 }
 
@@ -191,10 +239,7 @@ impl Default for Policy {
             enabled: false,
             log: PathBuf::from("logs/anticheat.log"),
             rate: 200,
-            rules: [Rule {
-                action: Action::Log,
-                kick_after: None,
-            }; 6],
+            rules: [Rule::LOG; 6],
         }
     }
 }
@@ -202,10 +247,7 @@ impl Default for Policy {
 impl Policy {
     pub fn rule(&self, kind: Kind) -> Rule {
         if !self.enabled {
-            return Rule {
-                action: Action::Off,
-                kick_after: None,
-            };
+            return Rule::OFF;
         }
         self.rules[kind.index()]
     }
@@ -254,6 +296,21 @@ pub struct Verdict {
     pub log: bool,
     pub correct: bool,
     pub kick: bool,
+    /// Ban the account (a ban also kicks): for this many seconds, or with
+    /// no end for `Some(None)`.
+    pub ban: Option<Option<u64>>,
+}
+
+impl Verdict {
+    /// What goes after the violation in the log line.
+    pub fn suffix(&self) -> String {
+        match self.ban {
+            Some(None) => "; banned".into(),
+            Some(Some(s)) => format!("; banned for {}", crate::bans::span(s)),
+            None if self.kick => "; kicked".into(),
+            None => String::new(),
+        }
+    }
 }
 
 /// One player's recent violations, by kind.
@@ -263,28 +320,48 @@ pub struct Score {
 }
 
 impl Score {
-    /// A violation of `kind` at `now`: what the policy says to do.
-    pub fn report(&mut self, policy: &Policy, kind: Kind, now: Instant) -> Verdict {
+    /// A violation of `kind` at `now` by a player (`staff` for a staff
+    /// account): what the policy says to do.
+    pub fn report(&mut self, policy: &Policy, kind: Kind, now: Instant, staff: bool) -> Verdict {
         let rule = policy.rule(kind);
-        if rule.action == Action::Off {
+        if rule.action == Action::Off || (staff && rule.staff_exempt) {
             return Verdict::default();
         }
-        let mut kick = false;
-        if let Some((n, within)) = rule.kick_after {
-            let q = &mut self.recent[kind.index()];
+        // Kept as long as the longer of the two windows needs.
+        let keep = [rule.kick_after.map(|k| k.1), rule.ban_after.map(|b| b.1)]
+            .into_iter()
+            .flatten()
+            .max();
+        let q = &mut self.recent[kind.index()];
+        let (mut kick, mut ban) = (false, None);
+        if let Some(keep) = keep {
             q.push_back(now);
             while q
                 .front()
-                .is_some_and(|&t| now.saturating_duration_since(t) > within)
+                .is_some_and(|&t| now.saturating_duration_since(t) > keep)
             {
                 q.pop_front();
             }
-            kick = q.len() >= n as usize;
+            let seen = |within: Duration| {
+                q.iter()
+                    .filter(|&&t| now.saturating_duration_since(t) <= within)
+                    .count()
+            };
+            if let Some((n, within)) = rule.kick_after {
+                kick = seen(within) >= n as usize;
+            }
+            if let Some((n, within, len)) = rule.ban_after {
+                if seen(within) >= n as usize {
+                    ban = Some(len);
+                    kick = true;
+                }
+            }
         }
         Verdict {
             log: true,
             correct: rule.action == Action::Correct,
             kick,
+            ban,
         }
     }
 }
@@ -377,6 +454,8 @@ impl Rate {
 #[derive(Debug)]
 pub struct AntiCheat {
     pub policy: Policy,
+    /// The world folder, for the ban file.
+    world: PathBuf,
     path: PathBuf,
     file: Mutex<Option<std::fs::File>>,
 }
@@ -386,6 +465,7 @@ impl AntiCheat {
         let path = world.join(&policy.log);
         AntiCheat {
             policy,
+            world: world.to_path_buf(),
             path,
             file: Mutex::new(None),
         }
@@ -418,6 +498,24 @@ impl AntiCheat {
         }
     }
 
+    /// What a verdict says beyond the log: a ban goes in the world's
+    /// `config/bans.txt`, with `anti-cheat` as the admin and the kind as
+    /// the reason. Returns whether to close the connection.
+    pub fn enforce(&self, account: &str, kind: Kind, v: &Verdict) -> bool {
+        if let Some(len) = v.ban {
+            let ban = crate::bans::Ban {
+                account: account.to_string(),
+                until: len.map(|s| crate::bans::now().saturating_add(s)),
+                admin: "anti-cheat".into(),
+                reason: format!("anti-cheat: {}", kind.name()),
+            };
+            if let Err(e) = crate::bans::Bans::new(&self.world).add(ban) {
+                eprintln!("anti-cheat ban of {account}: {e}");
+            }
+        }
+        v.kick
+    }
+
     /// Where the log goes.
     pub fn log_path(&self) -> &Path {
         &self.path
@@ -434,7 +532,9 @@ mod tests {
             Rule::parse("correct, kick after 5 in 60"),
             Ok(Rule {
                 action: Action::Correct,
-                kick_after: Some((5, Duration::from_secs(60)))
+                kick_after: Some((5, Duration::from_secs(60))),
+                ban_after: None,
+                staff_exempt: false,
             })
         );
         assert_eq!(Rule::parse("LOG").map(|r| r.action), Ok(Action::Log));
@@ -463,12 +563,12 @@ mod tests {
         let mut s = Score::default();
         let now = Instant::now();
         for kind in Kind::ALL {
-            assert_eq!(s.report(&p, kind, now), Verdict::default());
+            assert_eq!(s.report(&p, kind, now, false), Verdict::default());
         }
         p.set("anticheat", "on");
         for kind in Kind::ALL {
             for _ in 0..100 {
-                let v = s.report(&p, kind, now);
+                let v = s.report(&p, kind, now, false);
                 assert!(v.log && !v.correct && !v.kick, "{kind:?}");
             }
         }
@@ -482,11 +582,72 @@ mod tests {
         let mut s = Score::default();
         let t = Instant::now();
         let at = |secs| t + Duration::from_secs(secs);
-        assert!(!s.report(&p, Kind::Speed, at(0)).kick);
-        assert!(!s.report(&p, Kind::Speed, at(5)).kick);
+        assert!(!s.report(&p, Kind::Speed, at(0), false).kick);
+        assert!(!s.report(&p, Kind::Speed, at(5), false).kick);
         // The first has aged out.
-        assert!(!s.report(&p, Kind::Speed, at(12)).kick);
-        assert!(s.report(&p, Kind::Speed, at(13)).kick);
+        assert!(!s.report(&p, Kind::Speed, at(12), false).kick);
+        assert!(s.report(&p, Kind::Speed, at(13), false).kick);
+    }
+
+    #[test]
+    fn bans_and_staff() {
+        let r = Rule::parse("correct, ban 3d after 2 in 60, Kick after 1 in 10, staff exempt");
+        assert_eq!(
+            r,
+            Ok(Rule {
+                action: Action::Correct,
+                kick_after: Some((1, Duration::from_secs(10))),
+                ban_after: Some((2, Duration::from_secs(60), Some(3 * 86_400))),
+                staff_exempt: true,
+            })
+        );
+        for bad in [
+            "log, ban after 1 in 10, ban after 2 in 10",
+            "log, ban soon after 1 in 10",
+            "off, ban after 1 in 10",
+            "log, staff exempt, staff exempt",
+        ] {
+            assert!(Rule::parse(bad).is_err(), "{bad}");
+        }
+
+        let mut p = Policy::default();
+        p.set("anticheat", "on");
+        p.set(
+            "anticheat.teleport",
+            "log, kick after 1 in 5, ban after 3 in 60",
+        );
+        p.set(
+            "anticheat.warp",
+            "correct, ban 1h after 1 in 1, staff exempt",
+        );
+        let mut s = Score::default();
+        let t = Instant::now();
+        let at = |secs| t + Duration::from_secs(secs);
+        // The kick window is short, the ban window long: the third within
+        // a minute bans, with no end.
+        let v = s.report(&p, Kind::Teleport, at(0), false);
+        assert!(v.kick && v.ban.is_none());
+        assert!(s.report(&p, Kind::Teleport, at(20), false).ban.is_none());
+        let v = s.report(&p, Kind::Teleport, at(40), false);
+        assert_eq!((v.kick, v.ban), (true, Some(None)));
+        assert_eq!(v.suffix(), "; banned");
+        // Staff are not checked where the admin says so, others are.
+        assert_eq!(s.report(&p, Kind::Warp, at(0), true), Verdict::default());
+        let v = s.report(&p, Kind::Warp, at(0), false);
+        assert_eq!((v.correct, v.kick, v.ban), (true, true, Some(Some(3600))));
+        assert_eq!(v.suffix(), "; banned for 60 minutes");
+        // Exempt only for that kind.
+        assert!(s.report(&p, Kind::Teleport, at(41), true).log);
+
+        // The ban goes in the world's ban file.
+        let w = std::env::temp_dir().join(format!("seihai-ac-ban-{}", std::process::id()));
+        let ac = AntiCheat::new(p.clone(), &w);
+        assert!(ac.enforce("Dee", Kind::Warp, &v));
+        let ban = crate::bans::Bans::new(&w).find("dee").unwrap().unwrap();
+        assert_eq!(ban.admin, "anti-cheat");
+        assert_eq!(ban.reason, "anti-cheat: warp");
+        assert!(ban.until.is_some_and(|u| u > crate::bans::now() + 3500));
+        let _ = std::fs::remove_dir_all(&w);
     }
 
     #[test]
@@ -500,9 +661,10 @@ mod tests {
             let v = 2.0 + i as f32;
             assert_eq!(w.step(v, v, ms(i * 100)), None, "step {i}");
         }
-        // Three seconds of steps the server reads at once after a stall.
+        // Five seconds and more of steps the server reads at once after a
+        // stall.
         let (x, y) = w.pos();
-        for i in 1..=30 {
+        for i in 1..=55 {
             assert_eq!(w.step(x - i as f32, y, ms(9_000)), None, "backlog {i}");
         }
         // Steps too long for the time: speed, and the position stays.

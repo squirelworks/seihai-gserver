@@ -67,7 +67,7 @@ pub fn now() -> u64 {
 }
 
 /// A time span as people say it: `3 days`, `5 hours`, `10 minutes`.
-fn span(secs: u64) -> String {
+pub fn span(secs: u64) -> String {
     let (n, unit) = match secs {
         s if s >= 2 * 86_400 => (s / 86_400, "day"),
         s if s >= 2 * 3600 => (s / 3600, "hour"),

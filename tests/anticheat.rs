@@ -1,7 +1,8 @@
 //! Stage 2.9: the anti-cheat against a cheating client built on Seihai's
 //! own client code, on 127.0.0.1. A teleport is put back and the others
 //! never see it, a step too fast for the time is logged, a warp with no
-//! link under the player gets no answer, and a flood of messages is
+//! link under the player gets no answer unless the player is dead (a
+//! respawn), and a flood of messages is
 //! kicked where the admin says so. Every violation is a line in the log.
 
 mod common;
@@ -67,10 +68,12 @@ fn cheats_are_caught() {
     })
     .unwrap();
 
-    // Long steps at once: the third is too fast, and logged (the default
-    // for speed), so Amy still sees it.
+    // Long steps at once: 70 tiles, so the fifth is over the 60-tile
+    // budget, and logged (the default for speed), so Amy still sees it.
     d.conn
         .send_messages(&[
+            walk_message_for(v, 45.0, 30.0, 2),
+            walk_message_for(v, 59.0, 30.0, 2),
             walk_message_for(v, 45.0, 30.0, 2),
             walk_message_for(v, 59.0, 30.0, 2),
             walk_message_for(v, 45.0, 30.0, 2),
@@ -89,9 +92,21 @@ fn cheats_are_caught() {
         Some("onlinestartlocal.nw")
     );
 
-    // A flood (standing still, so only the rate is broken): kicked.
+    // Dead, the same warp goes through: a real 2.22 warps itself to the
+    // start spot to respawn, through no link (lab run 2026-11-12).
+    let dead = vec![2 + 0x20, 2 + 0x20, 0x20, b'\n'];
+    d.conn
+        .send_messages(&[dead, levelwarp_message(30.0, 60.0, "house.nw")])
+        .unwrap();
+    read_until(&rd, &mut sd, Duration::from_secs(10), |s| {
+        s.current_level_name().as_deref() == Some("house.nw")
+    })
+    .unwrap();
+
+    // A flood (standing still at the house's arrival, so only the rate is
+    // broken): kicked.
     let flood: Vec<Vec<u8>> = (0..80)
-        .map(|_| walk_message_for(v, 45.0, 30.0, 2))
+        .map(|_| walk_message_for(v, 30.0, 60.0, 2))
         .collect();
     d.conn.send_messages(&flood).unwrap();
     let e = read_until(&rd, &mut sd, Duration::from_secs(10), |_| false).unwrap_err();
@@ -113,5 +128,63 @@ fn cheats_are_caught() {
         .collect();
     assert_eq!(kinds, ["teleport", "speed", "warp", "rate"], "{text}");
     assert!(text.lines().last().unwrap().ends_with("; kicked"), "{text}");
+    let _ = std::fs::remove_dir_all(&w);
+}
+
+/// `ban after N in S` bans the account through the world's ban file, so
+/// the next login is refused, and `staff exempt` leaves staff alone.
+#[test]
+fn a_policy_ban_holds_and_staff_are_exempt() {
+    use seihai_gserver::accounts::{Account, Store};
+    let w = world("anticheat-ban", "*\n");
+    let mut boss = Account::new("boss", "onlinestartlocal.nw", 30.0, 30.0);
+    boss.set_password(PASSWORD.as_bytes());
+    boss.staff = true;
+    Store::new(w.join("accounts")).save(&boss).unwrap();
+    let cfg = w.join("config/server.txt");
+    let mut text = std::fs::read_to_string(&cfg).unwrap();
+    text.push_str(
+        "anticheat = on\nanticheat.teleport = correct, ban 2d after 1 in 60, staff exempt\n",
+    );
+    std::fs::write(&cfg, text).unwrap();
+    let (addr, server) = start(&w);
+    let log = server.anticheat.log_path().to_path_buf();
+    let v = ClientVersion::V222;
+
+    // The staff account jumps across the level and stays where it went.
+    let mut b = login_gserver(&addr, v, random_key(), "boss", PASSWORD, false).unwrap();
+    let rb = b.conn.spawn_reader().unwrap();
+    let mut sb = SessionState::for_version(v);
+    read_until(&rb, &mut sb, Duration::from_secs(10), |s| s.board.is_some()).unwrap();
+    sb.player_x = None;
+    b.conn
+        .send_messages(&[walk_message_for(v, 2.0, 2.0, 2)])
+        .unwrap();
+    let _ = read_until(&rb, &mut sb, Duration::from_millis(500), |_| false);
+    assert_eq!(sb.player_x, None, "not put back");
+
+    // Anyone else is banned for it on the first jump, and kicked.
+    let mut d = login_gserver(&addr, v, random_key(), "dee", PASSWORD, false).unwrap();
+    let rd = d.conn.spawn_reader().unwrap();
+    let mut sd = SessionState::for_version(v);
+    read_until(&rd, &mut sd, Duration::from_secs(10), |s| s.board.is_some()).unwrap();
+    d.conn
+        .send_messages(&[walk_message_for(v, 2.0, 2.0, 2)])
+        .unwrap();
+    let e = read_until(&rd, &mut sd, Duration::from_secs(10), |_| false).unwrap_err();
+    assert!(e.contains("Disconnected by the server"), "{e}");
+    std::thread::sleep(Duration::from_millis(300));
+    let m = refused(&addr, v, "dee", PASSWORD).unwrap();
+    assert!(m.contains("anti-cheat: teleport"), "{m}");
+    // Two days, less the moment since the ban.
+    assert!(m.contains(" 2 days") || m.contains(" 47 hours"), "{m}");
+
+    let text = std::fs::read_to_string(&log).unwrap();
+    assert_eq!(text.lines().count(), 1, "{text}");
+    assert!(
+        text.contains("\tdee\t") && text.ends_with("; banned for 2 days\n"),
+        "{text}"
+    );
+    drop(b);
     let _ = std::fs::remove_dir_all(&w);
 }
