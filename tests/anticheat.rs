@@ -22,7 +22,10 @@ fn cheats_are_caught() {
     std::fs::write(w.join("levels/house.nw"), HOUSE).unwrap();
     let cfg = w.join("config/server.txt");
     let mut text = std::fs::read_to_string(&cfg).unwrap();
-    text.push_str("anticheat_rate = 50\nanticheat.rate = correct, kick after 1 in 10\n");
+    text.push_str(
+        "anticheat = on\nanticheat.teleport = correct\nanticheat.warp = correct\n\
+         anticheat_rate = 50\nanticheat.rate = correct, kick after 1 in 10\n",
+    );
     std::fs::write(&cfg, text).unwrap();
     let (addr, server) = start(&w);
     let log = server.anticheat.log_path().to_path_buf();

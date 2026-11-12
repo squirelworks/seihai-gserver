@@ -7,7 +7,12 @@ behaviour against, never a code source (see `00-rules.md`).
 
 - One binary, `seihai-gserver`. A world folder holds `config/`, `accounts/`,
   `levels/`, `weapons/`, `npcs/` (format to be ours; read GServer-v2-style world
-  folders too, so existing worlds move over).
+  folders too, so existing worlds move over). `seihai-gserver import-v2`
+  makes a world from a GServer-v2 server folder: settings, the version list,
+  accounts, staff and bans (`src/import.rs`, from the format note
+  `docs/GSERVER-V2-WORLD.md`, written from the fork's sample data files
+  only), and `world/` by its `foldersconfig.txt` (levels to `levels/`,
+  the rest to `files/`).
 - Async networking (tokio). One task per connection; one world task that owns
   levels and players and runs a 50 ms tick (real 2.x clients send walk props on a
   100 ms cadence and expect replies within a frame).
@@ -39,7 +44,50 @@ behaviour against, never a code source (see `00-rules.md`).
    `docs/lab/stage3-2026-11-05.md`). Open from that run: real clients did not
    take or send player hits; a player saved with 0 hearts logs back in with 0;
    `PLI_THROWCARRIED`'s shape needs a capture.
-4. RC and NC endpoints for `seihai-rc`.
+4. RC and NC endpoints for `seihai-rc` (issue #52, in slices). **Slice 1
+   built** (`src/rc.rs`, `tests/rc_login.rs`): RC logins (types 1 and 6,
+   and through `SEI00001`) for accounts with `STAFF`, from the account's
+   `IPRANGE` (loopback only without one); refusals in the RC's framing; the
+   welcome (`PLO_SIGNATURE`, RC chat) and a quiet idle link. **Slice 2
+   built** (`tests/rc_players.rs`, with `seihai-rc` v0.1.0 as the client):
+   the world task lists RCs under ids from the players' space; an RC gets
+   `PLO_ADDPLAYER` for every player and other RC on login, then live
+   `ADDPLAYER` on a login, level change or nickname change and
+   `PLO_DELPLAYER` on a leave; "New RC: account" and RC chat lines
+   (`nickname: text`, our own form) go to every RC. **Slice 3 built**
+   (same test file): private messages (28) to players from the RC's id and
+   nickname, admin messages to all (63) and to one (64) as
+   `PLO_RC_ADMINMESSAGE`, and the disconnect (61), which kicks through the
+   world task so the RCs see the leave. **Slice 4 built**
+   (`src/rcaccounts.rs`, `tests/rc_accounts.rs`): account list (with `%`
+   patterns and `adminlevel` conditions), get, set, add and delete; the
+   dialog's e-mail, load only, admin level and admin worlds are kept in
+   the account file and not acted on. **Slice 5 built** (`src/rcfiles.rs`,
+   `tests/rc_files.rs`): the file browser (list 90, get 92, put 93 in a raw
+   block) in the world folder within the account's `FOLDER` rights (`r` or
+   `rw`, a folder and a mask; none sees nothing), plain files of at most
+   60 KiB; move 96, delete 97 and rename 98 as seihai-rc sends them
+   (not yet captured from a real RC). **Slice 6 built** (`rcaccounts.rs`): a player's staff rights
+   (83/84 and 62: rights bits as `RCRIGHTS`, not acted on yet; the IP
+   range as `IPRANGE`; folder rights as `FOLDER`, tokenized out) and
+   comments (85/86 and 63, `COMMENT` lines). **Slice 7
+   built** (`src/rcprops.rs`): a player's props by id (73) or account
+   (74) as 72, from the account file, and a set (76) of an offline
+   account's props and flags; a set on a player online is refused until
+   it can go through the world. **The RC warp built** (82,
+   `tests/rc_players.rs`): the player moves as on an NPC-server warp of
+   stage 5, and the RCs get the new entry; a missing level is logged and
+   the player stays. No real RC run yet; seihai-rc's lab notes still ask
+   what a real client gets on a warp to another level. **The ban fields
+   built** (`tests/rc_accounts.rs`): the account dialog's banned and
+   reason, and the player ban (87 get as 64, 88 set), are the world's
+   `config/bans.txt`; an RC ban has no end and names the RC's account as
+   the admin, a ban set on a player online disconnects them, and their
+   next login meets the ban. **Props of a player online built**
+   (`tests/rc_accounts.rs`): a get shows what the world holds over the
+   file, and a set goes to the player at once (as the NPC-server's
+   `SET_PLAYER_PROPS`), replaces the world's flags and writes the file.
+   Next: server options once a lab has their layouts, then NC.
 5. NPC-server link for `seihai-npcserver`. **Built from source, lab run
    open** (`src/npclink.rs`, `src/world.rs`, `PROTOCOL.md`,
    `tests/npc_link.rs`, `tests/npc_messages.rs`,
@@ -156,8 +204,10 @@ anticheat.items = correct, log
 anticheat.rate = kick at 200 per second
 ```
 
-Defaults are `log` and `correct` only: no kicks or bans until an admin turns
-them on, so a check that is wrong for some build never locks real players out.
+Anti-cheat is off by default (Squirrel, issue #54, 2026-11-12): a check can
+only guess, and a wrong guess hurts honest players more than it stops a
+cheat. Turned on, every check only logs until the admin picks `correct` or
+a kick for it. Bans are moderation, not anti-cheat, and work either way.
 
 Landed in stage 2.9 (`src/anticheat.rs`): the policy layer (`off`, `log`,
 `correct`, `kick after N in S`; settings `anticheat`, `anticheat_log`,
@@ -177,10 +227,14 @@ logged, and with `correct` put back. Its default is `log`, not `correct`:
 classic level scripts run on the client and can pay gralats the server
 never sees. Bans by account in `config/bans.txt` (account, end time,
 admin, reason), read at every login (game and RC), with `seihai-gserver
-ban` / `unban`. Still open: hurt range and weapon (after #50), a `ban`
-action in the policy, bans by machine field, and the speed figures from a
-lab run. A player saved dead logs in with full hearts (issue #51; the
-beta4 value is still to be checked).
+ban` / `unban`. Then the hurt check (`anticheat.hurt`): a
+`PLI_HURTPLAYER` from more than 24 tiles from the victim. #50 showed that
+real 2.05 and 2.22 clients do not send 26 for a sword: the victim's client
+hurts itself from the attacker's `sword` gani, so there is no hit message
+to check a weapon against. Everything is off by default since then. Still
+open, and only worth it if an admin asks: bans by machine field and the
+speed figures from a lab run. A player saved dead logs in at 0 hearts, as beta4 does (issue
+#51, lab run 2026-11-12); `revive_dead = true` gives full hearts instead.
 
 ### Where it lives
 
@@ -266,10 +320,11 @@ Next:
       `tests/listserver_link.rs`. No real client: these packets are only
       between this gserver and a listserver. `VERIACC2`'s type byte is
       the login's account type (`login.rs`: 0 for 1.21 to 2.17, 5 for
-      2.22 and later). RC (1, 6) and NC (3) send theirs once `rc.rs`
-      accepts those logins.
-- [ ] RC logins (`rc.rs`, type 1/6): the same handshake once `seihai-rc`
-      speaks it.
+      2.22 and later). RC logins send 1 or 6 (`rc.rs`); NC (3) will send
+      its own once it is served.
+- [x] RC logins (`rc.rs`, type 1/6): the same handshake
+      (`tests/rc_login.rs`, with Seihai's own handshake code standing in
+      for `seihai-rc`).
 - [x] A `key-fingerprint` subcommand that prints the key without starting
       (`src/main.rs`, `tests/cli.rs`). It reads the key file and never
       makes one.

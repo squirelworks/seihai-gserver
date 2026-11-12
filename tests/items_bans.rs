@@ -29,7 +29,7 @@ fn a_gralat_raise_from_nowhere_is_put_back() {
     let w = world("items", "*\n");
     let cfg = w.join("config/server.txt");
     let mut text = std::fs::read_to_string(&cfg).unwrap();
-    text.push_str("anticheat.items = correct\n");
+    text.push_str("anticheat = on\nanticheat.items = correct\n");
     std::fs::write(&cfg, text).unwrap();
     let (addr, server) = start(&w);
     let log = server.anticheat.log_path().to_path_buf();
@@ -82,9 +82,28 @@ fn bans_and_dead_players() {
     dead.max_hp = 3;
     dead.hp = 0.0;
     store.save(&dead).unwrap();
-    let (addr, _server) = start(&w);
+    let (addr, server) = start(&w);
 
-    // Every generation the burst serves gets full hearts.
+    // As on beta4 (lab run 2026-11-12): logged in at 0, prop 2 = 0x20.
+    let v = ClientVersion::V222;
+    let mut c = login_gserver(&addr, v, random_key(), "ghost", PASSWORD, false).unwrap();
+    let rx = c.conn.spawn_reader().unwrap();
+    let mut st = SessionState::for_version(v);
+    read_until(&rx, &mut st, Duration::from_secs(10), |s| {
+        s.own_cur_power.is_some()
+    })
+    .unwrap();
+    assert_eq!(st.own_cur_power, Some(0));
+    drop(c);
+    std::thread::sleep(Duration::from_millis(300));
+    drop(server);
+
+    // With revive_dead, every generation the burst serves gets full hearts.
+    let cfg = w.join("config/server.txt");
+    let mut text = std::fs::read_to_string(&cfg).unwrap();
+    text.push_str("revive_dead = true\n");
+    std::fs::write(&cfg, text).unwrap();
+    let (addr, _server) = start(&w);
     for v in [
         ClientVersion::V139,
         ClientVersion::V205,

@@ -200,17 +200,10 @@ pub fn message(id: u8, props: &[(u8, Vec<u8>)], to: ClientVersion) -> Vec<u8> {
     msg(PLO_BADDYPROPS, &p)
 }
 
-/// The extension of a default baddy image for `to`: the profile's (`.gif`
-/// before 2.1), except that 2.05 rev 2 ships the baddy images as `.png`
-/// only; sent `baddygray.gif` it draws the shadow and the verse but no
-/// soldier, and asks for the file (Wine lab, 2026-11-05). beta4 sends it
-/// `.png` too.
+/// The extension of a default baddy image for `to` (`profile.rs`:
+/// `.gif` before 2.1, but `.png` for 2.05).
 fn image_ext(to: ClientVersion) -> &'static str {
-    if to == ClientVersion::V205 {
-        ".png"
-    } else {
-        to.profile().files.image_ext
-    }
+    crate::profile::ServerProfile::of(to).baddy_image_ext
 }
 
 /// `PLO_BADDYHURT` (27): a follower's hit, as it sent it, for the leader.

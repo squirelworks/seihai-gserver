@@ -74,7 +74,7 @@
 //! To do: the anti-cheat checks of stage 7 that guard these (movement,
 //! warps, items and counted props), see `docs/PLAN.md`.
 
-use crate::anticheat::{AntiCheat, Kind, Score, Walk, LINK_SLACK};
+use crate::anticheat::{AntiCheat, Kind, Score, Walk, HURT_RANGE, LINK_SLACK};
 use crate::baddies::Baddy;
 use crate::gmaps::{plays_gmaps, Gmaps, Place, GMAPLEVELX, GMAPLEVELY};
 use crate::levels::Level;
@@ -113,6 +113,8 @@ type Batch = (Vec<u8>, Vec<(u16, usize, usize)>);
 
 /// Player ids are GSHORTs, which hold 14 bits; 0 is not a player.
 const ID_LIMIT: u16 = 1 << 14;
+/// Prop 0, the nickname.
+const NICKNAME: u8 = 0;
 
 /// The id the NPC-server's PMs come from. Never given to a player.
 pub const NPC_SERVER_ID: u16 = ID_LIMIT - 1;
@@ -193,6 +195,38 @@ pub enum WorldIn {
     },
     /// The server is stopping: save everyone online, then answer.
     SaveAll { reply: oneshot::Sender<usize> },
+    /// An RC logged in (`rc.rs`, slice 2): the world lists it and answers
+    /// with its id, `None` when no id is free.
+    RcJoined {
+        account: String,
+        nick: Option<Vec<u8>>,
+        outbox: Outbox,
+        reply: oneshot::Sender<Option<u16>>,
+    },
+    /// What an RC sent: a nickname, chat, a player action.
+    Rc { rc: u16, ev: crate::rc::RcEvent },
+    /// An RC's link closed.
+    RcLeft { rc: u16 },
+    /// What the world holds of the player online with `account` (lower
+    /// case), as it would go back to the file now; `None` when offline.
+    Snapshot {
+        account: String,
+        reply: oneshot::Sender<Option<Leaving>>,
+    },
+    /// An RC's props set (76) on the player online with `account`: the
+    /// props go to the player as the NPC-server's do, and the flags
+    /// replace the world's. Answers whether the player was online.
+    RcPropsSet {
+        set: crate::rcprops::Set,
+        reply: oneshot::Sender<bool>,
+    },
+    /// The server flags as `name=value` (or a bare `name`), for an RC.
+    ServerFlags { reply: oneshot::Sender<Vec<String>> },
+    /// An RC's server flags set (69): the list replaces the world's.
+    SetServerFlags {
+        flags: Vec<String>,
+        reply: oneshot::Sender<()>,
+    },
     /// A message from the NPC-server (`0x40` to `0x4C`), from the link.
     FromNpc(Message),
     /// The NPC-server link closed: its NPCs go.
@@ -287,6 +321,8 @@ impl Refused {
 pub struct World {
     tx: mpsc::UnboundedSender<WorldIn>,
     online: watch::Receiver<Vec<String>>,
+    /// Player id to lower-case account, for an RC asking by id.
+    ids: watch::Receiver<BTreeMap<u16, String>>,
     /// The task, until [`World::start`] spawns it.
     task: Mutex<Option<WorldTask>>,
 }
@@ -301,12 +337,15 @@ impl World {
         }
         let (tx, rx) = mpsc::unbounded_channel();
         let (online_tx, online) = watch::channel(Vec::new());
+        let (ids_tx, ids) = watch::channel(BTreeMap::new());
         World {
             tx,
             online,
+            ids,
             task: Mutex::new(Some(WorldTask {
                 rx,
                 online: online_tx,
+                ids: ids_tx,
                 max_players,
                 levels,
                 gmaps,
@@ -322,9 +361,11 @@ impl World {
                 baddies: HashMap::new(),
                 leaders: HashMap::new(),
                 pending: BTreeMap::new(),
+                rcs: BTreeMap::new(),
                 npc: None,
                 server_npcs: HashMap::new(),
                 server_flags: BTreeMap::new(),
+                flags_file: None,
                 noted: HashSet::new(),
                 reload_objects: HashSet::new(),
             })),
@@ -487,11 +528,131 @@ impl World {
         answer.await.unwrap_or(0)
     }
 
+    /// List an RC that logged in. Its id, or `None` when no id is free or
+    /// the world task is gone.
+    pub async fn rc_join(
+        &self,
+        account: String,
+        nick: Option<Vec<u8>>,
+        outbox: Outbox,
+    ) -> Option<u16> {
+        let (reply, answer) = oneshot::channel();
+        self.tx
+            .send(WorldIn::RcJoined {
+                account,
+                nick,
+                outbox,
+                reply,
+            })
+            .ok()?;
+        answer.await.ok().flatten()
+    }
+
+    /// What an RC sent.
+    pub fn rc_event(&self, rc: u16, ev: crate::rc::RcEvent) {
+        let _ = self.tx.send(WorldIn::Rc { rc, ev });
+    }
+
+    /// An RC's link closed.
+    pub fn rc_left(&self, rc: u16) {
+        let _ = self.tx.send(WorldIn::RcLeft { rc });
+    }
+
     /// Accounts online now, lower-case and sorted. Updated by the world
     /// task after each join and leave.
     pub fn online_accounts(&self) -> Vec<String> {
         self.online.borrow().clone()
     }
+
+    /// The account (lower case) of the player with `id`, if one is online.
+    pub fn account_of(&self, id: u16) -> Option<String> {
+        self.ids.borrow().get(&id).cloned()
+    }
+
+    /// [`WorldIn::Snapshot`], from a blocking thread (not a runtime one).
+    pub fn snapshot_blocking(&self, account: &str) -> Option<Leaving> {
+        let (reply, answer) = oneshot::channel();
+        self.tx
+            .send(WorldIn::Snapshot {
+                account: account.to_ascii_lowercase(),
+                reply,
+            })
+            .ok()?;
+        answer.blocking_recv().ok().flatten()
+    }
+
+    /// [`WorldIn::ServerFlags`], from a blocking thread.
+    pub fn server_flags_blocking(&self) -> Vec<String> {
+        let (reply, answer) = oneshot::channel();
+        if self.tx.send(WorldIn::ServerFlags { reply }).is_err() {
+            return Vec::new();
+        }
+        answer.blocking_recv().unwrap_or_default()
+    }
+
+    /// [`WorldIn::SetServerFlags`], from a blocking thread. Returns once
+    /// the world has them.
+    pub fn set_server_flags_blocking(&self, flags: Vec<String>) {
+        let (reply, answer) = oneshot::channel();
+        if self
+            .tx
+            .send(WorldIn::SetServerFlags { flags, reply })
+            .is_ok()
+        {
+            let _ = answer.blocking_recv();
+        }
+    }
+
+    /// Where the server flags are kept (`config/serverflags.txt`, one
+    /// `name=value` a line): read now, written on every change. Call
+    /// before [`World::start`]; later calls do nothing.
+    pub fn set_server_flags_file(&self, path: PathBuf) {
+        if let Some(t) = self.task.lock().unwrap().as_mut() {
+            if let Ok(text) = std::fs::read_to_string(&path) {
+                for l in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
+                    let (n, v) = split_flag(l);
+                    t.server_flags.insert(n, v);
+                }
+            }
+            t.flags_file = Some(path);
+        }
+    }
+
+    /// [`WorldIn::RcPropsSet`], from a blocking thread. Whether the player
+    /// was online and got it.
+    pub fn rc_props_set_blocking(&self, set: crate::rcprops::Set) -> bool {
+        let (reply, answer) = oneshot::channel();
+        if self.tx.send(WorldIn::RcPropsSet { set, reply }).is_err() {
+            return false;
+        }
+        answer.blocking_recv().unwrap_or(false)
+    }
+
+    /// The id of the player online with `account`, without case.
+    pub fn id_of(&self, account: &str) -> Option<u16> {
+        self.ids
+            .borrow()
+            .iter()
+            .find(|(_, a)| a.eq_ignore_ascii_case(account))
+            .map(|(&id, _)| id)
+    }
+}
+
+/// One RC as the world lists it.
+/// An RC's nickname as players see it: the account in capitals, whatever
+/// nickname the RC set, as GServer-v2 beta4 lists a real RC2 (lab run
+/// 2026-11-12: account `xrc` listed and named on PMs as `XRC`).
+fn rc_player_nick(account: &str) -> Vec<u8> {
+    crate::wire::latin1(&account.to_uppercase())
+}
+
+struct OnlineRc {
+    /// The account name as the account file has it.
+    account: String,
+    /// Its name in the list and on RC chat, a `GSTRING`
+    /// (`rc::rc_nick`).
+    nick: Vec<u8>,
+    outbox: Outbox,
 }
 
 /// One player as the world holds them.
@@ -658,6 +819,7 @@ pub type Saver = Box<dyn Fn(Leaving) + Send>;
 pub struct WorldTask {
     rx: mpsc::UnboundedReceiver<WorldIn>,
     online: watch::Sender<Vec<String>>,
+    ids: watch::Sender<BTreeMap<u16, String>>,
     max_players: usize,
     levels: LevelSource,
     gmaps: Gmaps,
@@ -682,12 +844,16 @@ pub struct WorldTask {
     /// Who leads each level (lower-case name): their client runs its
     /// baddies. An entry whose player has left the level is stale.
     leaders: HashMap<String, u16>,
+    /// The RCs logged in, by id. Their ids come from the players' space.
+    rcs: BTreeMap<u16, OnlineRc>,
     /// The NPC-server link, fed from here.
     npc: Option<Arc<Hub>>,
     /// Server NPCs by the NPC-server's id.
     server_npcs: HashMap<u32, ServerNpc>,
     /// Server flags (`server.` names) by name; the value may be empty.
     server_flags: BTreeMap<String, String>,
+    /// Where the server flags are kept, if anywhere.
+    flags_file: Option<PathBuf>,
     /// Link messages already logged as not passed on.
     noted: HashSet<&'static str>,
     /// Levels whose file changed while players were in them: their NPCs
@@ -776,6 +942,36 @@ impl WorldTask {
                 }
             }
             WorldIn::Left { player } => self.leave(player),
+            WorldIn::Snapshot { account, reply } => {
+                let l = self
+                    .by_account
+                    .get(&account)
+                    .and_then(|id| self.players.get(id))
+                    .map(Online::leaving);
+                let _ = reply.send(l);
+            }
+            WorldIn::ServerFlags { reply } => {
+                let _ = reply.send(
+                    self.server_flags
+                        .iter()
+                        .map(|(n, v)| flag_text(n, v))
+                        .collect(),
+                );
+            }
+            WorldIn::SetServerFlags { flags, reply } => {
+                self.set_server_flags(&flags);
+                let _ = reply.send(());
+            }
+            WorldIn::RcPropsSet { set, reply } => {
+                let id = self
+                    .by_account
+                    .get(&set.account.to_ascii_lowercase())
+                    .copied();
+                if let Some(id) = id {
+                    self.rc_props_set(id, &set);
+                }
+                let _ = reply.send(id.is_some());
+            }
             WorldIn::SaveAll { reply } => {
                 let mut n = 0;
                 if let Some(save) = &self.saver {
@@ -824,8 +1020,215 @@ impl WorldTask {
                 level,
                 mod_time,
             } => self.adjacent(player, &level, mod_time),
+            WorldIn::RcJoined {
+                account,
+                nick,
+                outbox,
+                reply,
+            } => {
+                let id = self.take_id();
+                if let Some(id) = id {
+                    let nick = crate::rc::rc_nick(&account, nick.as_deref());
+                    self.rcs.insert(
+                        id,
+                        OnlineRc {
+                            account,
+                            nick,
+                            outbox,
+                        },
+                    );
+                }
+                if reply.send(id).is_ok() {
+                    if let Some(id) = id {
+                        self.rc_in(id);
+                    }
+                } else if let Some(id) = id {
+                    self.rcs.remove(&id);
+                }
+            }
+            WorldIn::Rc { rc, ev } => self.rc_event(rc, ev),
+            WorldIn::RcLeft { rc } => {
+                if self.rcs.remove(&rc).is_some() {
+                    self.to_rcs(None, Some(crate::rc::delplayer(rc)));
+                    // Off the players' lists, as a player who logs out.
+                    for p in self.players.values() {
+                        let gone = &Change::default();
+                        if let Some(m) = others::message(p.version, rc, gone, &others::LOGGED_OUT) {
+                            let _ = p.outbox.send(vec![m]);
+                        }
+                    }
+                }
+            }
             WorldIn::FromNpc(m) => self.apply_npc(m),
             WorldIn::NpcGone => self.npc_gone(),
+        }
+    }
+
+    /// What RC `rc` sent. A player id that is not online (or is an RC) is
+    /// passed over, as the fork did; the RC gets nothing back.
+    fn rc_event(&mut self, rc: u16, ev: crate::rc::RcEvent) {
+        use crate::rc::RcEvent;
+        let Some(r) = self.rcs.get_mut(&rc) else {
+            return;
+        };
+        match ev {
+            RcEvent::Nick(nick) => {
+                r.nick = crate::rc::rc_nick(&r.account, Some(&nick));
+                let entry = self.rc_entry(rc);
+                self.to_rcs(Some(rc), entry);
+            }
+            RcEvent::Chat(text) => {
+                let line = crate::rc::chat_line(&r.nick, &text);
+                self.to_rcs(None, Some(line));
+            }
+            RcEvent::Pm { to, text } => {
+                let nick = rc_player_nick(&r.account);
+                let account = crate::wire::latin1(&r.account);
+                let mut done = HashSet::new();
+                for id in to {
+                    let Some(p) = self.players.get(&id).filter(|_| done.insert(id)) else {
+                        continue;
+                    };
+                    let m = others::private_message(p.version, rc, &nick, &account, &text);
+                    if !m.is_empty() {
+                        let _ = p.outbox.send(vec![m]);
+                    }
+                }
+            }
+            RcEvent::AdminAll(text) => {
+                let m = crate::rc::admin_message(&r.account, &text);
+                for p in self.players.values() {
+                    if p.version
+                        .profile()
+                        .protocol
+                        .plo
+                        .contains(crate::rc::PLO_RC_ADMINMESSAGE)
+                    {
+                        let _ = p.outbox.send(vec![m.clone()]);
+                    }
+                }
+            }
+            RcEvent::AdminTo(id, text) => {
+                let m = crate::rc::admin_message(&r.account, &text);
+                if let Some(p) = self.players.get(&id) {
+                    if p.version
+                        .profile()
+                        .protocol
+                        .plo
+                        .contains(crate::rc::PLO_RC_ADMINMESSAGE)
+                    {
+                        let _ = p.outbox.send(vec![m]);
+                    }
+                }
+            }
+            // The connection carries these out.
+            RcEvent::Account(_) | RcEvent::Files(_) | RcEvent::Server(_) => {}
+            RcEvent::Kick(id) => {
+                // The connection says why and closes; its leave lists the
+                // player out for every RC.
+                if let Some(p) = self.players.get(&id) {
+                    let _ = p.outbox.send(Vec::new());
+                }
+            }
+            RcEvent::Warp { id, level, x2, y2 } => {
+                // As an NPC-server warp: no warp check; a level change
+                // lists the player again for every RC (`meet`).
+                self.warp_to(
+                    Warp {
+                        player: id,
+                        level: latin1_text(&level),
+                        x: f32::from(x2) / 2.0,
+                        y: f32::from(y2) / 2.0,
+                        mod_time: None,
+                    },
+                    true,
+                );
+            }
+        }
+    }
+
+    /// RC `id` is in: it gets the list (every player and every other RC),
+    /// the other RCs get its entry, and every RC hears of it on RC chat.
+    fn rc_in(&self, id: u16) {
+        let Some(me) = self.rcs.get(&id) else {
+            return;
+        };
+        let mut list: Vec<u8> = self
+            .players
+            .keys()
+            .filter_map(|&p| self.player_entry(p))
+            .collect::<Vec<_>>()
+            .concat();
+        for &other in self.rcs.keys().filter(|&&r| r != id) {
+            list.extend(self.rc_entry(other).unwrap_or_default());
+        }
+        if !list.is_empty() {
+            let _ = me.outbox.send(vec![list]);
+        }
+        self.to_rcs(Some(id), self.rc_entry(id));
+        self.rc_to_players(id);
+        let line = crate::wire::latin1(&format!("New RC: {}", me.account));
+        self.to_rcs(None, Some(crate::wire::msg(crate::rc::PLO_RC_CHAT, &line)));
+    }
+
+    /// Player `id`'s entry in an RC's list (`PLO_ADDPLAYER`).
+    fn player_entry(&self, id: u16) -> Option<Vec<u8>> {
+        let p = self.players.get(&id)?;
+        let level = self.loaded.get(&p.level).map_or(&p.level, |l| &l.name);
+        let nick = p
+            .props
+            .values()
+            .get(&0)
+            .cloned()
+            .unwrap_or_else(|| vec![0x20]);
+        Some(crate::rc::addplayer(
+            id,
+            &crate::wire::latin1(&p.account),
+            &crate::wire::latin1(level),
+            &nick,
+        ))
+    }
+
+    /// RC `id`'s entry in another RC's list.
+    fn rc_entry(&self, id: u16) -> Option<Vec<u8>> {
+        let r = self.rcs.get(&id)?;
+        Some(crate::rc::addplayer(
+            id,
+            &crate::wire::latin1(&r.account),
+            crate::rc::RC_LEVEL,
+            &r.nick,
+        ))
+    }
+
+    /// RC `rc` as an entry in `to`'s player list (`others::rc_entry`).
+    fn rc_for_player(&self, rc: u16, to: ClientVersion) -> Option<Vec<u8>> {
+        let r = self.rcs.get(&rc)?;
+        others::rc_entry(
+            to,
+            rc,
+            &rc_player_nick(&r.account),
+            &crate::wire::latin1(&r.account),
+        )
+    }
+
+    /// RC `rc`'s entry to every player.
+    fn rc_to_players(&self, rc: u16) {
+        for p in self.players.values() {
+            if let Some(m) = self.rc_for_player(rc, p.version) {
+                let _ = p.outbox.send(vec![m]);
+            }
+        }
+    }
+
+    /// `body` to every RC but `except`.
+    fn to_rcs(&self, except: Option<u16>, body: Option<Vec<u8>>) {
+        let Some(body) = body else {
+            return;
+        };
+        for (&id, r) in &self.rcs {
+            if Some(id) != except {
+                let _ = r.outbox.send(vec![body.clone()]);
+            }
         }
     }
 
@@ -1378,6 +1781,7 @@ impl WorldTask {
             self.publish();
             self.tell_level(&p.level, id, &Change::default(), &others::LOGGED_OUT);
             self.hand_off(&p.level);
+            self.to_rcs(None, Some(crate::rc::delplayer(id)));
         }
     }
 
@@ -1445,6 +1849,15 @@ impl WorldTask {
                 let _ = p.outbox.send(vec![m]);
             }
         }
+        // The RCs online, in the player's list (again at each level:
+        // an entry with no level is not dropped by a level change).
+        for &rc in self.rcs.keys() {
+            if let Some(m) = self.rc_for_player(rc, me.version) {
+                let _ = me.outbox.send(vec![m]);
+            }
+        }
+        // The RCs list the player in the new level.
+        self.to_rcs(None, self.player_entry(id));
     }
 
     /// Who leads `level`, if they are still in it.
@@ -1557,8 +1970,9 @@ impl WorldTask {
     /// A hit on another player in the level: the victim gets
     /// `PLO_HURTPLAYER` (40) with the attacker's id, the hit as sent, and
     /// `ff ff ff` after it, as GServer-v2 beta4 sends it in the lab
-    /// (2026-11-05). The victim's client decides whether it takes it.
-    fn hurt_player(&self, id: u16, raw: &[u8]) {
+    /// (2026-11-05). The victim's client decides whether it takes it. A
+    /// hit from farther than [`HURT_RANGE`] tiles is a `hurt` violation.
+    fn hurt_player(&mut self, id: u16, raw: &[u8]) {
         let (Some(p), Some(hit)) = (self.players.get(&id), raw.get(2..5)) else {
             return;
         };
@@ -1574,6 +1988,17 @@ impl WorldTask {
         if v.level != p.level || !v.version.profile().protocol.plo.contains(PLO_HURTPLAYER) {
             return;
         }
+        let ((ax, ay), (vx, vy)) = (p.global(), v.global());
+        let d = (ax - vx).hypot(ay - vy);
+        if d > HURT_RANGE {
+            let what = format!("hit {} from {d:.1} tiles", v.account);
+            if self.report(id, Kind::Hurt, what) {
+                return;
+            }
+        }
+        let Some(v) = self.players.get(&victim) else {
+            return;
+        };
         let mut m = Vec::with_capacity(8);
         crate::wire::gshort(id, &mut m);
         m.extend_from_slice(hit);
@@ -1693,7 +2118,7 @@ impl WorldTask {
             .map(|&i| (i, p.props.values().get(&i).cloned()))
             .collect();
         if let Some(hub) = &self.npc {
-            hub.props(id, raw, p.version.profile().props.bow_prop10);
+            hub.props(id, raw, others::bow_prop10(p.version));
         }
         let before: Vec<(u8, Option<Vec<u8>>)> = [GMAPLEVELX, GMAPLEVELY]
             .iter()
@@ -1773,6 +2198,9 @@ impl WorldTask {
             return;
         }
         self.check_counted(id, &mut change, &counted);
+        if change.has(NICKNAME) {
+            self.to_rcs(None, self.player_entry(id));
+        }
         if !change.is_empty() {
             self.pending.entry(id).or_default().merge(change);
         }
@@ -2054,6 +2482,25 @@ impl WorldTask {
     /// others in the level, and `PLAYER_PROPS` to the link. The NPC-server
     /// is a trusted source, so no anti-cheat check refuses it; a move puts
     /// the walk check at the new spot.
+    /// An RC's 76 on player `id`: the props it may set go through
+    /// [`Self::set_player_props`] (the player and the level see them, as
+    /// from the NPC-server), and its flags replace the player's.
+    fn rc_props_set(&mut self, id: u16, set: &crate::rcprops::Set) {
+        let mut raw = Vec::new();
+        for (&prop, v) in &set.props {
+            if crate::rcprops::LIVE.contains(&prop) {
+                raw.push(gchar(prop));
+                raw.extend_from_slice(v);
+            }
+        }
+        if !raw.is_empty() {
+            self.set_player_props(id, &raw);
+        }
+        if let Some(p) = self.players.get_mut(&id) {
+            p.flags = set.flags.iter().map(|f| split_flag(f)).collect();
+        }
+    }
+
     fn set_player_props(&mut self, id: u16, raw: &[u8]) {
         let Some(p) = self.players.get_mut(&id) else {
             return;
@@ -2074,6 +2521,9 @@ impl WorldTask {
         }
         if let Some(m) = others::own_message(p.version, &own) {
             let _ = p.outbox.send(vec![m]);
+        }
+        if change.has(NICKNAME) {
+            self.to_rcs(None, self.player_entry(id));
         }
         if !change.is_empty() {
             self.pending.entry(id).or_default().merge(change);
@@ -2133,6 +2583,7 @@ impl WorldTask {
                 let _ = p.outbox.send(vec![m.clone()]);
             }
         }
+        self.save_server_flags();
         if let Some(hub) = &self.npc {
             hub.server_flags(
                 self.server_flags
@@ -2140,6 +2591,47 @@ impl WorldTask {
                     .map(|(n, v)| crate::wire::latin1(&flag_text(n, v)))
                     .collect(),
             );
+        }
+    }
+
+    /// An RC's whole list: flags gone are unset, new or changed ones set,
+    /// each as the NPC-server's `SERVER_FLAG` would.
+    fn set_server_flags(&mut self, flags: &[String]) {
+        let new: BTreeMap<String, String> = flags
+            .iter()
+            .map(|f| split_flag(f))
+            .filter(|(n, _)| !n.is_empty())
+            .collect();
+        let gone: Vec<String> = self
+            .server_flags
+            .keys()
+            .filter(|n| !new.contains_key(*n))
+            .cloned()
+            .collect();
+        for n in gone {
+            self.server_flag(n, false, String::new());
+        }
+        for (n, v) in new {
+            if self.server_flags.get(&n) != Some(&v) {
+                self.server_flag(n, true, v);
+            }
+        }
+    }
+
+    /// Write the server flags to their file, if they have one.
+    fn save_server_flags(&self) {
+        let Some(path) = &self.flags_file else {
+            return;
+        };
+        let mut text = String::new();
+        for (n, v) in &self.server_flags {
+            text.push_str(&flag_text(n, v));
+            text.push('\n');
+        }
+        let tmp = path.with_extension("txt.new");
+        let r = std::fs::write(&tmp, text).and_then(|()| std::fs::rename(&tmp, path));
+        if let Err(e) = r {
+            eprintln!("{}: {e}", path.display());
         }
     }
 
@@ -2216,7 +2708,7 @@ impl WorldTask {
             } else {
                 self.last_id + 1
             };
-            if !self.players.contains_key(&self.last_id) {
+            if !self.players.contains_key(&self.last_id) && !self.rcs.contains_key(&self.last_id) {
                 return Some(self.last_id);
             }
         }
@@ -2227,6 +2719,12 @@ impl WorldTask {
         let mut v: Vec<String> = self.by_account.keys().cloned().collect();
         v.sort();
         self.online.send_replace(v);
+        self.ids.send_replace(
+            self.by_account
+                .iter()
+                .map(|(a, &id)| (id, a.clone()))
+                .collect(),
+        );
     }
 }
 

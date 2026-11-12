@@ -95,3 +95,71 @@ fn hits_and_kills() {
     }
     let _ = std::fs::remove_dir_all(&w);
 }
+
+/// The hurt check (`anticheat.hurt`, issue #54): with it off, as by
+/// default, a hit from across the level still reaches the victim; with it
+/// on and `correct`, it is dropped and logged, and a hit from close by
+/// still goes through.
+#[test]
+fn a_hit_from_across_the_level() {
+    for on in [false, true] {
+        let w = world(if on { "hurt-far-on" } else { "hurt-far-off" }, "*\n");
+        std::fs::create_dir_all(w.join("levels")).unwrap();
+        std::fs::write(w.join("levels/onlinestartlocal.nw"), "GLEVNW01\n").unwrap();
+        if on {
+            let cfg = w.join("config/server.txt");
+            let mut text = std::fs::read_to_string(&cfg).unwrap();
+            text.push_str("anticheat = on\nanticheat.hurt = correct\n");
+            std::fs::write(&cfg, text).unwrap();
+        }
+        let store = seihai_gserver::accounts::Store::new(w.join("accounts"));
+        for (name, x, y) in [("amy", 2.0, 2.0), ("bob", 60.0, 60.0), ("cal", 3.0, 2.0)] {
+            let mut a = seihai_gserver::accounts::Account::new(name, "onlinestartlocal.nw", x, y);
+            a.set_password(PASSWORD.as_bytes());
+            store.save(&a).unwrap();
+        }
+        let (addr, server) = start(&w);
+        let mut amy = RawClient::join(&addr, ClientVersion::V222, "amy", in_level);
+        let mut bob = RawClient::join(&addr, ClientVersion::V222, "bob", in_level);
+        let mut cal = RawClient::join(&addr, ClientVersion::V222, "cal", in_level);
+        amy.until("bob and cal", |m| {
+            ["bob", "cal"].iter().all(|n| {
+                m.iter()
+                    .any(|(id, p)| *id == OTHERPLPROPS && p.windows(3).any(|w| w == n.as_bytes()))
+            })
+        });
+        let amy_id = id_of(&bob, "amy");
+        let (bob_id, cal_id) = (id_of(&amy, "bob"), id_of(&amy, "cal"));
+        let mut want = amy_id.clone();
+        want.extend([0x68, 0x60, 0x21, 0xFF, 0xFF, 0xFF]);
+
+        // Bob stands 82 tiles away.
+        let mut hit = bob_id.clone();
+        hit.extend([0x68, 0x60, 0x21]);
+        amy.send(26, &hit);
+        if on {
+            let seen = bob.settle();
+            assert!(!seen.iter().any(|(id, _)| *id == HURTPLAYER), "{seen:?}");
+            let log = std::fs::read_to_string(server.anticheat.log_path()).unwrap();
+            let line = log.lines().next().unwrap_or_default();
+            assert!(
+                line.contains("\tamy\t") && line.contains("\thurt\thit bob from 82"),
+                "{log}"
+            );
+        } else {
+            bob.until("the far hit", |m| {
+                m.iter().any(|(id, p)| *id == HURTPLAYER && *p == want)
+            });
+        }
+
+        // Cal stands next to her: always relayed.
+        let mut hit = cal_id.clone();
+        hit.extend([0x68, 0x60, 0x21]);
+        amy.send(26, &hit);
+        cal.until("the close hit", |m| {
+            m.iter().any(|(id, p)| *id == HURTPLAYER && *p == want)
+        });
+        drop((amy, bob, cal));
+        let _ = std::fs::remove_dir_all(&w);
+    }
+}

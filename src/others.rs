@@ -9,14 +9,16 @@
 //! - The position goes as X2/Y2 (78/79) where the receiver reads them, else
 //!   as the classic half-tile bytes (15/16), so a 2.31 sender that only
 //!   sends 78/79 still moves on a 2.05 screen.
-//! - Prop 10 is the bow slot before 2.1 (`props.bow_prop10`): it is not kept
-//!   from those senders and not sent to those receivers.
+//! - Prop 10 is the bow slot before 2.1, except 2.05 rev 2, which uses it
+//!   as the gani like 2.1 on (`ServerProfile::prop10_bow`): it is not kept
+//!   from bow-slot senders and not sent to bow-slot receivers.
 //! - The player id (14) is in the message header, not a prop. 1.35 reads
 //!   it as one GCHAR; later builds read a GSHORT (`put_id`). Joining and
 //!   leaving (50 `JOINLEAVELVL`, 51 `PCONNECTED`) are the server's to say.
 //!   On logout the lab GServer sent 50 = 0, then 51, to 2.22
 //!   (Seihai `lab-verification.md`), and this does the same.
 
+use crate::profile::ServerProfile;
 use crate::wire::{gchar, gshort, ids::PLO_OTHERPLPROPS, msg};
 use seihai_core::protocol::{
     decode_pos_precise, encode_pos_precise, parse_player_props_with, read_gint3, read_gshort,
@@ -25,9 +27,10 @@ use seihai_core::protocol::{
 use std::collections::BTreeMap;
 
 /// Writes the player id that heads `PLO_OTHERPLPROPS` the way `receiver`
-/// reads it. Original 1.35 reads one GCHAR before the props (exact-build
-/// static evidence, graal-client-repro#179); 1.36 on read a GSHORT. A 1.35
-/// id is capped at 223, the largest GCHAR.
+/// reads it. Builds up to 1.35 read one GCHAR before the props (1.35 from
+/// exact-build static evidence, graal-client-repro#179; 1.21 to 1.34 from
+/// the packet interface notes, one GCHAR through 1.35); 1.36 on read a
+/// GSHORT. A one-byte id is capped at 223, the largest GCHAR.
 pub fn put_id(receiver: ClientVersion, id: u16, out: &mut Vec<u8>) {
     if one_byte_id(receiver) {
         out.push(gchar(id.min(223) as u8));
@@ -36,9 +39,16 @@ pub fn put_id(receiver: ClientVersion, id: u16, out: &mut Vec<u8>) {
     }
 }
 
+/// Whether prop 10 is `v`'s bow slot rather than the gani
+/// (`ServerProfile::prop10_bow`, which has the 2.05 rev 2 exception).
+pub fn bow_prop10(v: ClientVersion) -> bool {
+    ServerProfile::of(v).prop10_bow
+}
+
 /// Builds whose `PLO_OTHERPLPROPS` id is one GCHAR.
 pub fn one_byte_id(v: ClientVersion) -> bool {
-    v == ClientVersion::V135
+    use ClientVersion::*;
+    matches!(v, V121 | V128B2 | V13T | V131 | V132 | V133 | V134 | V135)
 }
 
 pub const JOINLEAVELVL: u8 = 50;
@@ -81,6 +91,11 @@ impl Change {
         }
     }
 
+    /// Whether the change sets prop `id`.
+    pub fn has(&self, id: u8) -> bool {
+        self.values.contains_key(&id)
+    }
+
     /// A one-`GCHAR` prop in the change (the gmap cell, 43 and 44).
     pub fn byte(&self, id: u8) -> Option<u8> {
         match self.values.get(&id)?.as_slice() {
@@ -88,6 +103,79 @@ impl Change {
             _ => None,
         }
     }
+}
+
+/// The head an RC has in a player's list, as on beta4 (lab run
+/// 2026-11-12).
+pub const RC_HEAD: &[u8] = b"head25.png";
+
+/// An RC (or a far player) as an entry in a player's list: its nickname
+/// (prop 0), head (11, [`RC_HEAD`]) and account (34) in
+/// `PLO_OTHERPLPROPS`, with no level. GServer-v2
+/// beta4 sends one for an RC to every player when the RC logs in, and a
+/// real 2.22 queues a PM from the RC under that entry in its player list
+/// (lab run 2026-11-12). `None` for a build that has no such list.
+pub fn rc_entry(receiver: ClientVersion, id: u16, nick: &[u8], account: &[u8]) -> Option<Vec<u8>> {
+    list_entry(receiver, id, nick, account, Some(RC_HEAD))
+}
+
+/// A sender with no level as an entry in a player's list: nickname (0),
+/// `head` (11) if given, account (34).
+fn list_entry(
+    receiver: ClientVersion,
+    id: u16,
+    nick: &[u8],
+    account: &[u8],
+    head: Option<&[u8]>,
+) -> Option<Vec<u8>> {
+    use crate::wire::gstring;
+    let prof = receiver.profile();
+    if !prof.protocol.plo.contains(PLO_OTHERPLPROPS) {
+        return None;
+    }
+    let mut p = Vec::new();
+    put_id(receiver, id, &mut p);
+    if prof.props.other.contains(0) {
+        p.push(gchar(0));
+        gstring(nick, &mut p);
+    }
+    if let Some(head) = head.filter(|_| prof.props.other.contains(11)) {
+        // `GCHAR` 100 + length, then the name.
+        p.push(gchar(11));
+        p.push(gchar(100 + head.len().min(123) as u8));
+        p.extend_from_slice(&head[..head.len().min(123)]);
+    }
+    if prof.props.other.contains(34) {
+        p.push(gchar(34));
+        gstring(account, &mut p);
+    }
+    Some(msg(PLO_OTHERPLPROPS, &p))
+}
+
+/// A private message from `from` (a player or an RC id) to a `receiver`
+/// build: `PLO_OTHERPLPROPS` with the sender's nickname (0) and account
+/// (34), where the build reads them, so the client can name the sender,
+/// then `PLO_PRIVATEMESSAGE` (37): `GSHORT from`, then `"","Private
+/// message:",` and `text`, which is already tokenized (one quoted item or
+/// more). A build without either message gets nothing of it.
+pub fn private_message(
+    receiver: ClientVersion,
+    from: u16,
+    nick: &[u8],
+    account: &[u8],
+    text: &[u8],
+) -> Vec<u8> {
+    use crate::wire::ids::PLO_PRIVATEMESSAGE;
+    let plo = &receiver.profile().protocol.plo;
+    let mut out = list_entry(receiver, from, nick, account, None).unwrap_or_default();
+    if plo.contains(PLO_PRIVATEMESSAGE) {
+        let mut p = Vec::new();
+        gshort(from, &mut p);
+        p.extend_from_slice(b"\"\",\"Private message:\",");
+        p.extend_from_slice(text);
+        out.extend(msg(PLO_PRIVATEMESSAGE, &p));
+    }
+    out
 }
 
 /// A classic `X`/`Y` byte in tiles. A byte under 0x20 is a step off
@@ -101,7 +189,7 @@ impl Props {
     /// Apply a prop stream as `sender`'s build writes it; returns what
     /// changed.
     pub fn apply(&mut self, raw: &[u8], sender: ClientVersion) -> Change {
-        let bow = sender.profile().props.bow_prop10;
+        let bow = bow_prop10(sender);
         let mut c = Change::default();
         for p in parse_player_props_with(raw, bow) {
             match p.id {
@@ -231,7 +319,7 @@ pub fn message(
     let other = &prof.props.other;
     let mut body = Vec::new();
     let mut put = |pid: u8, v: &[u8]| {
-        if other.contains(pid) && !(pid == 10 && prof.props.bow_prop10) {
+        if other.contains(pid) && !(pid == 10 && bow_prop10(receiver)) {
             body.push(gchar(pid));
             body.extend_from_slice(v);
         }
@@ -418,8 +506,8 @@ mod tests {
                 continue;
             };
             let other = v.profile().props.other;
-            // 1.35's id is one GCHAR; seihai-core's session model reads a
-            // GSHORT for every build, so it is not an oracle for 1.35.
+            // Up to 1.35 the id is one GCHAR; seihai-core's session model reads a
+            // GSHORT for those builds, so it is not an oracle for them.
             let id_len = if one_byte_id(v) { 1 } else { 2 };
             if one_byte_id(v) {
                 assert_eq!(m[1], gchar(7), "{v:?}");
@@ -439,7 +527,7 @@ mod tests {
             let prof = v.profile();
             let props = seihai_core::protocol::parse_player_props_in(
                 &m[1 + id_len..m.len() - 1],
-                prof.props.bow_prop10,
+                bow_prop10(v),
                 Some(&prof.props.other),
             );
             let len: usize = props.iter().map(|p| 1 + p.raw.len()).sum();
@@ -460,6 +548,36 @@ mod tests {
         assert_eq!(c.y, Some(0.0));
         let c = p.apply(&[gchar(Y), 0xFF], ClientVersion::V205);
         assert_eq!(c.y, Some(111.5));
+    }
+
+    #[test]
+    fn a_2_05_swing_reaches_a_2_22_and_back() {
+        // The bytes a real 2.05 rev 2 and a 2.22 sent (lab capture): prop
+        // 10, length 5, `sword`.
+        let swing = [gchar(10), gchar(5), b's', b'w', b'o', b'r', b'd'];
+        for (from, to) in [
+            (ClientVersion::V205, ClientVersion::V222),
+            (ClientVersion::V222, ClientVersion::V205),
+        ] {
+            let mut p = Props::default();
+            let c = p.apply(&swing, from);
+            assert_eq!(
+                c.values.get(&10).map(Vec::as_slice),
+                Some(&swing[1..]),
+                "{from:?}"
+            );
+            let m = message(to, 3, &c, &[]).unwrap();
+            let body = &seihai_core::protocol::split_messages(&m)[0];
+            let mut want = Vec::new();
+            put_id(to, 3, &mut want);
+            want.extend_from_slice(&swing);
+            assert_eq!(body.payload, want, "{from:?} to {to:?}");
+        }
+        // A build before 2.05 rev 2 keeps the bow slot: no gani to it.
+        assert!(bow_prop10(ClientVersion::V139));
+        let mut p = Props::default();
+        let c = p.apply(&swing, ClientVersion::V222);
+        assert!(message(ClientVersion::V139, 3, &c, &[]).is_none());
     }
 
     #[test]
@@ -523,5 +641,18 @@ mod tests {
             st.apply_body(&message(v, 9, &Change::default(), &LOGGED_OUT).unwrap());
             assert!(st.others.is_empty(), "{v:?}");
         }
+    }
+
+    #[test]
+    fn an_rc_entry_as_beta4_sends_it() {
+        // beta4 to a real 2.22 (lab run 2026-11-12): id, prop 0 `XRC`,
+        // prop 11 `head25.png` as 0x8e and the name, ..., prop 34 `xrc`.
+        let m = rc_entry(ClientVersion::V222, 4, b"XRC", b"xrc").unwrap();
+        let body = &seihai_core::protocol::split_messages(&m)[0].payload;
+        assert!(body.starts_with(b" $ #XRC+\x8ehead25.png"), "{body:?}");
+        assert!(body.ends_with(b"B#xrc"));
+        // A far player's PM carries no head.
+        let pm = private_message(ClientVersion::V222, 4, b"Far", b"far", b"\"hi\"");
+        assert!(!pm.windows(4).any(|w| w == b"head"));
     }
 }

@@ -12,7 +12,7 @@ use crate::config::{Config, NpcMode};
 use crate::listlink::{Delivery, ListedPlayer};
 use crate::login::{self, Login};
 use crate::secure;
-use crate::wire::{gchar, gint4, gshort, gstring, ids::*, latin1, msg};
+use crate::wire::{gchar, gint4, gstring, ids::*, latin1, msg};
 use seihai_core::protocol::{
     parse_player_props_with, zlib_decompress, ClientVersion, EncryptionGen,
 };
@@ -111,6 +111,7 @@ impl Server {
         world.set_anticheat(anticheat.clone());
         // The world feeds the NPC-server link and applies what it sends.
         world.set_npc(npc.clone());
+        world.set_server_flags_file(cfg.world.join("config").join("serverflags.txt"));
         let login_rate = crate::ratelimit::LoginRate::new(cfg.login_rate, cfg.login_rate_loopback);
         let password_checks = crate::ratelimit::PasswordChecks::new(cfg.password_check_slots());
         Server {
@@ -415,6 +416,12 @@ impl Conn {
                 .await;
         }
 
+        // An RC (stage 4): its own checks and session; it is not a player,
+        // and its token is not a game build, so the allow-list is not asked.
+        if login::is_rc(login.client_type) {
+            return self.run_rc(&login, codec, inbuf, &who, after).await;
+        }
+
         if !self.server.allow.allows(&login.token) {
             self.server
                 .log(&self.peer, &format!("{who}: version not allowed"));
@@ -425,7 +432,7 @@ impl Conn {
                 )
                 .await;
         }
-        let mut account = match self.check_account(&login).await? {
+        let mut account = match self.check_account(&login, true).await? {
             Ok(a) => a,
             Err(why) => {
                 self.server.log(&self.peer, &format!("{who}: {why}"));
@@ -436,9 +443,12 @@ impl Conn {
             self.server.log(&self.peer, &format!("{who}: banned"));
             return self.refuse(&mut codec, &text).await;
         }
-        // A player who logged out dead comes back with hearts (issue #51).
+        // A player who logged out dead logs in at 0 hearts, as GServer-v2
+        // beta4 does (issue #51), unless the world turns `revive_dead` on.
         // The account file keeps what happened; only the login changes.
-        account.revive();
+        if self.server.cfg.revive_dead {
+            account.revive();
+        }
         let key = login.account.to_ascii_lowercase();
         // What the world sends this player; framed and sent below.
         let (outbox, mut from_world) = tokio::sync::mpsc::unbounded_channel();
@@ -618,9 +628,10 @@ impl Conn {
                     return self.refuse(&mut codec, "Disconnected for being idle.").await;
                 }
                 Some(frames) = from_world.recv() => {
-                    // An empty item: the anti-cheat kicks the player.
+                    // An empty item: the anti-cheat or an RC kicks the
+                    // player (the world's log or the RC's says which).
                     if frames.is_empty() {
-                        self.server.log(&self.peer, "kicked by the anti-cheat");
+                        self.server.log(&self.peer, "kicked by the server");
                         return self.refuse(&mut codec, "Disconnected by the server.").await;
                     }
                     // The world decides the frames (gen 2 needs the board
@@ -643,7 +654,11 @@ impl Conn {
     /// The account for a login, made on first login when the world allows
     /// it. The outer error is an I/O failure; the inner one is the reason
     /// to give the client.
-    async fn check_account(&self, login: &Login) -> io::Result<Result<Account, &'static str>> {
+    async fn check_account(
+        &self,
+        login: &Login,
+        create: bool,
+    ) -> io::Result<Result<Account, &'static str>> {
         let store = self.server.store.clone();
         let cfg = self.server.cfg.clone();
         let name = login.account.clone();
@@ -676,6 +691,7 @@ impl Conn {
                 return match verdict {
                     crate::listlink::Verdict::Ok => match store.load(&name)? {
                         Some(a) => Ok(Ok(a)),
+                        None if !create => Ok(Err(crate::rc::NOT_STAFF)),
                         None => {
                             let a = Account::new(&name, &cfg.start_level, cfg.start_x, cfg.start_y);
                             store.save(&a)?;
@@ -693,7 +709,7 @@ impl Conn {
             match store.load(&name)? {
                 Some(a) if a.check_password(&password) => Ok(Ok(a)),
                 Some(_) => Ok(Err("Account name or password is wrong.")),
-                None if cfg.create_accounts && !password.is_empty() => {
+                None if create && cfg.create_accounts && !password.is_empty() => {
                     let mut a = Account::new(&name, &cfg.start_level, cfg.start_x, cfg.start_y);
                     a.set_password(&password);
                     store.save(&a)?;
@@ -704,6 +720,250 @@ impl Conn {
         })
         .await
         .map_err(io::Error::other)?
+    }
+
+    /// An RC login (`rc.rs`): the password, `STAFF` and the address are
+    /// checked, then the RC gets its welcome and the link stays open until
+    /// it closes. No account file is made for an RC.
+    async fn run_rc(
+        &mut self,
+        login: &Login,
+        mut codec: Codec,
+        mut inbuf: InBuf,
+        who: &str,
+        after: &[u8],
+    ) -> io::Result<()> {
+        let account = match self.check_account(login, false).await? {
+            Ok(a) => a,
+            Err(why) => {
+                self.server.log(&self.peer, &format!("RC {who}: {why}"));
+                return self.refuse(&mut codec, why).await;
+            }
+        };
+        if let Err(why) = crate::rc::admit(&account, self.peer.ip()) {
+            self.server.log(&self.peer, &format!("RC {who}: {why}"));
+            return self.refuse(&mut codec, why).await;
+        }
+        // A banned account is kept out of RC too (`config/bans.txt`).
+        if let Some(text) = self.banned(&account.name) {
+            self.server.log(&self.peer, &format!("RC {who}: banned"));
+            return self.refuse(&mut codec, &text).await;
+        }
+        self.server.log(&self.peer, &format!("RC {who} logged in"));
+        let welcome = crate::rc::welcome(&self.server.cfg.name, &account.name);
+        self.send(&mut codec, &welcome).await?;
+        let mut rc = crate::rc::RcSession::default();
+        let mut early = rc.handle(&crate::rcfiles::split(after));
+        // The nickname an RC sends straight after its login goes into its
+        // first list entry.
+        let nick = early.iter().rev().find_map(|e| match e {
+            crate::rc::RcEvent::Nick(n) => Some(n.clone()),
+            _ => None,
+        });
+        early.retain(|e| !matches!(e, crate::rc::RcEvent::Nick(_)));
+        let server = self.server.clone();
+        let peer = self.peer;
+        let world = &server.world;
+        let (outbox, mut from_world) = tokio::sync::mpsc::unbounded_channel();
+        let Some(id) = world.rc_join(account.name.clone(), nick, outbox).await else {
+            return self.refuse(&mut codec, "The server is full.").await;
+        };
+        // Hands the world what it serves; account and file requests come
+        // back, for this connection to carry out.
+        let tell = |events: Vec<crate::rc::RcEvent>| {
+            let mut ops = Vec::new();
+            for e in events {
+                use crate::rc::RcEvent;
+                let what = match &e {
+                    RcEvent::Account(_) | RcEvent::Files(_) | RcEvent::Server(_) => {
+                        ops.push(e);
+                        continue;
+                    }
+                    RcEvent::Nick(_) => None,
+                    RcEvent::Chat(t) => Some(format!("chat: {}", crate::wire::text(t))),
+                    RcEvent::Pm { to, text } => Some(format!(
+                        "private message to {to:?}: {}",
+                        crate::wire::text(text)
+                    )),
+                    RcEvent::AdminAll(t) => {
+                        Some(format!("admin message to all: {}", crate::wire::text(t)))
+                    }
+                    RcEvent::AdminTo(id, t) => {
+                        Some(format!("admin message to {id}: {}", crate::wire::text(t)))
+                    }
+                    RcEvent::Kick(id) => Some(format!("disconnects player {id}")),
+                    RcEvent::Warp { id, level, x2, y2 } => Some(format!(
+                        "warps player {id} to {} {} {}",
+                        crate::wire::text(level),
+                        f32::from(*x2) / 2.0,
+                        f32::from(*y2) / 2.0
+                    )),
+                };
+                if let Some(what) = what {
+                    server.log(&peer, &format!("RC {} {what}", account.name));
+                }
+                world.rc_event(id, e);
+            }
+            ops
+        };
+        let browser = Arc::new(Mutex::new(crate::rcfiles::Browser::new(
+            &self.server.cfg.world,
+            &account.folder_rights,
+        )));
+        // Account and file requests, in order, off the async threads (a
+        // password set hashes, a file is read or written).
+        let accounts = |ops: Vec<crate::rc::RcEvent>| {
+            let server = server.clone();
+            let name = account.name.clone();
+            let browser = browser.clone();
+            async move {
+                if ops.is_empty() {
+                    return Vec::new();
+                }
+                let done = tokio::task::spawn_blocking(move || {
+                    let cfg = &server.cfg;
+                    let start = (cfg.start_level.as_str(), cfg.start_x, cfg.start_y);
+                    let online = server.online_accounts();
+                    let mut replies = Vec::new();
+                    for op in ops {
+                        let (reply, log) = match op {
+                            crate::rc::RcEvent::Account(op) => {
+                                // A player id is the account online with it.
+                                let op = match op {
+                                    crate::rcaccounts::Op::PropsGetId(pid) => {
+                                        match server.world.account_of(pid) {
+                                            Some(account) => {
+                                                crate::rcaccounts::Op::PropsGet { id: pid, account }
+                                            }
+                                            None => op,
+                                        }
+                                    }
+                                    op => op,
+                                };
+                                let ctx = crate::rcaccounts::Ctx {
+                                    store: &server.store,
+                                    bans: &crate::bans::Bans::new(&cfg.world),
+                                    online: &online,
+                                    start,
+                                    admin: &name,
+                                    world: Some(&server.world),
+                                };
+                                let d = crate::rcaccounts::run(&ctx, op);
+                                // Banned while online: off they go, as on an
+                                // RC disconnect.
+                                if let Some(pid) = d.kick.and_then(|a| server.world.id_of(&a)) {
+                                    server.world.rc_event(id, crate::rc::RcEvent::Kick(pid));
+                                }
+                                (vec![d.reply], d.log)
+                            }
+                            crate::rc::RcEvent::Files(op) => {
+                                let (r, l) = browser.lock().unwrap().run(op);
+                                (r, Some(format!("files: {l}")))
+                            }
+                            crate::rc::RcEvent::Server(op) => match op {
+                                crate::rcserver::Op::FlagsGet => {
+                                    let f = server.world.server_flags_blocking();
+                                    (
+                                        vec![crate::rcserver::flags_reply(&f)],
+                                        Some("reads the server flags".to_string()),
+                                    )
+                                }
+                                crate::rcserver::Op::FlagsSet(f) => {
+                                    let n = f.len();
+                                    server.world.set_server_flags_blocking(f);
+                                    (Vec::new(), Some(format!("sets {n} server flag(s)")))
+                                }
+                                op => match crate::rcserver::Files::new(&cfg.world).run(&op) {
+                                    Some(d) => (d.replies, Some(d.log)),
+                                    None => continue,
+                                },
+                            },
+                            _ => continue,
+                        };
+                        if let Some(l) = log {
+                            server.log(&peer, &format!("RC {name} {l}"));
+                        }
+                        replies.extend(reply.into_iter().filter(|r| !r.is_empty()));
+                    }
+                    replies
+                })
+                .await;
+                done.unwrap_or_default()
+            }
+        };
+        for r in accounts(tell(early)).await {
+            self.send(&mut codec, &r).await?;
+        }
+        let idle = self.server.cfg.idle_timeout;
+        let mut last_heard = Instant::now();
+        let result = loop {
+            let idle_left = (!idle.is_zero()).then(|| idle.saturating_sub(last_heard.elapsed()));
+            tokio::select! {
+                r = read_more(&mut self.stream, &mut inbuf.buf) => {
+                    if let Err(e) = r {
+                        break Err(e);
+                    }
+                    last_heard = Instant::now();
+                    let mut events = Vec::new();
+                    while let Some(frame) = inbuf.take_frame()? {
+                        let body = codec.decode(&frame)?;
+                        events.extend(rc.handle(&crate::rcfiles::split(&body)));
+                    }
+                    let mut sent = Ok(());
+                    for r in accounts(tell(events)).await {
+                        sent = self.send(&mut codec, &r).await;
+                        if sent.is_err() {
+                            break;
+                        }
+                    }
+                    if let Err(e) = sent {
+                        break Err(e);
+                    }
+                }
+                Some(frames) = from_world.recv() => {
+                    let mut sent = Ok(());
+                    for f in frames {
+                        sent = self.send(&mut codec, &f).await;
+                        if sent.is_err() {
+                            break;
+                        }
+                    }
+                    if let Err(e) = sent {
+                        break Err(e);
+                    }
+                }
+                _ = sleep_opt(idle_left) => {
+                    self.server.log(&self.peer, "RC idle timeout");
+                    let _ = self.refuse(&mut codec, "Disconnected for being idle.").await;
+                    break Ok(());
+                }
+            }
+        };
+        world.rc_left(id);
+        let unhandled: Vec<String> = rc
+            .unhandled
+            .iter()
+            .map(|(id, n)| format!("{id} x{n}"))
+            .collect();
+        self.server.log(
+            &self.peer,
+            &format!(
+                "RC {} left ({}){}",
+                account.name,
+                result
+                    .as_ref()
+                    .err()
+                    .map_or("closed".to_string(), |e| e.to_string()),
+                if unhandled.is_empty() {
+                    String::new()
+                } else {
+                    format!(" (not answered yet: {})", unhandled.join(", "))
+                }
+            ),
+        );
+        // The leave is logged here; an error passed up would also log
+        // "closed before login", as the lab run of 2026-11-12 saw.
+        Ok(())
     }
 
     /// The text for a banned account (`config/bans.txt`), or `None`. A
@@ -896,7 +1156,7 @@ impl Session {
                 PLI_FIRESPY => server.world.relay(self.id, PLO_FIRESPY, true, payload),
                 PLI_EXPLOSION => server.world.relay(self.id, PLO_EXPLOSION, true, payload),
                 PLI_PLAYERPROPS => {
-                    let bow = self.version.profile().props.bow_prop10;
+                    let bow = crate::others::bow_prop10(self.version);
                     server.world.props(self.id, payload);
                     let props = parse_player_props_with(payload, bow);
                     if let Some(nick) = props.iter().find(|p| p.id == 0) {
@@ -1004,7 +1264,6 @@ impl Session {
             return Vec::new();
         };
         let prof = self.version.profile();
-        let plo = &prof.protocol.plo;
         let mut out = Vec::new();
         for delivery in link.take(self.id) {
             match delivery {
@@ -1014,33 +1273,15 @@ impl Session {
                     account,
                     text,
                 } => {
-                    if plo.contains(PLO_OTHERPLPROPS) {
-                        let mut p = Vec::new();
-                        crate::others::put_id(self.version, from_id, &mut p);
-                        if prof.props.other.contains(0) {
-                            p.push(gchar(0));
-                            gstring(&latin1(&nick), &mut p);
-                        }
-                        if prof.props.other.contains(34) {
-                            p.push(gchar(34));
-                            gstring(&latin1(&account), &mut p);
-                        }
-                        out.extend(msg(PLO_OTHERPLPROPS, &p));
-                    }
-                    if plo.contains(PLO_PRIVATEMESSAGE) {
-                        let mut p = Vec::new();
-                        gshort(from_id, &mut p);
-                        // One quoted field, so a newline in the text stays
-                        // one message. `""` is one quote.
-                        let body = format!(
-                            "{},{},{}",
-                            quoted(""),
-                            quoted("Private message:"),
-                            quoted(&text)
-                        );
-                        p.extend(body.into_bytes());
-                        out.extend(msg(PLO_PRIVATEMESSAGE, &p));
-                    }
+                    // One quoted field, so a newline in the text stays
+                    // one message. `""` is one quote.
+                    out.extend(crate::others::private_message(
+                        self.version,
+                        from_id,
+                        &latin1(&nick),
+                        &latin1(&account),
+                        quoted(&text).as_bytes(),
+                    ));
                 }
                 Delivery::Image { kind, name } => {
                     server.remember_image(&self.account, kind, &name);

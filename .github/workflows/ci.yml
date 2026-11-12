@@ -10,7 +10,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        # macOS is not built on GitHub runners: it is built and tested on the
+        # Sequoia VM in the lab (see AGENTS.md, "macOS builds").
+        os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4

@@ -19,6 +19,10 @@ usage:
   seihai-gserver key-fingerprint [--world DIR]
       print the secure-login (SEI00001) public key and its fingerprint; reads
       the key file and never makes one
+  seihai-gserver import-v2 SRC [--world DIR]
+      make a new world from a GServer-v2 server folder SRC: settings, the
+      version list, accounts, staff, bans, levels and files
+      (docs/GSERVER-V2-WORLD.md)
   seihai-gserver --version";
 
 fn main() -> ExitCode {
@@ -39,6 +43,7 @@ fn main() -> ExitCode {
         Some("ban") => return ban_command(&world, &args[1..]),
         Some("unban") => return unban_command(&world, &args[1..]),
         Some("key-fingerprint") => return key_fingerprint_command(&world, &args[1..]),
+        Some("import-v2") => return import_command(&world, &args[1..]),
         _ => {}
     }
     match run_server(&world, args) {
@@ -251,6 +256,28 @@ fn key_fingerprint_command(world: &std::path::Path, args: &[String]) -> ExitCode
         }
         Err(e) => {
             eprintln!("secure login key {}: {e}", path.display());
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn import_command(world: &std::path::Path, args: &[String]) -> ExitCode {
+    let [src] = args else {
+        eprintln!("usage: seihai-gserver import-v2 SRC [--world DIR]");
+        return ExitCode::FAILURE;
+    };
+    match seihai_gserver::import::import_v2(std::path::Path::new(src), world) {
+        Ok(r) => {
+            for d in r.done {
+                println!("wrote {d}");
+            }
+            for l in r.left {
+                println!("left: {l}");
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("import-v2: {e}");
             ExitCode::FAILURE
         }
     }

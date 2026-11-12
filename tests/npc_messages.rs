@@ -376,3 +376,62 @@ fn a_changed_level_file_is_reloaded() {
     );
     let _ = std::fs::remove_dir_all(&w);
 }
+
+#[test]
+fn an_npc_server_nickname_reaches_rcs() {
+    use seihai_gserver::accounts::{Account, Store};
+    use seihai_rc::rc::{Event, LoginParams, RcKind, Session};
+    let w = world("rcnick");
+    let mut boss = Account::new("boss", START, 30.0, 30.0);
+    boss.set_password(PASSWORD.as_bytes());
+    boss.staff = true;
+    Store::new(w.join("accounts")).save(&boss).unwrap();
+    let (game, link, _server) = start(&w);
+    let mut npc = FakeNpc::connect(&link);
+    let a = Client::login(&game, ClientVersion::V222, "nicky", &npc);
+
+    let mut rc = Session::login(
+        &game,
+        &LoginParams {
+            kind: RcKind::Gen5,
+            token: RcKind::Gen5.default_token().into(),
+            account: "boss".into(),
+            password: PASSWORD.into(),
+            key: 0x2A,
+            nickname: None,
+            identity: None,
+        },
+        Duration::from_secs(10),
+    )
+    .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut seen = Vec::new();
+    while let Some(ev) = rc.next_event(deadline).unwrap() {
+        if matches!(&ev, Event::RcChat(t) if t == "New RC: boss") {
+            break;
+        }
+        seen.push(ev);
+    }
+    assert!(rc.players.players.contains_key(&a.id), "{seen:?}");
+
+    // SET_PLAYER_PROPS with prop 0, the nickname: the RC's list follows.
+    let mut props = vec![0x20, 0x20 + 5];
+    props.extend(b"Nicky");
+    npc.send(Message::SetPlayerProps {
+        player_id: a.id,
+        props,
+    });
+    let id = a.id;
+    let mut seen = Vec::new();
+    loop {
+        let ev = rc.next_event(deadline).unwrap();
+        let Some(ev) = ev else {
+            panic!("no list update; got {seen:?}");
+        };
+        if matches!(&ev, Event::UpdatePlayer(p) if p.id == id && p.nickname == "Nicky") {
+            break;
+        }
+        seen.push(ev);
+    }
+    let _ = std::fs::remove_dir_all(&w);
+}

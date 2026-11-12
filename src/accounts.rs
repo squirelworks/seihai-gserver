@@ -24,7 +24,28 @@
 //! CHEST onlinestartlocal.nw 30 36
 //! FLAG quest.started
 //! FLAG gr.x=30
+//! STAFF 1
+//! IPRANGE 127.0.0.1,192.168.1.*
+//! EMAIL someone@example.org
+//! LOADONLY 1
+//! ADMINLEVEL 2
+//! ADMINWORLDS main
+//! FOLDER rw levels/*
+//! FOLDER r config/*.txt
+//! RCRIGHTS 513
+//! COMMENT warned once for spam
 //! ```
+//!
+//! `FOLDER` lines are the RC file browser's rights (`rcfiles.rs`): `r` or
+//! `rw`, then a folder and a file mask.
+//!
+//! `EMAIL`, `LOADONLY`, `ADMINLEVEL` and `ADMINWORLDS` are the RC account
+//! dialog's fields (`rcaccounts.rs`). They are kept and shown to an RC;
+//! nothing acts on them yet, and `ADMINLEVEL` does not grant RC use.
+//!
+//! `STAFF` lets the account log in with an RC (`rc.rs`); `IPRANGE` lists
+//! where from (exact addresses, `*` wildcards, or `a.b.c.d/n`). Without an
+//! `IPRANGE` a staff account's RC may only come from loopback.
 //!
 //! The format is this project's own. Unknown keys are kept and written
 //! back, so later stages can add fields without losing old ones. The
@@ -72,6 +93,25 @@ pub struct Account {
     pub chests: Vec<(String, u8, u8)>,
     /// Player flags as the client set them: `name` or `name=value`.
     pub flags: Vec<String>,
+    /// `STAFF`: the account may log in with an RC.
+    pub staff: bool,
+    /// `IPRANGE`: where its RC may come from (see `rc::ip_allowed`).
+    pub ip_ranges: Vec<String>,
+    /// `FOLDER` lines: the RC file browser's rights (`rcfiles.rs`).
+    pub folder_rights: Vec<String>,
+    /// `RCRIGHTS`: the RC rights bits, as an RC sets them (not acted on
+    /// yet).
+    pub rc_rights: u32,
+    /// `COMMENT` lines: staff notes from an RC.
+    pub comments: Vec<String>,
+    /// `EMAIL`, from the RC's account dialog.
+    pub email: String,
+    /// `LOADONLY`, from the RC's account dialog. Not acted on yet.
+    pub load_only: bool,
+    /// `ADMINLEVEL`, from the RC's account dialog. Not acted on yet.
+    pub admin_level: u8,
+    /// `ADMINWORLDS`, from the RC's account dialog.
+    pub admin_worlds: String,
     /// Lines with keys this version does not use, kept as they were.
     pub other: Vec<String>,
 }
@@ -103,14 +143,22 @@ impl Account {
             kills: 0,
             chests: Vec::new(),
             flags: Vec::new(),
+            staff: false,
+            ip_ranges: Vec::new(),
+            folder_rights: Vec::new(),
+            rc_rights: 0,
+            comments: Vec::new(),
+            email: String::new(),
+            load_only: false,
+            admin_level: 0,
+            admin_worlds: String::new(),
             other: Vec::new(),
         }
     }
 
-    /// A player saved with no hearts (killed, then logged out) logs in
-    /// with full hearts, the account's max. Issue #51: the value GServer-v2
-    /// beta4 gives is still to be checked in a lab; full hearts is what
-    /// the client's own respawn gives.
+    /// Full hearts (the account's max) for a player saved with none. Used
+    /// at login only when the world sets `revive_dead`; GServer-v2 beta4
+    /// keeps them at 0 (issue #51, lab run 2026-11-12).
     pub fn revive(&mut self) {
         if self.hp <= 0.0 {
             self.hp = f32::from(self.max_hp.max(1));
@@ -162,6 +210,20 @@ impl Account {
                     }
                 }
                 "FLAG" if !v.is_empty() => a.flags.push(v.to_string()),
+                "STAFF" => a.staff = !matches!(v, "0" | "false" | "no"),
+                "FOLDER" if !v.is_empty() => a.folder_rights.push(v.to_string()),
+                "RCRIGHTS" => a.rc_rights = v.parse().unwrap_or(0),
+                "COMMENT" => a.comments.push(v.to_string()),
+                "EMAIL" => a.email = v.to_string(),
+                "LOADONLY" => a.load_only = !matches!(v, "0" | "false" | "no"),
+                "ADMINLEVEL" => a.admin_level = v.parse().unwrap_or(0),
+                "ADMINWORLDS" => a.admin_worlds = v.to_string(),
+                "IPRANGE" => a.ip_ranges.extend(
+                    v.split(',')
+                        .map(str::trim)
+                        .filter(|r| !r.is_empty())
+                        .map(str::to_string),
+                ),
                 _ => a.other.push(line.to_string()),
             }
         }
@@ -204,6 +266,34 @@ impl Account {
         }
         for f in &self.flags {
             kv("FLAG", f.replace(['\n', '\r'], " "));
+        }
+        if self.staff {
+            kv("STAFF", "1".into());
+        }
+        if !self.ip_ranges.is_empty() {
+            kv("IPRANGE", self.ip_ranges.join(","));
+        }
+        let one_line = |s: &str| s.replace(['\n', '\r'], " ");
+        for r in &self.folder_rights {
+            kv("FOLDER", one_line(r));
+        }
+        if self.rc_rights != 0 {
+            kv("RCRIGHTS", self.rc_rights.to_string());
+        }
+        for c in &self.comments {
+            kv("COMMENT", one_line(c));
+        }
+        if !self.email.is_empty() {
+            kv("EMAIL", one_line(&self.email));
+        }
+        if self.load_only {
+            kv("LOADONLY", "1".into());
+        }
+        if self.admin_level > 0 {
+            kv("ADMINLEVEL", self.admin_level.to_string());
+        }
+        if !self.admin_worlds.is_empty() {
+            kv("ADMINWORLDS", one_line(&self.admin_worlds));
         }
         for line in &self.other {
             s.push_str(line);
@@ -310,6 +400,35 @@ impl Store {
 
     pub fn dir(&self) -> &Path {
         &self.dir
+    }
+
+    /// Every account with a file, by file name (lower case), sorted. No
+    /// folder: none.
+    pub fn list(&self) -> io::Result<Vec<String>> {
+        let rd = match std::fs::read_dir(&self.dir) {
+            Ok(rd) => rd,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e),
+        };
+        let mut names: Vec<String> = rd
+            .filter_map(|e| e.ok())
+            .filter_map(|e| {
+                let name = e.file_name().into_string().ok()?;
+                let stem = name.strip_suffix(".txt")?;
+                crate::login::valid_account_name(stem).then(|| stem.to_string())
+            })
+            .collect();
+        names.sort();
+        Ok(names)
+    }
+
+    /// Remove the account's file; whether there was one.
+    pub fn delete(&self, name: &str) -> io::Result<bool> {
+        match std::fs::remove_file(self.path(name)) {
+            Ok(()) => Ok(true),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(e),
+        }
     }
 }
 

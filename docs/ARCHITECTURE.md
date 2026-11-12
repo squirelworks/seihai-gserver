@@ -24,16 +24,21 @@ How the server is put together, and where each later stage plugs in. Read
 | `src/world.rs` | the world task: who is online and player ids, the levels read so far, other players in a level, links between levels, gmap cells and crossings, opened chests and player flags, items on the floor, the account save on logout, NPCs, baddies and level leaders, bombs and hits, the 50 ms tick (`TICK`) | 2, 3 |
 | `src/levels.rs` | level files (`.nw`, `.graal`, `.zelda`) through `seihai_core::assets`, the level name check, the link, sign and chest writers | 2 |
 | `src/gmaps.rs` | `.gmap` files in `levels/` (`seihai_core::gmap::Gmap`), which builds play gmaps, a level's cell | 2 |
+| `src/profile.rs` | the server's per-build rules in one table (issue #45): package loading, and where a lab with a real client showed the server must differ from `seihai-core`'s profile (2.05's file mod time and baddy images) | 2 |
 | `src/others.rs` | other players' props: kept in one form, sent as `PLO_OTHERPLPROPS` (8) per receiver's build; join (50 = 1), logout (50 = 0, 51); chest items given as own props (`PLO_PLAYERPROPS` 9) | 2 |
 | `src/files.rs` | `WANTFILE`/`UPDATEFILE` served from `<world>/files/` and the `.gmap` files in `levels/`: the name check, the case-insensitive index, `PLO_FILE` per build, large files, packages | 2 |
 | `src/gpak.rs` | `.gpak` / `.gpake`: who loads them, `config/gpakkeys.txt`, the `PLO_FILEDECRYPTKEY` (104) packet | 2 |
 | `src/npcs.rs` | level NPCs: ids, props kept as wire bytes, the props each build reads, props a client may not set | 3 |
 | `src/baddies.rs` | baddies from the level file, `PLO_BADDYPROPS`, hits handed to the level leader, death and respawn | 3 |
 | `src/listlink.rs` | the listserver link over the encrypted channel (`SVLINK01`): register, player count with nickname and props, account check (`VERIACC2`), pong (`SVO_PING` 16), private messages, file start; two plain threads, reconnects every 15 s | link |
+| `src/rcaccounts.rs` | accounts from an RC: list, get, set, add, delete on the account files (slice 4); staff rights and comments (slice 6) | 4 |
+| `src/rcfiles.rs` | the RC file browser: list, get, put within the account's `FOLDER` rights; reads an RC's raw blocks (slice 5) | 4 |
+| `src/rcserver.rs` | server options (`config/server.txt`), folder config (`config/foldersconfig.txt`) and server flags for an RC; the flags kept in `config/serverflags.txt` | 4 |
+| `src/rcprops.rs` | a player's props for an RC (72) from the account file, and a set (76) on an offline account (slice 7) | 4 |
 | `src/ping.rs` | `PLO_PING` (108) on a timer to the builds whose profile reads it, the `PLI_PONG` (162) answer timed, the miss count (issue #44) | 2 |
-| `src/rc.rs` | RC and NC logins for `seihai-rc` (skeleton) | 4 |
+| `src/rc.rs` | RC logins for `seihai-rc`: the `STAFF` and `IPRANGE` checks, the welcome (slice 1); the player list entries and RC chat lines the world task sends RCs (slice 2); private and admin messages and the disconnect (slice 3); NC still refused | 4 |
 | `src/npclink.rs` | the link to `seihai-npcserver` (`PROTOCOL.md`): `Hub` (players and server flags for the link, the world's inbox), `serve_link`, `supervise` for `npcserver = auto` | 5 |
-| `src/anticheat.rs` | the admin policy (`anticheat.*` settings), violation scores and kicks, the log; the speed, teleport, warp and message-rate checks (stage 2.9); item and damage checks to come (`docs/PLAN.md`, stage 7) | 2, 7 |
+| `src/anticheat.rs` | the admin policy (`anticheat.*` settings), violation scores and kicks, the log; the speed, teleport, warp and message-rate checks (stage 2.9); the items and hurt checks; all off by default (`docs/PLAN.md`, stage 7) | 2, 7 |
 
 The skeleton modules hold the plan for their stage as doc comments and the
 types the stage will fill in. They are compiled, so they stay in step with
@@ -170,6 +175,24 @@ World task ◀──WorldIn::FromNpc (0x40 to 0x4C), NpcGone── link task
   `tests/quiet_weapon_ids.rs`, `tests/sample_world.rs`: login limits, RC/NC
   refused in their own framing, ids 25 and 33 accepted quietly, the sample
   world loads clean.
+- `tests/rc_login.rs`: RC logins of type 6 (gen 5) and type 1 (zlib), and
+  type 6 through `SEI00001`, for a `STAFF` account; a non-staff account,
+  a wrong password and an address outside `IPRANGE` refused.
+- `tests/rc_accounts.rs`: an RC lists, reads, sets, adds and deletes
+  accounts with `seihai-rc`'s own messages; sets another staff account's
+  rights and comments, and the folder rights then open a folder; reads
+  and sets an offline player's props, reads an online one's by id and is
+  refused a set on them.
+- `tests/rc_files.rs`: an RC lists, gets and puts files with `seihai-rc`'s
+  own file link; read-only and missing rights refused.
+- `tests/rc_server.rs`: server options, folder config and server flags
+  set and read back with `seihai-rc`'s messages; a player online sees the
+  flags change, and they last over a restart.
+- `tests/rc_players.rs`: two RCs (`seihai-rc`'s own client) and a player:
+  the list on login, each RC listed to the other, RC chat, a nickname
+  update and the leaves; then private and admin messages from an RC as two
+  2.22 players read them, and a disconnect.
+  update and the leaves.
 - `tests/ping.rs`: a 4.20r8 is pinged, kept while it answers and dropped
   after `ping_misses` silent pings; a 2.22 is never pinged.
 - `tests/listserver_link.rs`: the encrypted listserver link against a fake
