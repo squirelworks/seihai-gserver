@@ -15,6 +15,7 @@
 //! takes a correction, the override here goes, and the field reads the
 //! profile again. Code elsewhere asks this table, never `version == …`.
 
+use crate::wire::ids::PLO_PING;
 use seihai_core::protocol::ClientVersion;
 
 /// The server's rules for one client build.
@@ -31,6 +32,9 @@ pub struct ServerProfile {
     /// Prop 10 is the bow slot, not the gani: it is not kept from these
     /// senders and not sent to these receivers (`others.rs`).
     pub prop10_bow: bool,
+    /// Reads `PLO_PING` (108) and answers it with `PLI_PONG` (162), so the
+    /// ping timer runs for it (`ping.rs`, issue #44).
+    pub ping: bool,
 }
 
 /// Builds that load `.gpake`: 4.20r8 through 6.03r7 (lab, 2026-11-06).
@@ -49,6 +53,22 @@ const GPAKE: &[ClientVersion] = &[
     ClientVersion::V603R7Linux,
 ];
 
+/// Builds that take 108 before their main switch, as 4.20 does, so the
+/// profile's PLO list (read from the switch alone) leaves it out: Linux
+/// 6.01r1 and 6.03r7, and the Windows 6.03r7 (Graal_analysis
+/// `protocol/unknown-ids-2026-11-06.md`, "PLI 162 and PLO 108", and
+/// `protocol/v6x-clients.md`, both from the binaries). 6.015 and 6.034
+/// have no binary and take their id sets from those two Linux builds, so
+/// they follow them. 6.00r2 is not listed: its switch was read, not what
+/// comes before it. Goes when `seihai-core`'s 6.x profiles list 108
+/// (squirelworks/seihai-core#7).
+const PING_BEFORE_SWITCH: &[ClientVersion] = &[
+    ClientVersion::V6015,
+    ClientVersion::V6034,
+    ClientVersion::V603R7,
+    ClientVersion::V603R7Linux,
+];
+
 impl ServerProfile {
     pub fn of(version: ClientVersion) -> ServerProfile {
         let core = version.profile();
@@ -59,6 +79,7 @@ impl ServerProfile {
             loads_gpak: GPAKE.contains(&version) && version != ClientVersion::V420R8,
             loads_gpake: GPAKE.contains(&version),
             prop10_bow: core.props.bow_prop10,
+            ping: core.protocol.plo.contains(PLO_PING) || PING_BEFORE_SWITCH.contains(&version),
         };
         if version == ClientVersion::V205 {
             // Real 2.05 rev 2 takes a file only with the mod time; sent
@@ -99,6 +120,26 @@ mod tests {
                 assert_eq!(p.prop10_bow, core.props.bow_prop10, "{v:?}");
             }
             assert!(!p.loads_gpak || p.loads_gpake, "{v:?}");
+            let core_ping = core.protocol.plo.contains(PLO_PING);
+            if PING_BEFORE_SWITCH.contains(&v) {
+                // Drop the override once seihai-core lists 108 for 6.x.
+                assert!(p.ping && !core_ping, "{v:?}: override no longer needed");
+            } else {
+                assert_eq!(p.ping, core_ping, "{v:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn who_is_pinged() {
+        use ClientVersion::*;
+        for v in [V420R6, V420R8, V6015, V6034, V603R7, V603R7Linux] {
+            assert!(ServerProfile::of(v).ping, "{v:?}");
+        }
+        // 5.x and 6.00r2 neither handle 108 nor (5.x) send 162; nothing
+        // before 4.20 reads it.
+        for v in [V404R2, V500R7, V512, V524R4, V530R3, V531R4, V600R2, V205] {
+            assert!(!ServerProfile::of(v).ping, "{v:?}");
         }
     }
 }

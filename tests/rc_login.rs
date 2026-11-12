@@ -1,7 +1,8 @@
 //! RC logins (stage 4 slice 1, issue #52) on loopback, with the login
 //! lines and framing `seihai-rc` uses (`docs/PROTOCOL.md` there): type 6
 //! with a key byte and gen-5 frames, type 1 with plain zlib frames, and
-//! type 6 through the Seihai secure login. Only `127.0.0.1` is used.
+//! types 6, 1 and 3 (NPC Control) through the Seihai secure login. Only
+//! `127.0.0.1` is used.
 
 mod common;
 
@@ -156,29 +157,93 @@ fn staff_accounts_log_in_with_an_rc() {
     let _ = std::fs::remove_dir_all(&w);
 }
 
-#[test]
-fn an_rc_logs_in_through_the_secure_login() {
-    let w = world("rcsecure", "*\n");
-    account(&w, "boss", true, &[]);
-    let (addr, server) = start(&w);
-    let key = server.identity.as_ref().unwrap().public_key();
-
-    // C1: type 6 and its key, SEI00001, the RC's token, the client key.
-    let hs = ClientHandshake::new(&[6 + 0x20, 0x2A + 0x20], "GSERV025", b"").unwrap();
-    let mut s = connect(&addr, hs.hello());
+/// C1 for `prefix` (type, and key for type 6) and the RC's `token`, S1
+/// back, then C2 with the account and password sealed. Returns the
+/// socket, ready for the server's first frame after the login.
+fn secure_login(
+    addr: &str,
+    key: &[u8; 32],
+    prefix: &[u8],
+    token: &str,
+    account: &str,
+    pw: &str,
+) -> TcpStream {
+    let hs = ClientHandshake::new(prefix, token, b"").unwrap();
+    let mut s = connect(addr, hs.hello());
     let s1 = read_zlib_frame(&mut s).unwrap();
     let s1 = s1.strip_suffix(b"\n").unwrap_or(&s1);
     let done = hs.finish(s1).unwrap();
-    assert_eq!(done.server_key, key);
-    // C2: the account and password, sealed.
-    let mut tail = vec![4 + 0x20];
-    tail.extend(b"boss");
-    tail.push(PASSWORD.len() as u8 + 0x20);
-    tail.extend(PASSWORD.as_bytes());
+    assert_eq!(&done.server_key, key);
+    let mut tail = vec![account.len() as u8 + 0x20];
+    tail.extend(account.as_bytes());
+    tail.push(pw.len() as u8 + 0x20);
+    tail.extend(pw.as_bytes());
     let mut c2 = done.sealer.seal(&tail).unwrap();
     c2.push(b'\n');
     s.write_all(&write_zlib_frame(&c2).unwrap()).unwrap();
+    s
+}
+
+#[test]
+fn staff_log_in_through_the_secure_login_with_every_rc_type() {
+    let w = world("rcsecure", "*\n");
+    account(&w, "boss", true, &[]);
+    account(&w, "player", false, &[]);
+    account(&w, "faraway", true, &["10.0.0.0/8"]);
+    let (addr, server) = start(&w);
+    let key = server.identity.as_ref().unwrap().public_key();
+
+    // Type 6 and its key: gen-5 frames after the login.
+    let mut s = secure_login(
+        &addr,
+        &key,
+        &[6 + 0x20, 0x2A + 0x20],
+        "GSERV025",
+        "boss",
+        PASSWORD,
+    );
     let mut inc = Gen5::new(0x2A);
     welcomed(|| read_frame(&mut s, &mut inc).unwrap(), "boss");
+
+    // Type 1, no key: plain zlib frames.
+    let mut s = secure_login(&addr, &key, &[1 + 0x20], "GSERV023", "boss", PASSWORD);
+    welcomed(|| read_zlib_frame(&mut s).unwrap(), "boss");
+
+    // Type 3, NPC Control: plain zlib. With no NPC-server there is no NPC
+    // to list, so ask for the weapon list (115) and get its 167.
+    let mut s = secure_login(&addr, &key, &[3 + 0x20], "NCL11012", "boss", PASSWORD);
+    s.write_all(&write_zlib_frame(&[115 + 0x20, b'\n']).unwrap())
+        .unwrap();
+    let m = ids(&read_zlib_frame(&mut s).unwrap());
+    assert_eq!(m[0].0, 167, "{m:?}");
+
+    // Refusals come after the handshake, in each type's own framing.
+    let mut s = secure_login(
+        &addr,
+        &key,
+        &[6 + 0x20, 5 + 0x20],
+        "GSERV025",
+        "player",
+        PASSWORD,
+    );
+    assert_eq!(
+        disc(&read_frame(&mut s, &mut Gen5::new(5)).unwrap()),
+        "This account may not use RC."
+    );
+    let mut s = secure_login(&addr, &key, &[1 + 0x20], "GSERV023", "boss", "wrong");
+    assert_eq!(
+        disc(&read_zlib_frame(&mut s).unwrap()),
+        "Account name or password is wrong."
+    );
+    let mut s = secure_login(&addr, &key, &[3 + 0x20], "NCL11012", "player", PASSWORD);
+    assert_eq!(
+        disc(&read_zlib_frame(&mut s).unwrap()),
+        "This account may not use RC."
+    );
+    let mut s = secure_login(&addr, &key, &[3 + 0x20], "NCL11012", "faraway", PASSWORD);
+    assert_eq!(
+        disc(&read_zlib_frame(&mut s).unwrap()),
+        "RC logins for this account are not allowed from your address."
+    );
     let _ = std::fs::remove_dir_all(&w);
 }

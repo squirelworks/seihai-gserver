@@ -556,7 +556,7 @@ impl Conn {
             score: Default::default(),
             flooding: None,
             kicked: false,
-            ping: (!cfg.ping.is_zero() && version.profile().protocol.plo.contains(PLO_PING))
+            ping: (!cfg.ping.is_zero() && crate::profile::ServerProfile::of(version).ping)
                 .then(crate::ping::Pinger::default),
         };
         for f in session.handle(&self.server, &self.peer, &early) {
