@@ -158,3 +158,90 @@ fn an_rc_sets_rights_and_comments_and_the_rights_open_folders() {
     );
     let _ = std::fs::remove_dir_all(&w);
 }
+
+#[test]
+fn an_rc_reads_and_sets_player_props() {
+    use seihai_core::net::{login_gserver, random_key};
+    use seihai_core::protocol::{ClientVersion, SessionState};
+    use seihai_rc::players::{
+        parse_prop_edit, parse_props, props_get, props_get_account, props_set,
+    };
+    let w = world("rcprops", "*\n");
+    let store = Store::new(w.join("accounts"));
+    let mut boss = File::new("boss", "onlinestartlocal.nw", 30.0, 30.0);
+    boss.set_password(PASSWORD.as_bytes());
+    boss.staff = true;
+    store.save(&boss).unwrap();
+    let mut test1 = File::new("test1", "onlinestartlocal.nw", 30.0, 30.0);
+    test1.flags = vec!["labflag=1".into()];
+    test1.rupees = 100;
+    test1.set_password(PASSWORD.as_bytes());
+    store.save(&test1).unwrap();
+    let (addr, _server) = start(&w);
+    let mut s = Session::login(
+        &addr,
+        &LoginParams {
+            kind: RcKind::Gen5,
+            token: RcKind::Gen5.default_token().into(),
+            account: "boss".into(),
+            password: PASSWORD.into(),
+            key: 5,
+            nickname: None,
+        },
+        Duration::from_secs(10),
+    )
+    .unwrap();
+
+    // Offline, by account: read, change, read back.
+    s.send_messages(&[props_get_account("test1").unwrap()])
+        .unwrap();
+    let got = parse_props(&reply(&mut s, 72)).unwrap();
+    assert_eq!((got.id, got.account.as_str()), (0, "test1"));
+    assert!(got.props_complete);
+    assert_eq!(got.flags, ["labflag=1"]);
+    let edits: Vec<_> = ["gralats=5", "bombs=7", "hearts=2.5"]
+        .iter()
+        .map(|e| parse_prop_edit(e).unwrap())
+        .collect();
+    s.send_messages(&[props_set(&got, &edits).unwrap()])
+        .unwrap();
+    s.send_messages(&[props_get_account("test1").unwrap()])
+        .unwrap();
+    let again = parse_props(&reply(&mut s, 72)).unwrap();
+    let file = store.load("test1").unwrap().unwrap();
+    assert_eq!((file.rupees, file.bombs, file.hp), (5, 7, 2.5));
+    assert_eq!(
+        file.flags,
+        ["labflag=1"],
+        "the flags came back with the set"
+    );
+    assert_eq!(file.level, "onlinestartlocal.nw");
+    assert_eq!(again.props.len(), got.props.len());
+
+    // Online, by player id: read; a set is refused and the file kept.
+    let v = ClientVersion::V222;
+    let mut c = login_gserver(&addr, v, random_key(), "test1", PASSWORD, false).unwrap();
+    let rx = c.conn.spawn_reader().unwrap();
+    let mut st = SessionState::for_version(v);
+    read_until(&rx, &mut st, Duration::from_secs(10), |s| s.board.is_some()).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let id = loop {
+        if let Some(e) = s.players.players.values().find(|e| e.account == "test1") {
+            break e.id;
+        }
+        assert!(std::time::Instant::now() < deadline, "test1 not listed");
+        s.next_event(std::time::Instant::now() + Duration::from_millis(200))
+            .unwrap();
+    };
+    s.send_messages(&[props_get(id).unwrap()]).unwrap();
+    let online = parse_props(&reply(&mut s, 72)).unwrap();
+    assert_eq!((online.id, online.account.as_str()), (id, "test1"));
+    let edits = [parse_prop_edit("gralats=999").unwrap()];
+    s.send_messages(&[props_set(&online, &edits).unwrap()])
+        .unwrap();
+    s.send_messages(&[props_get_account("test1").unwrap()])
+        .unwrap();
+    reply(&mut s, 72);
+    assert_eq!(store.load("test1").unwrap().unwrap().rupees, 5);
+    let _ = std::fs::remove_dir_all(&w);
+}

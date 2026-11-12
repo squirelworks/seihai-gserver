@@ -818,6 +818,18 @@ impl Conn {
                     for op in ops {
                         let (reply, log) = match op {
                             crate::rc::RcEvent::Account(op) => {
+                                // A player id is the account online with it.
+                                let op = match op {
+                                    crate::rcaccounts::Op::PropsGetId(pid) => {
+                                        match server.world.account_of(pid) {
+                                            Some(account) => {
+                                                crate::rcaccounts::Op::PropsGet { id: pid, account }
+                                            }
+                                            None => op,
+                                        }
+                                    }
+                                    op => op,
+                                };
                                 let d = crate::rcaccounts::run(&server.store, &online, start, op);
                                 (vec![d.reply], d.log)
                             }
