@@ -197,6 +197,19 @@ impl Props {
         }
     }
 
+    /// Put props `before` back (their values before a change the
+    /// anti-cheat refused), and take them out of `change`. The position is
+    /// left alone.
+    pub fn restore(&mut self, change: &mut Change, before: &[(u8, Option<Vec<u8>>)]) {
+        for (id, v) in before {
+            change.values.remove(id);
+            match v {
+                Some(v) => self.values.insert(*id, v.clone()),
+                None => self.values.remove(id),
+            };
+        }
+    }
+
     /// Whether the change moves the player.
     pub fn moves(change: &Change) -> bool {
         change.x.is_some() || change.y.is_some()

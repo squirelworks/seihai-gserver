@@ -119,6 +119,16 @@ impl Account {
         }
     }
 
+    /// A player saved with no hearts (killed, then logged out) logs in
+    /// with full hearts, the account's max. Issue #51: the value GServer-v2
+    /// beta4 gives is still to be checked in a lab; full hearts is what
+    /// the client's own respawn gives.
+    pub fn revive(&mut self) {
+        if self.hp <= 0.0 {
+            self.hp = f32::from(self.max_hp.max(1));
+        }
+    }
+
     pub fn parse(name: &str, text: &str) -> Self {
         let mut a = Account::new(name, "", 0.0, 0.0);
         a.head.clear();
