@@ -45,6 +45,32 @@
 //! frame. Before a join or a leave the batch goes out first, so a client
 //! never hears of a move after the mover left.
 //!
+//! The NPC-server (stage 5, `PROTOCOL.md`): the world feeds the link's
+//! [`Hub`] (joins, props, level changes, leaves, reloaded level files) and
+//! applies what the NPC-server sends ([`WorldIn::FromNpc`]):
+//! - `NPC_ADDED`, `NPC_PROPS`, `NPC_DELETED`: server NPCs live in their
+//!   level's NPC list next to the level file's, under ids this server gives
+//!   them, so players in the level and later arrivals get them as
+//!   `PLO_NPCPROPS` (3) like level NPCs; a deleted one goes as
+//!   `PLO_NPCDEL` (29). When the link closes they all go.
+//! - `SET_PLAYER_PROPS`: the player's own props (`PLO_PLAYERPROPS` 9),
+//!   the others in the level, and `PLAYER_PROPS` back to the link. A move
+//!   resets the anti-cheat's walk, as a warp does.
+//! - `WARP_PLAYER`: a warp the teleport and warp checks do not question,
+//!   with `PLO_PLAYERWARP` (14, or 49 on a gmap) before the level.
+//! - `ADD_WEAPON`: `PLO_DEFAULTWEAPON` (43) for the bow and the bomb, else
+//!   `PLO_NPCWEAPONADD` (33) with the name alone.
+//! - `SERVER_FLAG`: kept, and sent to everyone as `PLO_FLAGSET` (28) or
+//!   `PLO_FLAGDEL` (31); a login gets the whole set.
+//! - `PM`: `PLO_PRIVATEMESSAGE` (37) from [`NPC_SERVER_ID`].
+//! - `NPC_SHAPE`: kept on the server NPC; no client message carries it.
+//! - `PLAY_SOUND`, `STOP_SOUND`, `STOP_MIDI`, `NPC_TRIGGER_ACTION`: no build
+//!   in the profile table reads a server message for them (sounds), or the
+//!   layout has no capture yet (`PLO_TRIGGERACTION` 48), so they are logged
+//!   once and dropped.
+//!
+//! Every message goes out only to builds whose profile lists its id.
+//!
 //! To do: the anti-cheat checks of stage 7 that guard these (movement,
 //! warps, items and counted props), see `docs/PLAN.md`.
 
@@ -52,13 +78,17 @@ use crate::anticheat::{AntiCheat, Kind, Score, Walk, LINK_SLACK};
 use crate::baddies::Baddy;
 use crate::gmaps::{plays_gmaps, Gmaps, Place, GMAPLEVELX, GMAPLEVELY};
 use crate::levels::Level;
+use crate::npclink::Hub;
 use crate::npcs::Npc;
 use crate::others::{self, Change, Props};
 use crate::wire::gchar;
 use crate::wire::ids::{
-    PLO_BADDYPROPS, PLO_HURTPLAYER, PLO_ISLEADER, PLO_ITEMADD, PLO_ITEMDEL, PLO_SETACTIVELEVEL,
+    PLO_BADDYPROPS, PLO_DEFAULTWEAPON, PLO_FLAGDEL, PLO_FLAGSET, PLO_HURTPLAYER, PLO_ISLEADER,
+    PLO_ITEMADD, PLO_ITEMDEL, PLO_NPCDEL, PLO_NPCWEAPONADD, PLO_OTHERPLPROPS, PLO_PLAYERWARP,
+    PLO_PRIVATEMESSAGE, PLO_SETACTIVELEVEL,
 };
-use seihai_core::protocol::{ClientVersion, EncryptionGen};
+use seihai_core::protocol::{parse_player_props_with, ClientVersion, EncryptionGen};
+use seihai_npcserver::link::Message;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -85,6 +115,23 @@ type Batch = (Vec<u8>, Vec<(u16, usize, usize)>);
 const ID_LIMIT: u16 = 1 << 14;
 /// Prop 0, the nickname.
 const NICKNAME: u8 = 0;
+
+/// The id the NPC-server's PMs come from. Never given to a player.
+pub const NPC_SERVER_ID: u16 = ID_LIMIT - 1;
+
+/// How often the world looks for level files that changed on disk.
+pub const LEVEL_CHECK: Duration = Duration::from_secs(1);
+
+/// A server NPC: the level it is in and this server's id for it.
+#[derive(Debug, Clone)]
+struct ServerNpc {
+    /// Lower-case level name, the key of [`WorldTask::npcs`].
+    level: String,
+    id: u32,
+    /// `NPC_SHAPE`: kind, width and height in pixels. Kept for blocking.
+    #[allow(dead_code)]
+    shape: Option<(u8, u16, u16)>,
+}
 
 /// What a connection tells the world.
 #[derive(Debug)]
@@ -160,6 +207,10 @@ pub enum WorldIn {
     Rc { rc: u16, ev: crate::rc::RcEvent },
     /// An RC's link closed.
     RcLeft { rc: u16 },
+    /// A message from the NPC-server (`0x40` to `0x4C`), from the link.
+    FromNpc(Message),
+    /// The NPC-server link closed: its NPCs go.
+    NpcGone,
 }
 
 /// Frame bodies for one player. Each item is a run of frames the
@@ -185,6 +236,8 @@ pub struct Warp {
 #[derive(Debug, Clone)]
 pub struct Joining {
     pub account: String,
+    /// The account's name as written, for the NPC-server.
+    pub name: String,
     /// The level the account was in, or the start level.
     pub level: String,
     /// The client's build: what it reads of other players.
@@ -284,6 +337,11 @@ impl World {
                 leaders: HashMap::new(),
                 pending: BTreeMap::new(),
                 rcs: BTreeMap::new(),
+                npc: None,
+                server_npcs: HashMap::new(),
+                server_flags: BTreeMap::new(),
+                noted: HashSet::new(),
+                reload_objects: HashSet::new(),
             })),
         }
     }
@@ -293,6 +351,15 @@ impl World {
     pub fn set_saver(&self, saver: Saver) {
         if let Some(t) = self.task.lock().unwrap().as_mut() {
             t.saver = Some(saver);
+        }
+    }
+
+    /// The NPC-server link: the world feeds it, and its messages come to
+    /// the world. Call before [`World::start`]; later calls do nothing.
+    pub fn set_npc(&self, hub: Arc<Hub>) {
+        if let Some(t) = self.task.lock().unwrap().as_mut() {
+            hub.attach_world(self.tx.downgrade());
+            t.npc = Some(hub);
         }
     }
 
@@ -672,6 +739,17 @@ pub struct WorldTask {
     leaders: HashMap<String, u16>,
     /// The RCs logged in, by id. Their ids come from the players' space.
     rcs: BTreeMap<u16, OnlineRc>,
+    /// The NPC-server link, fed from here.
+    npc: Option<Arc<Hub>>,
+    /// Server NPCs by the NPC-server's id.
+    server_npcs: HashMap<u32, ServerNpc>,
+    /// Server flags (`server.` names) by name; the value may be empty.
+    server_flags: BTreeMap<String, String>,
+    /// Link messages already logged as not passed on.
+    noted: HashSet<&'static str>,
+    /// Levels whose file changed while players were in them: their NPCs
+    /// and baddies are read again once the level is empty.
+    reload_objects: HashSet<String>,
 }
 
 impl WorldTask {
@@ -679,6 +757,8 @@ impl WorldTask {
     pub async fn run(mut self) {
         let mut tick = tokio::time::interval(TICK);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut check = tokio::time::interval(LEVEL_CHECK);
+        check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tokio::select! {
                 ev = self.rx.recv() => match ev {
@@ -689,6 +769,7 @@ impl WorldTask {
                     self.flush();
                     self.baddy_timers(Instant::now());
                 }
+                _ = check.tick() => self.check_levels(),
             }
         }
     }
@@ -731,8 +812,15 @@ impl WorldTask {
                     }
                 });
                 let new_id = answer.as_ref().ok().map(|j| j.id);
+                let level_name = answer.as_ref().ok().map(|j| j.level.name.clone());
                 match (reply.send(answer), new_id) {
-                    (Ok(()), Some(id)) => self.meet(id),
+                    (Ok(()), Some(id)) => {
+                        if let (Some(hub), Some(level)) = (&self.npc, &level_name) {
+                            hub.joined(id, &who.name, level, &with_id(&who.props, id));
+                        }
+                        self.send_server_flags(id);
+                        self.meet(id);
+                    }
                     // The connection closed while it waited: the id goes
                     // straight back, before anyone heard of it.
                     (Err(_), Some(id)) => {
@@ -825,6 +913,8 @@ impl WorldTask {
                     self.to_rcs(None, Some(crate::rc::delplayer(rc)));
                 }
             }
+            WorldIn::FromNpc(m) => self.apply_npc(m),
+            WorldIn::NpcGone => self.npc_gone(),
         }
     }
 
@@ -1137,6 +1227,9 @@ impl WorldTask {
             return;
         }
         self.part(id, &old);
+        if let Some(hub) = &self.npc {
+            hub.level(id, &level.name);
+        }
         if let Some(p) = self.players.get(&id) {
             let level = self.view(id, &level);
             let f = crate::burst::gmap_level(p.version, &level, &gmap.gmap, full);
@@ -1172,7 +1265,17 @@ impl WorldTask {
             return Ok(l.clone());
         }
         let l = Arc::new(Level::load(&self.levels.dir, name)?);
-        let npcs = l
+        self.level_objects(&l);
+        self.loaded.insert(key, l.clone());
+        self.loaded.insert(l.name.to_ascii_lowercase(), l.clone());
+        Ok(l)
+    }
+
+    /// The NPCs and baddies of a level file, with fresh NPC ids. Server
+    /// NPCs already in the level stay, after the file's.
+    fn level_objects(&mut self, l: &Level) {
+        let key = l.name.to_ascii_lowercase();
+        let mut npcs: Vec<Npc> = l
             .npcs
             .iter()
             .map(|n| {
@@ -1180,7 +1283,11 @@ impl WorldTask {
                 Npc::from_level(self.last_npc, n)
             })
             .collect();
-        self.npcs.insert(l.name.to_ascii_lowercase(), npcs);
+        let server: HashSet<u32> = self.server_npcs.values().map(|s| s.id).collect();
+        if let Some(old) = self.npcs.remove(&key) {
+            npcs.extend(old.into_iter().filter(|n| server.contains(&n.id)));
+        }
+        self.npcs.insert(key.clone(), npcs);
         let baddies = l
             .baddies
             .iter()
@@ -1192,10 +1299,54 @@ impl WorldTask {
                 }
             })
             .collect();
-        self.baddies.insert(l.name.to_ascii_lowercase(), baddies);
-        self.loaded.insert(key, l.clone());
-        self.loaded.insert(l.name.to_ascii_lowercase(), l.clone());
-        Ok(l)
+        self.baddies.insert(key, baddies);
+    }
+
+    /// Level files that changed on disk since they were read: each is read
+    /// again for the players who enter it from now on, and the NPC-server
+    /// is told (`LEVEL_RELOADED`). Its NPCs and baddies are read again at
+    /// once if nobody is in it, else when the last player leaves, since the
+    /// clients there hold the old ids. A file that is gone or does not read
+    /// keeps the copy the world has.
+    fn check_levels(&mut self) {
+        let mut seen = HashSet::new();
+        let mut changed = Vec::new();
+        for l in self.loaded.values() {
+            if !seen.insert(l.name.clone()) {
+                continue;
+            }
+            let mtime = std::fs::metadata(self.levels.dir.join(&l.name))
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs());
+            if mtime.is_some_and(|t| t != l.mod_time) {
+                changed.push(l.clone());
+            }
+        }
+        for old in changed {
+            let new = match Level::load(&self.levels.dir, &old.name) {
+                Ok(l) => Arc::new(l),
+                Err(e) => {
+                    eprintln!("level {}: changed on disk but {e}; kept", old.name);
+                    continue;
+                }
+            };
+            for l in self.loaded.values_mut() {
+                if Arc::ptr_eq(l, &old) {
+                    *l = new.clone();
+                }
+            }
+            let key = new.name.to_ascii_lowercase();
+            if self.players.values().any(|p| p.level == key) {
+                self.reload_objects.insert(key);
+            } else {
+                self.level_objects(&new);
+            }
+            if let Some(hub) = &self.npc {
+                hub.level_reloaded(&new.name);
+            }
+        }
     }
 
     /// A link request. The level must exist: a link to a missing level
@@ -1205,10 +1356,20 @@ impl WorldTask {
     /// ([`crate::burst::level_answer`]); then the players there and the
     /// newcomer see each other.
     fn warp(&mut self, w: Warp) {
+        self.warp_to(w, false);
+    }
+
+    /// A warp: a link the player took, or (`server`) one the NPC-server
+    /// sent, which the warp check does not question and which tells the
+    /// client where to go (`PLO_PLAYERWARP`, or `PLO_PLAYERWARP2` on a
+    /// gmap). A server warp inside the level sends only that.
+    fn warp_to(&mut self, w: Warp, server: bool) {
         if !self.players.contains_key(&w.player) {
             return;
         }
-        if let Some(what) = self.unlinked(&w) {
+        if server {
+            // Not a step: no check, no stale spot.
+        } else if let Some(what) = self.unlinked(&w) {
             if self.report(w.player, Kind::Warp, what) {
                 return;
             }
@@ -1245,11 +1406,15 @@ impl WorldTask {
         }
         if old != key {
             self.part(w.player, &old);
+            if let Some(hub) = &self.npc {
+                hub.level(w.player, &level.name);
+            }
         }
         let level = self.view(w.player, &level);
         let Some(p) = self.players.get(&w.player) else {
             return;
         };
+        let same = server && old == key;
         match &gmap {
             // A link into a gmap cell says where on the gmap, then the
             // level as a gmap level (Seihai's beta4 lab notes, "Warps").
@@ -1258,14 +1423,36 @@ impl WorldTask {
                     crate::wire::ids::PLO_PLAYERWARP2,
                     &crate::burst::warp2(w.x, w.y, g),
                 );
-                f.extend(crate::burst::gmap_level(
-                    p.version, &level, &g.gmap, !cached,
-                ));
+                if !same {
+                    f.extend(crate::burst::gmap_level(
+                        p.version, &level, &g.gmap, !cached,
+                    ));
+                }
                 let _ = p.outbox.send(vec![f]);
             }
             None => {
-                let answer = crate::burst::level_answer(p.version, p.gen, &level, cached);
-                let _ = p.outbox.send(answer);
+                // A server warp says where first, as the login burst does.
+                let mut warp = Vec::new();
+                if server && p.version.profile().protocol.plo.contains(PLO_PLAYERWARP) {
+                    let mut b = vec![
+                        gchar((w.x * 2.0).clamp(0.0, 223.0) as u8),
+                        gchar((w.y * 2.0).clamp(0.0, 223.0) as u8),
+                    ];
+                    b.extend(crate::wire::latin1(&level.name));
+                    warp = crate::wire::msg(PLO_PLAYERWARP, &b);
+                }
+                if same {
+                    if !warp.is_empty() {
+                        let _ = p.outbox.send(vec![warp]);
+                    }
+                } else {
+                    let mut answer = crate::burst::level_answer(p.version, p.gen, &level, cached);
+                    if let Some(first) = answer.first_mut() {
+                        warp.extend(std::mem::take(first));
+                        *first = warp;
+                    }
+                    let _ = p.outbox.send(answer);
+                }
             }
         }
         if old == key {
@@ -1385,6 +1572,9 @@ impl WorldTask {
 
     fn leave(&mut self, id: u16) {
         if let Some(p) = self.players.remove(&id) {
+            if let Some(hub) = &self.npc {
+                hub.left(id);
+            }
             if let Some(save) = &self.saver {
                 save(p.leaving());
             }
@@ -1480,6 +1670,13 @@ impl WorldTask {
             return;
         }
         self.leaders.remove(level);
+        // The last player left a level whose file changed: its NPCs and
+        // baddies are read again now.
+        if !self.players.values().any(|p| p.level == level) && self.reload_objects.remove(level) {
+            if let Some(l) = self.loaded.get(level).cloned() {
+                self.level_objects(&l);
+            }
+        }
         // A player who plays the level as a gmap cell comes last: real
         // 2.22 on a gmap draws the baddies and runs them, but sends none
         // of their changes (Wine lab, 2026-11-05).
@@ -1698,6 +1895,9 @@ impl WorldTask {
         let Some(p) = self.players.get_mut(&id) else {
             return;
         };
+        if let Some(hub) = &self.npc {
+            hub.props(id, raw, p.version.profile().props.bow_prop10);
+        }
         let before: Vec<(u8, Option<Vec<u8>>)> = [GMAPLEVELX, GMAPLEVELY]
             .iter()
             .map(|&i| (i, p.props.values().get(&i).cloned()))
@@ -1839,11 +2039,328 @@ impl WorldTask {
         }
     }
 
+    /// A message from the NPC-server. See the module notes for what each
+    /// becomes.
+    fn apply_npc(&mut self, m: Message) {
+        match m {
+            Message::NpcAdded {
+                npc_id,
+                level,
+                props,
+            } => self.npc_added(npc_id, &latin1_text(&level), &props),
+            Message::NpcProps { npc_id, props } => self.server_npc_props(npc_id, &props),
+            Message::NpcDeleted { npc_id } => self.npc_deleted(npc_id),
+            Message::SetPlayerProps { player_id, props } => {
+                self.set_player_props(player_id, &props)
+            }
+            Message::WarpPlayer {
+                player_id,
+                level,
+                x,
+                y,
+            } => self.warp_to(
+                Warp {
+                    player: player_id,
+                    level: latin1_text(&level),
+                    x: f32::from(x) / 2.0,
+                    y: f32::from(y) / 2.0,
+                    mod_time: None,
+                },
+                true,
+            ),
+            Message::AddWeapon { player_id, weapon } => self.add_weapon(player_id, &weapon),
+            Message::ServerFlag { name, set, value } => {
+                self.server_flag(latin1_text(&name), set, latin1_text(&value))
+            }
+            Message::Pm { player_id, text } => self.npc_pm(player_id, &text),
+            Message::NpcShape { npc_id, kind, w, h } => {
+                if let Some(n) = self.server_npcs.get_mut(&npc_id) {
+                    n.shape = Some((kind, w, h));
+                }
+            }
+            Message::PlaySound { .. } => {
+                self.note("PLAY_SOUND", "no client build reads a server sound")
+            }
+            Message::StopSound { .. } => {
+                self.note("STOP_SOUND", "no client build reads a server sound")
+            }
+            Message::StopMidi { .. } => {
+                self.note("STOP_MIDI", "no client build reads a server sound")
+            }
+            Message::NpcTriggerAction { .. } => self.note(
+                "NPC_TRIGGER_ACTION",
+                "PLO_TRIGGERACTION (48) has no capture yet",
+            ),
+            other => eprintln!("npcserver: message 0x{:02x} is not the world's", other.id()),
+        }
+    }
+
+    /// Log once that a link message is not passed on.
+    fn note(&mut self, what: &'static str, why: &str) {
+        if self.noted.insert(what) {
+            eprintln!("npcserver: {what} is dropped: {why}");
+        }
+    }
+
+    /// `msgs` to every player in `level` (lower case) but `except`, each
+    /// built for the receiver; NPC messages go under the gmap for a player
+    /// who plays the level as a gmap cell.
+    fn to_level_npc(&self, level: &str, make: impl Fn(&Online) -> Option<Vec<u8>>) {
+        let name = self.loaded.get(level).map_or(level, |l| &l.name);
+        for o in self.players.values() {
+            if o.level != level {
+                continue;
+            }
+            if let Some(m) = make(o) {
+                for m in under_gmap(o.gmap.as_ref(), name, vec![m]) {
+                    let _ = o.outbox.send(vec![m]);
+                }
+            }
+        }
+    }
+
+    /// `NPC_ADDED`: a server NPC in `level`. The level is read if it is
+    /// not yet, so its own NPCs keep their place. An id that is in use is
+    /// taken down first.
+    fn npc_added(&mut self, npc_id: u32, level: &str, props: &[u8]) {
+        if self.server_npcs.contains_key(&npc_id) {
+            self.npc_deleted(npc_id);
+        }
+        let key = match self.find_level(level) {
+            Ok(l) => l.name.to_ascii_lowercase(),
+            Err(_) => level.to_ascii_lowercase(),
+        };
+        self.last_npc += 1;
+        let npc = Npc::from_link(self.last_npc, props);
+        self.server_npcs.insert(
+            npc_id,
+            ServerNpc {
+                level: key.clone(),
+                id: npc.id,
+                shape: None,
+            },
+        );
+        self.to_level_npc(&key, |o| {
+            npc.message_on(o.version, o.gmap.as_ref().map(|g| g.cell))
+        });
+        self.npcs.entry(key).or_default().push(npc);
+    }
+
+    /// `NPC_PROPS`: what changed goes to the players in the level.
+    fn server_npc_props(&mut self, npc_id: u32, props: &[u8]) {
+        let Some(s) = self.server_npcs.get(&npc_id).cloned() else {
+            return;
+        };
+        let Some(npc) = self
+            .npcs
+            .get_mut(&s.level)
+            .and_then(|l| l.iter_mut().find(|n| n.id == s.id))
+        else {
+            return;
+        };
+        let changed = npc.update(props, ClientVersion::V222);
+        if changed.is_empty() {
+            return;
+        }
+        self.to_level_npc(&s.level, |o| {
+            crate::npcs::message(s.id, &changed, o.version)
+        });
+    }
+
+    /// `NPC_DELETED`: gone from its level, `PLO_NPCDEL` to the players there.
+    fn npc_deleted(&mut self, npc_id: u32) {
+        let Some(s) = self.server_npcs.remove(&npc_id) else {
+            return;
+        };
+        if let Some(l) = self.npcs.get_mut(&s.level) {
+            l.retain(|n| n.id != s.id);
+        }
+        let mut p = Vec::new();
+        crate::wire::gint3(s.id, &mut p);
+        let m = crate::wire::msg(PLO_NPCDEL, &p);
+        self.to_level_npc(&s.level, |o| {
+            o.version
+                .profile()
+                .protocol
+                .plo
+                .contains(PLO_NPCDEL)
+                .then(|| m.clone())
+        });
+    }
+
+    /// The link closed: every server NPC goes.
+    fn npc_gone(&mut self) {
+        let ids: Vec<u32> = self.server_npcs.keys().copied().collect();
+        for id in ids {
+            self.npc_deleted(id);
+        }
+    }
+
+    /// `SET_PLAYER_PROPS` (2.22 encoding): the player's own props, the
+    /// others in the level, and `PLAYER_PROPS` to the link. The NPC-server
+    /// is a trusted source, so no anti-cheat check refuses it; a move puts
+    /// the walk check at the new spot.
+    fn set_player_props(&mut self, id: u16, raw: &[u8]) {
+        let Some(p) = self.players.get_mut(&id) else {
+            return;
+        };
+        let was = p.props.x().zip(p.props.y());
+        let change = p.props.apply(raw, ClientVersion::V222);
+        let mut own: Vec<(u8, Vec<u8>)> = parse_player_props_with(raw, false)
+            .into_iter()
+            .filter(|q| !matches!(q.id, 14 | 15 | 16 | 50 | 51 | 78 | 79))
+            .map(|q| (q.id, q.raw))
+            .collect();
+        if Props::moves(&change) {
+            let (x, y) = (p.props.x().unwrap_or(0.0), p.props.y().unwrap_or(0.0));
+            own.extend(others::own_position(x, y));
+            p.stale = was;
+            let (gx, gy) = p.global();
+            p.walk = Walk::at(gx, gy, Instant::now());
+        }
+        if let Some(m) = others::own_message(p.version, &own) {
+            let _ = p.outbox.send(vec![m]);
+        }
+        if change.has(NICKNAME) {
+            self.to_rcs(None, self.player_entry(id));
+        }
+        if !change.is_empty() {
+            self.pending.entry(id).or_default().merge(change);
+        }
+        if let Some(hub) = &self.npc {
+            hub.props(id, raw, false);
+        }
+    }
+
+    /// `ADD_WEAPON`: the bow and the bomb are default weapons (43, ids 7
+    /// and 8 as the login burst sends them); any other name goes as a
+    /// weapon with that name and nothing else (33), until weapons are a
+    /// stage.
+    fn add_weapon(&mut self, id: u16, weapon: &[u8]) {
+        let Some(p) = self.players.get(&id) else {
+            return;
+        };
+        let plo = &p.version.profile().protocol.plo;
+        let name = latin1_text(weapon);
+        let default = match name.trim().to_ascii_lowercase().as_str() {
+            "bow" => Some(7),
+            "bomb" | "bombs" => Some(8),
+            _ => None,
+        };
+        let m = match default {
+            Some(d) if plo.contains(PLO_DEFAULTWEAPON) => {
+                crate::wire::msg(PLO_DEFAULTWEAPON, &[gchar(d)])
+            }
+            _ if plo.contains(PLO_NPCWEAPONADD) && !weapon.is_empty() => {
+                let mut b = Vec::new();
+                crate::wire::gstring(weapon, &mut b);
+                crate::wire::msg(PLO_NPCWEAPONADD, &b)
+            }
+            _ => return,
+        };
+        let _ = p.outbox.send(vec![m]);
+    }
+
+    /// `SERVER_FLAG`: kept, and set or unset for everyone online.
+    fn server_flag(&mut self, name: String, set: bool, value: String) {
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            return;
+        }
+        let (id, text) = if set {
+            self.server_flags.insert(name.clone(), value.clone());
+            (PLO_FLAGSET, flag_text(&name, &value))
+        } else {
+            if self.server_flags.remove(&name).is_none() {
+                return;
+            }
+            (PLO_FLAGDEL, name.clone())
+        };
+        let m = crate::wire::msg(id, &crate::wire::latin1(&text));
+        for p in self.players.values() {
+            if p.version.profile().protocol.plo.contains(id) {
+                let _ = p.outbox.send(vec![m.clone()]);
+            }
+        }
+        if let Some(hub) = &self.npc {
+            hub.server_flags(
+                self.server_flags
+                    .iter()
+                    .map(|(n, v)| crate::wire::latin1(&flag_text(n, v)))
+                    .collect(),
+            );
+        }
+    }
+
+    /// The server flags to a player who just logged in.
+    fn send_server_flags(&self, id: u16) {
+        let Some(p) = self.players.get(&id) else {
+            return;
+        };
+        if self.server_flags.is_empty() || !p.version.profile().protocol.plo.contains(PLO_FLAGSET) {
+            return;
+        }
+        let msgs: Vec<u8> = self
+            .server_flags
+            .iter()
+            .flat_map(|(n, v)| {
+                crate::wire::msg(PLO_FLAGSET, &crate::wire::latin1(&flag_text(n, v)))
+            })
+            .collect();
+        let _ = p.outbox.send(vec![msgs]);
+    }
+
+    /// `PM`: a private message from [`NPC_SERVER_ID`], named "NPC-Server"
+    /// first where the build reads other players' nicknames, as the
+    /// listserver's PMs are (`server.rs`).
+    fn npc_pm(&self, id: u16, text: &[u8]) {
+        let Some(p) = self.players.get(&id) else {
+            return;
+        };
+        let prof = p.version.profile();
+        if !prof.protocol.plo.contains(PLO_PRIVATEMESSAGE) {
+            return;
+        }
+        let mut out = Vec::new();
+        if prof.protocol.plo.contains(PLO_OTHERPLPROPS) && prof.props.other.contains(0) {
+            let mut b = Vec::new();
+            others::put_id(p.version, NPC_SERVER_ID, &mut b);
+            b.push(gchar(0));
+            crate::wire::gstring(b"NPC-Server", &mut b);
+            out.extend(crate::wire::msg(PLO_OTHERPLPROPS, &b));
+        }
+        let mut b = Vec::new();
+        crate::wire::gshort(NPC_SERVER_ID, &mut b);
+        let quoted = |t: &[u8]| {
+            let mut q = vec![b'"'];
+            for &c in t {
+                if c == b'"' {
+                    q.push(b'"');
+                }
+                q.push(c);
+            }
+            q.push(b'"');
+            q
+        };
+        b.extend(quoted(b""));
+        b.push(b',');
+        b.extend(quoted(b"Private message:"));
+        b.push(b',');
+        // One line: a newline would end the message.
+        let text: Vec<u8> = text
+            .iter()
+            .map(|&c| if c == b'\n' { b' ' } else { c })
+            .collect();
+        b.extend(quoted(&text));
+        out.extend(crate::wire::msg(PLO_PRIVATEMESSAGE, &b));
+        let _ = p.outbox.send(vec![out]);
+    }
+
     /// The next free id after the last one given out, so a freed id is not
     /// handed to someone else straight away.
     fn take_id(&mut self) -> Option<u16> {
         for _ in 1..ID_LIMIT {
-            self.last_id = if self.last_id + 1 >= ID_LIMIT {
+            self.last_id = if self.last_id + 1 >= NPC_SERVER_ID {
                 1
             } else {
                 self.last_id + 1
@@ -1882,6 +2399,7 @@ mod tests {
     fn who(account: &str, level: &str) -> Joining {
         Joining {
             account: account.into(),
+            name: account.into(),
             level: level.into(),
             version: ClientVersion::V222,
             gen: EncryptionGen::Gen5,
@@ -2337,18 +2855,19 @@ mod tests {
     fn ids_wrap_and_skip_taken_ones() {
         let w = World::new(usize::MAX, blank());
         let mut t = w.task.lock().unwrap().take().unwrap();
-        t.last_id = ID_LIMIT - 2;
+        t.last_id = ID_LIMIT - 3;
         let (o, _r) = outbox();
         assert_eq!(
             t.join("a", ClientVersion::V222, EncryptionGen::Gen5, o.clone()),
-            Ok(ID_LIMIT - 1)
+            Ok(ID_LIMIT - 2)
         );
-        // Past the 14-bit limit the ids start again at 1, skipping 0.
+        // Past the 14-bit limit the ids start again at 1, skipping 0 and
+        // the NPC-server's id.
         assert_eq!(
             t.join("b", ClientVersion::V222, EncryptionGen::Gen5, o.clone()),
             Ok(1)
         );
-        t.last_id = ID_LIMIT - 2;
+        t.last_id = ID_LIMIT - 3;
         assert_eq!(
             t.join("c", ClientVersion::V222, EncryptionGen::Gen5, o.clone()),
             Ok(2)
@@ -2360,7 +2879,7 @@ mod tests {
             .unwrap()
             .take()
             .unwrap();
-        for id in 1..ID_LIMIT {
+        for id in 1..NPC_SERVER_ID {
             full.players.insert(
                 id,
                 Online {
@@ -2414,6 +2933,35 @@ const ALIGNMENT: u8 = 32;
 /// 17, with the victim's AP left as it was.
 fn ap_cost(ap: u8) -> u8 {
     2 * (1 + ap / 20)
+}
+
+/// Link text (Latin-1 bytes) as a string, one char per byte.
+fn latin1_text(b: &[u8]) -> String {
+    b.iter().map(|&c| c as char).collect()
+}
+
+/// `name=value`, or `name` alone for an empty value.
+fn flag_text(name: &str, value: &str) -> String {
+    if value.is_empty() {
+        name.to_string()
+    } else {
+        format!("{name}={value}")
+    }
+}
+
+/// A 2.22 prop stream with the player id (prop 14) set to `id`: the
+/// login's props carry 0 there, since the world gives the id.
+fn with_id(props: &[u8], id: u16) -> Vec<u8> {
+    let mut out = Vec::with_capacity(props.len());
+    for p in parse_player_props_with(props, false) {
+        out.push(gchar(p.id));
+        if p.id == 14 {
+            crate::wire::gshort(id, &mut out);
+        } else {
+            out.extend_from_slice(&p.raw);
+        }
+    }
+    out
 }
 
 /// NPC messages for a player in `level`. A gmap client keeps NPCs under

@@ -30,7 +30,7 @@ How the server is put together, and where each later stage plugs in. Read
 | `src/baddies.rs` | baddies from the level file, `PLO_BADDYPROPS`, hits handed to the level leader, death and respawn | 3 |
 | `src/listlink.rs` | the listserver link over the encrypted channel (`SVLINK01`): register, player count with nickname and props, account check (`VERIACC2`), pong (`SVO_PING` 16), private messages, file start; two plain threads, reconnects every 15 s | link |
 | `src/rc.rs` | RC logins for `seihai-rc`: the `STAFF` and `IPRANGE` checks, the welcome (slice 1); the player list entries and RC chat lines the world task sends RCs (slice 2); private and admin messages and the disconnect (slice 3); NC still refused | 4 |
-| `src/npclink.rs` | the link to `seihai-npcserver` (`PROTOCOL.md`): `Hub` (players for the link), `serve_link`, `supervise` for `npcserver = auto` | 5 (first half) |
+| `src/npclink.rs` | the link to `seihai-npcserver` (`PROTOCOL.md`): `Hub` (players and server flags for the link, the world's inbox), `serve_link`, `supervise` for `npcserver = auto` | 5 |
 | `src/anticheat.rs` | the admin policy (`anticheat.*` settings), violation scores and kicks, the log; the speed, teleport, warp and message-rate checks (stage 2.9); item and damage checks to come (`docs/PLAN.md`, stage 7) | 2, 7 |
 
 The skeleton modules hold the plan for their stage as doc comments and the
@@ -108,10 +108,11 @@ Conn task ◀──Outbox (mpsc of message bodies)──────────
 ## The NPC-server link
 
 ```
-Conn task ──Hub::joined / props / left──▶ Hub (Mutex: players + link sender)
+World task ──Hub::joined / props / level / left / level_reloaded──▶ Hub (Mutex: players + link sender)
                                              │  only when an NPC-server is connected
                                              ▼
                      link task (serve_link) ──frames──▶ seihai-npcserver
+World task ◀──WorldIn::FromNpc (0x40 to 0x4C), NpcGone── link task
                                              ▲
          supervise (npcserver = auto): starts seihai-npcserver with
          --gserver 127.0.0.1:<link port> --world <world> --once and the token in
@@ -124,9 +125,11 @@ Conn task ──Hub::joined / props / left──▶ Hub (Mutex: players + link s
 - Props on the link are in the 2.22 encoding: the login uses
   `burst::own_props(V222, ...)`, and client prop updates are re-emitted with
   the old bow slot (prop 10 before 2.1) dropped.
-- Still to do now that the world task exists: move the `Hub` calls into it
-  (they are made from the connection task today), add `PLAYER_LEVEL` on
-  warps, and relay the NPC-server's NPC props to the players in each level.
+- The world task makes every `Hub` call, so the link hears of a level
+  change in the same order the clients do. The NPC-server's messages reach
+  the world through a weak sender (`Hub::attach_world`), so the world task
+  still ends when the server drops it. Server NPCs sit in their level's
+  NPC list under this server's ids; when the link closes they are deleted.
 
 ## Testing
 
@@ -175,6 +178,10 @@ Conn task ──Hub::joined / props / left──▶ Hub (Mutex: players + link s
   level full of players walks.
 - `tests/npc_link.rs`: this gserver, the real NPC-server session code and real
   client logins (2.22, 2.05) on loopback.
+- `tests/npc_messages.rs`: a stand-in NPC-server on the shared link codec
+  sends `0x40` to `0x4C`; 2.05, 2.22 and 2.31 logins see server NPCs come,
+  move and go, own props, a warp, weapons, server flags and a PM, and the
+  link hears `PLAYER_PROPS`, `PLAYER_LEVEL` and `LEVEL_RELOADED`.
 - `tools/lab-matrix.sh`: the real `seihai-mae` binary for every profile.
 - `tools/lab-wine.md`: real Windows clients under Wine in a loopback-only
   namespace. Record each run in `docs/lab/`.
