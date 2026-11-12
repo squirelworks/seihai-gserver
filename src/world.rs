@@ -1693,7 +1693,7 @@ impl WorldTask {
             .map(|&i| (i, p.props.values().get(&i).cloned()))
             .collect();
         if let Some(hub) = &self.npc {
-            hub.props(id, raw, p.version.profile().props.bow_prop10);
+            hub.props(id, raw, others::bow_prop10(p.version));
         }
         let before: Vec<(u8, Option<Vec<u8>>)> = [GMAPLEVELX, GMAPLEVELY]
             .iter()
