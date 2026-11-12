@@ -189,13 +189,9 @@ impl FileStore {
 }
 
 /// Whether `PLO_FILE` carries the GINT5 mod time (and the closing line
-/// end) for `version`: 2.1 on, as the profile says, and also 2.05. Real
-/// 2.05 rev 2 takes a file only in that shape; sent without it, the file
-/// is dropped and an NPC with that image is not drawn (Wine lab,
-/// 2026-11-05; the efb5b90 lab gserver sends it so too). Other builds
-/// before 2.1 are not checked yet and keep the profile's answer.
+/// end) for `version` (`profile.rs`: 2.1 on, and 2.05).
 pub fn has_modtime(version: ClientVersion) -> bool {
-    version.profile().files.modtime || version == ClientVersion::V205
+    crate::profile::ServerProfile::of(version).file_modtime
 }
 
 /// `RAWDATA` + `PLO_FILE` for one file or chunk, as `version` reads it.
