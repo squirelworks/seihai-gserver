@@ -12,6 +12,7 @@ How the server is put together, and where each later stage plugs in. Read
 | `src/lib.rs` | `load_world` (settings + allow-list), `run` (bind and serve) | 1 |
 | `src/config.rs` | `config/server.txt`, every setting with its default | 1 |
 | `src/allow.rs` | `config/allowedversions.txt` | 1 |
+| `src/bans.rs` | `config/bans.txt`: bans by account with an end time, the admin and a reason; read at each login | 7 |
 | `src/accounts.rs` | `accounts/<name>.txt`, PBKDF2 passwords, opened chests and player flags | 1 |
 | `src/login.rs` | the login line: type, key, token, account, password, tail | 1 |
 | `src/secure.rs` | the Seihai secure login (`SEI00001`): spots C1, answers S1, opens C2 and rebuilds the classic login frame | 1 |
@@ -29,6 +30,7 @@ How the server is put together, and where each later stage plugs in. Read
 | `src/npcs.rs` | level NPCs: ids, props kept as wire bytes, the props each build reads, props a client may not set | 3 |
 | `src/baddies.rs` | baddies from the level file, `PLO_BADDYPROPS`, hits handed to the level leader, death and respawn | 3 |
 | `src/listlink.rs` | the listserver link over the encrypted channel (`SVLINK01`): register, player count with nickname and props, account check (`VERIACC2`), pong (`SVO_PING` 16), private messages, file start; two plain threads, reconnects every 15 s | link |
+| `src/ping.rs` | `PLO_PING` (108) on a timer to the builds whose profile reads it, the `PLI_PONG` (162) answer timed, the miss count (issue #44) | 2 |
 | `src/rc.rs` | RC logins for `seihai-rc`: the `STAFF` and `IPRANGE` checks, the welcome (slice 1); the player list entries and RC chat lines the world task sends RCs (slice 2); NC still refused | 4 |
 | `src/npclink.rs` | the link to `seihai-npcserver` (`PROTOCOL.md`): `Hub` (players and server flags for the link, the world's inbox), `serve_link`, `supervise` for `npcserver = auto` | 5 |
 | `src/anticheat.rs` | the admin policy (`anticheat.*` settings), violation scores and kicks, the log; the speed, teleport, warp and message-rate checks (stage 2.9); item and damage checks to come (`docs/PLAN.md`, stage 7) | 2, 7 |
@@ -159,6 +161,9 @@ World task ◀──WorldIn::FromNpc (0x40 to 0x4C), NpcGone── link task
   save on stop while players are online.
 - `tests/anticheat.rs`: a cheating client's teleport, fast step, unlinked
   warp and flood each get the configured action.
+- `tests/items_bans.rs`: a gralat and a heart-container raise put back
+  (a respawn to full hearts is not), a banned account refused with its
+  reason, and a player saved dead logging in with full hearts.
 - `tests/level_npcs.rs`, `tests/baddies.rs`, `tests/bombs_arrows.rs`,
   `tests/hurt_death.rs`: stage 3.1 to 3.4 between two clients in a level.
 - `tests/login_load.rs`, `tests/unserved_logins.rs`,
@@ -171,6 +176,8 @@ World task ◀──WorldIn::FromNpc (0x40 to 0x4C), NpcGone── link task
 - `tests/rc_players.rs`: two RCs (`seihai-rc`'s own client) and a player:
   the list on login, each RC listed to the other, RC chat, a nickname
   update and the leaves.
+- `tests/ping.rs`: a 4.20r8 is pinged, kept while it answers and dropped
+  after `ping_misses` silent pings; a 2.22 is never pinged.
 - `tests/listserver_link.rs`: the encrypted listserver link against a fake
   listserver on loopback.
 - `tests/file_rtt.rs` (ignored; a lab measure): file round trips while a

@@ -431,13 +431,20 @@ impl Conn {
                 )
                 .await;
         }
-        let account = match self.check_account(&login, true).await? {
+        let mut account = match self.check_account(&login, true).await? {
             Ok(a) => a,
             Err(why) => {
                 self.server.log(&self.peer, &format!("{who}: {why}"));
                 return self.refuse(&mut codec, why).await;
             }
         };
+        if let Some(text) = self.banned(&account.name) {
+            self.server.log(&self.peer, &format!("{who}: banned"));
+            return self.refuse(&mut codec, &text).await;
+        }
+        // A player who logged out dead comes back with hearts (issue #51).
+        // The account file keeps what happened; only the login changes.
+        account.revive();
         let key = login.account.to_ascii_lowercase();
         // What the world sends this player; framed and sent below.
         let (outbox, mut from_world) = tokio::sync::mpsc::unbounded_channel();
@@ -541,6 +548,8 @@ impl Conn {
             score: Default::default(),
             flooding: None,
             kicked: false,
+            ping: (!cfg.ping.is_zero() && version.profile().protocol.plo.contains(PLO_PING))
+                .then(crate::ping::Pinger::default),
         };
         for f in session.handle(&self.server, &self.peer, &early) {
             self.send(&mut codec, &f).await?;
@@ -561,6 +570,11 @@ impl Conn {
             t
         });
         let sends_time = version.profile().protocol.plo.contains(PLO_NEWWORLDTIME);
+        let mut ping_timer = session.ping.is_some().then(|| {
+            let mut t = tokio::time::interval_at(tokio::time::Instant::now() + cfg.ping, cfg.ping);
+            t.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            t
+        });
         let listlink = self.server.listlink.clone();
         let mut last_heard = Instant::now();
         loop {
@@ -586,6 +600,16 @@ impl Conn {
                     }
                     for f in reply {
                         self.send(&mut codec, &f).await?;
+                    }
+                }
+                _ = tick(ping_timer.as_mut()) => {
+                    if let Some(p) = session.ping.as_mut() {
+                        let m = p.ping(Instant::now());
+                        if cfg.ping_misses > 0 && p.missed >= cfg.ping_misses {
+                            self.server.log(&self.peer, &format!("{} pings unanswered", p.missed));
+                            return self.refuse(&mut codec, "Disconnected for not answering.").await;
+                        }
+                        self.send(&mut codec, &m).await?;
                     }
                 }
                 _ = tick(heartbeat.as_mut()) => {
@@ -715,6 +739,11 @@ impl Conn {
             self.server.log(&self.peer, &format!("RC {who}: {why}"));
             return self.refuse(&mut codec, why).await;
         }
+        // A banned account is kept out of RC too (`config/bans.txt`).
+        if let Some(text) = self.banned(&account.name) {
+            self.server.log(&self.peer, &format!("RC {who}: banned"));
+            return self.refuse(&mut codec, &text).await;
+        }
         self.server.log(&self.peer, &format!("RC {who} logged in"));
         let welcome = crate::rc::welcome(&self.server.cfg.name, &account.name);
         self.send(&mut codec, &welcome).await?;
@@ -806,6 +835,19 @@ impl Conn {
         result
     }
 
+    /// The text for a banned account (`config/bans.txt`), or `None`. A
+    /// ban file that cannot be read is logged and lets the login through.
+    fn banned(&self, account: &str) -> Option<String> {
+        match crate::bans::Bans::new(&self.server.cfg.world).find(account) {
+            Ok(b) => b.map(|b| b.client_text()),
+            Err(e) => {
+                self.server
+                    .log(&self.peer, &format!("bans.txt not read: {e}"));
+                None
+            }
+        }
+    }
+
     async fn send(&mut self, codec: &mut Codec, body: &[u8]) -> io::Result<()> {
         let frame = codec.encode(body)?;
         self.stream.write_all(&frame).await
@@ -855,6 +897,8 @@ struct Session {
     flooding: Option<bool>,
     /// The anti-cheat says to close the connection.
     kicked: bool,
+    /// Pings, for a build that reads `PLO_PING`.
+    ping: Option<crate::ping::Pinger>,
 }
 
 impl Session {
@@ -908,6 +952,15 @@ impl Session {
             *n += 1;
             let first_time = *n == 1;
             match id {
+                PLI_PONG => {
+                    let rtt = self
+                        .ping
+                        .as_mut()
+                        .and_then(|p| p.answer(payload, Instant::now()));
+                    if let (Some(rtt), true) = (rtt, server.verbose) {
+                        server.log(peer, &format!("ping {} ms", rtt.as_millis()));
+                    }
+                }
                 // Files from the world folder (`files.rs`). A request for
                 // a file the world does not have gets "failed"; a check of
                 // a copy gets the file when the server's is newer, else
