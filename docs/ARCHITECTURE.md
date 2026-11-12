@@ -30,7 +30,7 @@ How the server is put together, and where each later stage plugs in. Read
 | `src/npcs.rs` | level NPCs: ids, props kept as wire bytes, the props each build reads, props a client may not set | 3 |
 | `src/baddies.rs` | baddies from the level file, `PLO_BADDYPROPS`, hits handed to the level leader, death and respawn | 3 |
 | `src/listlink.rs` | the listserver link over the encrypted channel (`SVLINK01`): register, player count with nickname and props, account check (`VERIACC2`), pong (`SVO_PING` 16), private messages, file start; two plain threads, reconnects every 15 s | link |
-| `src/rcaccounts.rs` | accounts from an RC: list, get, set, add, delete on the account files (slice 4) | 4 |
+| `src/rcaccounts.rs` | accounts from an RC: list, get, set, add, delete on the account files (slice 4); staff rights and comments (slice 6) | 4 |
 | `src/rcfiles.rs` | the RC file browser: list, get, put within the account's `FOLDER` rights; reads an RC's raw blocks (slice 5) | 4 |
 | `src/ping.rs` | `PLO_PING` (108) on a timer to the builds whose profile reads it, the `PLI_PONG` (162) answer timed, the miss count (issue #44) | 2 |
 | `src/rc.rs` | RC logins for `seihai-rc`: the `STAFF` and `IPRANGE` checks, the welcome (slice 1); the player list entries and RC chat lines the world task sends RCs (slice 2); private and admin messages and the disconnect (slice 3); NC still refused | 4 |
@@ -176,7 +176,8 @@ World task ◀──WorldIn::FromNpc (0x40 to 0x4C), NpcGone── link task
   type 6 through `SEI00001`, for a `STAFF` account; a non-staff account,
   a wrong password and an address outside `IPRANGE` refused.
 - `tests/rc_accounts.rs`: an RC lists, reads, sets, adds and deletes
-  accounts with `seihai-rc`'s own messages.
+  accounts with `seihai-rc`'s own messages; sets another staff account's
+  rights and comments, and the folder rights then open a folder.
 - `tests/rc_files.rs`: an RC lists, gets and puts files with `seihai-rc`'s
   own file link; read-only and missing rights refused.
 - `tests/rc_players.rs`: two RCs (`seihai-rc`'s own client) and a player:

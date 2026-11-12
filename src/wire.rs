@@ -75,6 +75,76 @@ pub fn raw_block(id: u8, payload: &[u8]) -> Vec<u8> {
     out
 }
 
+/// Lines as Graal tokenizes them: each quoted, `"` doubled, joined with
+/// commas (as `seihai_core::net::gtokenize`, on Latin-1 bytes).
+pub fn tokenize(lines: &[Vec<u8>]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for (i, l) in lines.iter().enumerate() {
+        if i > 0 {
+            out.push(b',');
+        }
+        out.push(b'"');
+        for &c in l {
+            if c == b'"' {
+                out.push(b'"');
+            }
+            out.push(c);
+        }
+        out.push(b'"');
+    }
+    out
+}
+
+/// Tokenized text back into lines. A quoted item runs to its closing
+/// quote (`""` inside is one `"`); an unquoted one to the next comma, as
+/// the fork once sent folder rights. Spaces around an item are dropped.
+pub fn detokenize(t: &[u8]) -> Vec<Vec<u8>> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    loop {
+        while t.get(i) == Some(&b' ') {
+            i += 1;
+        }
+        if i >= t.len() {
+            break;
+        }
+        let mut item = Vec::new();
+        if t[i] == b'"' {
+            i += 1;
+            while i < t.len() {
+                match (t[i], t.get(i + 1)) {
+                    (b'"', Some(b'"')) => {
+                        item.push(b'"');
+                        i += 2;
+                    }
+                    (b'"', _) => {
+                        i += 1;
+                        break;
+                    }
+                    (c, _) => {
+                        item.push(c);
+                        i += 1;
+                    }
+                }
+            }
+            while i < t.len() && t[i] != b',' {
+                i += 1;
+            }
+        } else {
+            while i < t.len() && t[i] != b',' {
+                item.push(t[i]);
+                i += 1;
+            }
+            while item.last() == Some(&b' ') {
+                item.pop();
+            }
+        }
+        i += 1;
+        out.push(item);
+    }
+    out
+}
+
 /// Latin-1 bytes as text, for the log.
 pub fn text(b: &[u8]) -> String {
     b.iter().map(|&c| c as char).collect()
@@ -320,6 +390,24 @@ pub mod ids {
 mod tests {
     use super::*;
     use seihai_core::protocol::{read_gint3, read_gshort, split_messages};
+
+    #[test]
+    fn tokenized_lines() {
+        let lines = vec![b"rw levels/*".to_vec(), b"say \"hi\", ok".to_vec()];
+        let t = tokenize(&lines);
+        assert_eq!(t, b"\"rw levels/*\",\"say \"\"hi\"\", ok\"");
+        assert_eq!(
+            String::from_utf8(t.clone()).unwrap(),
+            seihai_core::net::gtokenize("rw levels/*\nsay \"hi\", ok")
+        );
+        assert_eq!(detokenize(&t), lines);
+        // Unquoted, as the fork once sent folder rights.
+        assert_eq!(
+            detokenize(b"rw levels/* , r a"),
+            [b"rw levels/*".to_vec(), b"r a".to_vec()]
+        );
+        assert!(detokenize(b"").is_empty());
+    }
 
     #[test]
     fn gints_read_back_with_the_core_readers() {
