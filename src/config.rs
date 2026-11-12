@@ -58,6 +58,10 @@ pub struct Config {
     /// Apply `login_rate` to loopback addresses too. Off by default, so a
     /// lab rig with many bots on `127.0.0.1` is not throttled.
     pub login_rate_loopback: bool,
+    /// Give a player saved at 0 hearts full hearts at login. Off by
+    /// default: GServer-v2 beta4 logs them in at 0 and the client stands
+    /// there with one empty heart (issue #51, lab run 2026-11-12).
+    pub revive_dead: bool,
     /// Tile number the generated board is filled with, sent when the
     /// level's file is missing from `levels/`.
     pub board_tile: u16,
@@ -137,6 +141,7 @@ impl Config {
             password_checks: 0,
             login_rate: 30,
             login_rate_loopback: false,
+            revive_dead: false,
             board_tile: 0x1FF,
             max_players: 256,
             secure_login_key: PathBuf::from("config/seihai-login.key"),
@@ -228,6 +233,7 @@ impl Config {
             "password_checks" => self.password_checks = num(v)?,
             "login_rate" => self.login_rate = num(v)?,
             "login_rate_loopback" => self.login_rate_loopback = flag(v)?,
+            "revive_dead" => self.revive_dead = flag(v)?,
             "board_tile" => self.board_tile = num::<u16>(v)? & 0x0FFF,
             "max_players" => self.max_players = num(v)?,
             "secure_login_key" => self.secure_login_key = PathBuf::from(v),

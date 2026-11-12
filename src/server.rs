@@ -442,9 +442,12 @@ impl Conn {
             self.server.log(&self.peer, &format!("{who}: banned"));
             return self.refuse(&mut codec, &text).await;
         }
-        // A player who logged out dead comes back with hearts (issue #51).
+        // A player who logged out dead logs in at 0 hearts, as GServer-v2
+        // beta4 does (issue #51), unless the world turns `revive_dead` on.
         // The account file keeps what happened; only the login changes.
-        account.revive();
+        if self.server.cfg.revive_dead {
+            account.revive();
+        }
         let key = login.account.to_ascii_lowercase();
         // What the world sends this player; framed and sent below.
         let (outbox, mut from_world) = tokio::sync::mpsc::unbounded_channel();

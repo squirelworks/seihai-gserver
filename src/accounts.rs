@@ -156,10 +156,9 @@ impl Account {
         }
     }
 
-    /// A player saved with no hearts (killed, then logged out) logs in
-    /// with full hearts, the account's max. Issue #51: the value GServer-v2
-    /// beta4 gives is still to be checked in a lab; full hearts is what
-    /// the client's own respawn gives.
+    /// Full hearts (the account's max) for a player saved with none. Used
+    /// at login only when the world sets `revive_dead`; GServer-v2 beta4
+    /// keeps them at 0 (issue #51, lab run 2026-11-12).
     pub fn revive(&mut self) {
         if self.hp <= 0.0 {
             self.hp = f32::from(self.max_hp.max(1));
