@@ -36,7 +36,7 @@ How the server is put together, and where each later stage plugs in. Read
 | `src/rcserver.rs` | server options (`config/server.txt`), folder config (`config/foldersconfig.txt`) and server flags for an RC; the flags kept in `config/serverflags.txt` | 4 |
 | `src/rcprops.rs` | a player's props for an RC (72) from the account file, and a set (76) on an offline account (slice 7) | 4 |
 | `src/ping.rs` | `PLO_PING` (108) on a timer to the builds whose profile reads it, the `PLI_PONG` (162) answer timed, the miss count (issue #44) | 2 |
-| `src/rc.rs` | RC logins for `seihai-rc`: the `STAFF` and `IPRANGE` checks, the welcome (slice 1); the player list entries and RC chat lines the world task sends RCs (slice 2); private and admin messages and the disconnect (slice 3); NC still refused | 4 |
+| `src/rc.rs` | RC logins for `seihai-rc`: the `STAFF` and `IPRANGE` checks, the welcome (slice 1); the player list entries and RC chat lines the world task sends RCs (slice 2); private and admin messages and the disconnect (slice 3) | 4 |
 | `src/npclink.rs` | the link to `seihai-npcserver` (`PROTOCOL.md`): `Hub` (players and server flags for the link, the world's inbox), `serve_link`, `supervise` for `npcserver = auto` | 5 |
 | `src/anticheat.rs` | the admin policy (`anticheat.*` settings), violation scores and kicks, the log; the speed, teleport, warp and message-rate checks (stage 2.9); the items and hurt checks; all off by default (`docs/PLAN.md`, stage 7) | 2, 7 |
 
@@ -186,8 +186,9 @@ World task ◀──WorldIn::FromNpc (0x40 to 0x4C), NpcGone── link task
 - `tests/rc_files.rs`: an RC lists, gets and puts files with `seihai-rc`'s
   own file link; read-only and missing rights refused.
 - `tests/nc.rs`: the real NPC-server session links up with a world's NPC
-  files; an NC (`seihai-rc`'s client) lists, reads, sets and deletes them;
-  an RC's 94 is answered with this server's address.
+  files; an NC (`seihai-rc`'s client, with scripts as tokenized lines as
+  the real 2001 NC sends them) lists, reads, sets and deletes them; an
+  RC's 94 is answered with this server's address.
 - `tests/rc_server.rs`: server options, folder config and server flags
   set and read back with `seihai-rc`'s messages; a player online sees the
   flags change, and they last over a restart.

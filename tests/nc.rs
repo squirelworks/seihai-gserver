@@ -2,18 +2,20 @@
 //! NPC-server session (`seihai_npcserver::session`) reads a world's NPC
 //! files and links up; an NC logs in with seihai-rc's own NC client, sees
 //! the NPCs, reads one's attributes and script, sets a new script and
-//! deletes an NPC. An RC asking where the NPC-server is (94) is told this
+//! deletes an NPC. Scripts go both ways as tokenized lines, the layout a
+//! real 2001 NPC Control uses (lab, 2026-11-12); the set is built here,
+//! since seihai-rc sends it as one raw text. An RC asking where the NPC-server is (94) is told this
 //! server's own address.
 
 use seihai_core::scripting::engine::Era;
 use seihai_gserver::accounts::{Account, Store};
 use seihai_gserver::npclink::serve_link;
 use seihai_gserver::server::{serve, Server};
+use seihai_gserver::wire::{detokenize, gchar, gint3, tokenize};
 use seihai_npcserver::scripts::Scripts;
 use seihai_npcserver::session::{self, Timing};
 use seihai_rc::nc::{
-    npc_delete_message, npc_get_message, npc_script_get_message, npc_script_set_message, NcEvent,
-    NcSession,
+    npc_delete_message, npc_get_message, npc_script_get_message, NcEvent, NcSession,
 };
 use seihai_rc::rc::{npc_server_query, Event, LoginParams, RcKind, Session};
 use std::path::{Path, PathBuf};
@@ -76,6 +78,14 @@ fn start(world: &Path) -> (String, String, Arc<Server>) {
     });
     let (g, l) = rx.recv().unwrap();
     (g.to_string(), l.to_string(), server)
+}
+
+/// A tokenized text's lines.
+fn lines(t: &str) -> Vec<String> {
+    detokenize(t.as_bytes())
+        .iter()
+        .map(|l| String::from_utf8_lossy(l).into_owned())
+        .collect()
 }
 
 /// Events until `want` matches one, which is returned.
@@ -144,17 +154,21 @@ fn an_nc_lists_reads_sets_and_deletes_npcs() {
     let got = wait_for(&mut nc, "script", |e| {
         matches!(e, NcEvent::NpcScript { .. })
     });
-    assert_eq!(
-        got,
-        NcEvent::NpcScript {
-            id: 1,
-            script: "if (created) { message ding; }".into()
-        }
-    );
+    // The script's lines come tokenized, as the real 2001 NC reads them.
+    let NcEvent::NpcScript { id: 1, script } = got else {
+        panic!("{got:?}")
+    };
+    assert_eq!(lines(&script), ["if (created) { message ding; }"]);
 
-    // A new script: in the file, and read back the same.
-    nc.send(&[npc_script_set_message(1, "if (created) { message dong; }").unwrap()])
-        .unwrap();
+    // A new script, two lines, sent the way the real 2001 NC sends it:
+    // in the file, and read back the same.
+    let mut set = vec![gchar(109)];
+    gint3(1, &mut set);
+    set.extend(tokenize(&[
+        b"if (created) {".to_vec(),
+        b"  message dong, dong; }".to_vec(),
+    ]));
+    nc.send(&[set]).unwrap();
     let end = Instant::now() + T;
     while !std::fs::read_to_string(w.join("npcs/bell.txt"))
         .unwrap()
@@ -169,7 +183,18 @@ fn an_nc_lists_reads_sets_and_deletes_npcs() {
         assert_ne!(*e, NcEvent::NpcRemoved(1), "a script set removed the NPC");
         matches!(e, NcEvent::NpcScript { script, .. } if script.contains("dong"))
     });
-    assert!(matches!(got, NcEvent::NpcScript { id: 1, .. }));
+    let NcEvent::NpcScript { id: 1, script } = got else {
+        panic!("{got:?}")
+    };
+    assert_eq!(
+        lines(&script),
+        ["if (created) {", "  message dong, dong; }"]
+    );
+    let file = std::fs::read_to_string(w.join("npcs/bell.txt")).unwrap();
+    assert!(
+        file.contains("if (created) {\n  message dong, dong; }\n"),
+        "{file}"
+    );
 
     // Deleted: 159 comes back once the file is put aside.
     nc.send(&[npc_delete_message(1).unwrap()]).unwrap();

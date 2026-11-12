@@ -7,27 +7,31 @@
 //! gserver about them over the link (`NC_NPC`, `PROTOCOL.md`), and the
 //! gserver keeps that list for every NC (`npclink::Hub::nc_watch`).
 //!
-//! Layouts are seihai-rc's (its `docs/PROTOCOL.md`, "NPC Control"):
+//! The layouts are seihai-rc's (its `docs/PROTOCOL.md`, "NPC Control"),
+//! except for the texts. A real NPC Control ("GServer2 NPC Control
+//! 2001/07/13", token `NCL15031`, lab 2026-11-12, under Wine on loopback)
+//! reads and sends a script or the attributes as a tokenized line list,
+//! the same form an RC's server options use (`wire::tokenize`). It does
+//! not read raw blocks. Sent raw lines, it split the first line into one
+//! word per line.
 //!
 //! | NC sends | Answer |
 //! |---|---|
 //! | (login) | 158 `NC_NPCADD` for every NPC: `GINT3` id, then `GCHAR 50` + `GSTRING` name, `GCHAR 51` + `GSTRING` type, `GCHAR 52` + `GSTRING` level |
-//! | 103 `NC_NPCGET`: `GINT3` id | 157: the attributes, `name=value` lines |
-//! | 106 `NC_NPCSCRIPTGET`: `GINT3` id | 160: `GINT3` id, then the script |
-//! | 109 `NC_NPCSCRIPTSET`: `GINT3` id, then the script | none; the NPC restarts, so 159 and 158 follow |
+//! | 103 `NC_NPCGET`: `GINT3` id | 157: the attributes, `name=value` lines, tokenized |
+//! | 106 `NC_NPCSCRIPTGET`: `GINT3` id | 160: `GINT3` id, then the script's lines, tokenized |
+//! | 109 `NC_NPCSCRIPTSET`: `GINT3` id, then the script's lines, tokenized | none; the NPC stays on the list |
 //! | 104 `NC_NPCDELETE`: `GINT3` id | 159 `NC_NPCDELETE`: `GINT3` id |
 //! | 115 `NC_WEAPONLISTGET` | 167 with no names: the NPC-server keeps no weapons yet |
 //!
 //! While the NC is on, 158 and 159 also go out as the NPC-server's list
-//! changes. A text with line feeds in it (a script, the attributes) goes
-//! out in a raw block (`PLO_RAWDATA` 100), so the line feeds stay inside
-//! the one message; a script set may come in one too (`rcfiles::split`).
+//! changes.
 //!
 //! Classes and the rest of the weapon commands are not answered: the
 //! NPC-server has neither yet.
 
 use crate::npclink::NcNpc;
-use crate::wire::{gchar, gint3, gstring, msg, raw_block};
+use crate::wire::{detokenize, gchar, gint3, gstring, msg, tokenize};
 use seihai_core::protocol::read_gint3;
 
 pub const NC_LOGIN_TYPE: u8 = 3;
@@ -70,7 +74,10 @@ pub fn parse(m: &[u8]) -> Result<Option<Op>, u8> {
         PLI_PONG => return Ok(None),
         PLI_NC_NPCGET => Op::Attributes(npc()?),
         PLI_NC_NPCSCRIPTGET => Op::Script(npc()?),
-        PLI_NC_NPCSCRIPTSET => Op::SetScript(npc()?, rest.get(3..).unwrap_or_default().to_vec()),
+        PLI_NC_NPCSCRIPTSET => Op::SetScript(
+            npc()?,
+            detokenize(rest.get(3..).unwrap_or_default()).join(&b'\n'),
+        ),
         PLI_NC_NPCDELETE => Op::Delete(npc()?),
         PLI_NC_WEAPONLISTGET => Op::WeaponList,
         other => return Err(other),
@@ -97,29 +104,28 @@ pub fn npc_delete(id: u32) -> Vec<u8> {
 
 /// 157: the attributes.
 pub fn attributes(text: &[u8]) -> Vec<u8> {
-    text_message(PLO_NC_NPCATTRIBUTES, text)
+    msg(PLO_NC_NPCATTRIBUTES, &tokenize(&lines(text)))
 }
 
 /// 160: an NPC's script.
 pub fn script(id: u32, script: &[u8]) -> Vec<u8> {
     let mut p = Vec::new();
     gint3(id, &mut p);
-    p.extend_from_slice(script);
-    text_message(PLO_NC_NPCSCRIPT, &p)
+    p.extend(tokenize(&lines(script)));
+    msg(PLO_NC_NPCSCRIPT, &p)
+}
+
+/// A text's lines, without their line ends.
+fn lines(text: &[u8]) -> Vec<Vec<u8>> {
+    let text = text.strip_suffix(b"\n").unwrap_or(text);
+    text.split(|&c| c == b'\n')
+        .map(|l| l.strip_suffix(b"\r").unwrap_or(l).to_vec())
+        .collect()
 }
 
 /// 167 with no names.
 pub fn no_weapons() -> Vec<u8> {
     msg(PLO_NC_WEAPONLISTGET, b"")
-}
-
-/// A message whose payload may hold line feeds: in a raw block then.
-fn text_message(id: u8, payload: &[u8]) -> Vec<u8> {
-    if payload.contains(&b'\n') {
-        raw_block(id, payload)
-    } else {
-        msg(id, payload)
-    }
 }
 
 #[cfg(test)]
@@ -142,11 +148,16 @@ mod tests {
         };
         assert_eq!(with(103, &g3(7)), Ok(Some(Op::Attributes(7))));
         assert_eq!(with(106, &g3(300)), Ok(Some(Op::Script(300))));
-        let mut set = g3(7);
-        set.extend_from_slice(b"message hi;");
+        // As the real 2001 NC sent it (lab, 2026-11-12): tokenized lines,
+        // quoted where they hold a space or a comma.
+        let mut set = g3(1);
+        set.extend_from_slice(b"\"// two words\",\"message hello, world\",oneword");
         assert_eq!(
             with(109, &set),
-            Ok(Some(Op::SetScript(7, b"message hi;".to_vec())))
+            Ok(Some(Op::SetScript(
+                1,
+                b"// two words\nmessage hello, world\noneword".to_vec()
+            )))
         );
         assert_eq!(with(104, &g3(7)), Ok(Some(Op::Delete(7))));
         assert_eq!(with(115, b""), Ok(Some(Op::WeaponList)));
@@ -168,10 +179,14 @@ mod tests {
         want.extend([gchar(52), gchar(8)]);
         want.extend(b"start.nw\n");
         assert_eq!(npc_add(2, &n), want);
-        // One line: a plain message. Two: a raw block, the line feed kept.
-        assert_eq!(script(2, b"x;")[0], gchar(160));
-        let raw = script(2, b"a;\nb;");
-        assert_eq!(raw[0], gchar(100));
-        assert!(raw.ends_with(b"a;\nb;\n"), "{raw:?}");
+        // Lines tokenized, never a raw block.
+        let mut want = vec![gchar(160)];
+        want.extend(g3(2));
+        want.extend(b"\"a, b;\",\"say \"\"hi\"\";\"\n");
+        assert_eq!(script(2, b"a, b;\r\nsay \"hi\";\n"), want);
+        assert_eq!(
+            attributes(b"name=bell\nx=5"),
+            b"\xbd\"name=bell\",\"x=5\"\n"
+        );
     }
 }
