@@ -18,7 +18,8 @@ usage:
       lift a ban
   seihai-gserver import-v2 SRC [--world DIR]
       make a new world from a GServer-v2 server folder SRC: settings, the
-      version list, accounts, staff and bans (docs/GSERVER-V2-WORLD.md)
+      version list, accounts, staff, bans, levels and files
+      (docs/GSERVER-V2-WORLD.md)
   seihai-gserver --version";
 
 fn main() -> ExitCode {
