@@ -17,6 +17,7 @@ pub mod config;
 pub mod files;
 pub mod gmaps;
 pub mod gpak;
+pub mod import;
 pub mod levels;
 pub mod listlink;
 pub mod login;
