@@ -102,7 +102,14 @@ behaviour against, never a code source (see `00-rules.md`).
    `examples/world`, real 2.05 rev 2 and 2.22), and `PM_TO_NPC` /
    `TRIGGER_ACTION`, which wait for the client messages they come from.
 6. 3.x to 6.x: the Login lobby and server warp, GS2 bytecode delivery, and later our
-   own GS2 compiler (gs2-parser is GPL, so it cannot be used).
+   own GS2 compiler (gs2-parser is GPL, so it cannot be used). **The lobby is
+   built** (`lobby_port`, `lobby_host` in `config/server.txt`;
+   `tests/lobby.rs`): 4.x to 6.x builds that log in on the lobby port get the
+   login burst, leave the world, and are sent `PLO_SERVERWARP` (178) to the
+   game port, as the lab lobby did for real 5.24r4 and 6.03r7
+   (`docs/lab/five-clients-2026-11-12.md`). Players in the start level may see
+   the lobby login arrive and leave. GS2 bytecode goes to level NPCs per build
+   (#45). No real client has been run against this lobby yet.
 7. Server-side anti-cheat (see "Milestone: server-side anti-cheat" below). Each
    check lands with the feature it guards (movement and warps with stage 2,
    items, hearts and gralats with stages 2 and 3), behind one policy layer that

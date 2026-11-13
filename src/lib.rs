@@ -143,5 +143,21 @@ pub async fn run(server: Arc<server::Server>) -> std::io::Result<()> {
             ));
         }
     }
+    if server.cfg.lobby_port != 0 {
+        let lobby_addr = std::net::SocketAddr::new(server.cfg.bind, server.cfg.lobby_port);
+        let lobby = tokio::net::TcpListener::bind(lobby_addr).await?;
+        let warp = server::LobbyWarp {
+            name: server.cfg.name.clone(),
+            host: server.cfg.lobby_host.clone(),
+            port: listener.local_addr()?.port(),
+        };
+        eprintln!(
+            "Login lobby listening on {}, sending 4.x to 6.x on to {}:{}",
+            lobby.local_addr()?,
+            warp.host,
+            warp.port
+        );
+        tokio::spawn(server::serve_lobby(server.clone(), lobby, warp));
+    }
     server::serve(server, listener).await
 }
