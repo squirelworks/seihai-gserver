@@ -146,6 +146,13 @@ pub const STAND_INS: &[(&str, EncryptionGen, ClientVersion)] = &[
     ("GSERV009", EncryptionGen::Gen2, ClientVersion::V121),
     ("GSERV011", EncryptionGen::Gen2, ClientVersion::V121),
     ("GNW23090", EncryptionGen::Gen3, ClientVersion::V141),
+    // 2.19, 2.2, 2.21 (type 4, read as the gen-5 line, gen-4 frames): no
+    // binary of these builds is held. graal-client-repro's inferred clients
+    // are 2.17.1 with these tokens on the gen-4 link, which for them is
+    // INVENTED, not observed (Squirrel, 2026-11-13); served as 2.17.1.
+    ("GNW15053", EncryptionGen::Gen5, ClientVersion::V217),
+    ("GNW28063", EncryptionGen::Gen5, ClientVersion::V217),
+    ("GNW01113", EncryptionGen::Gen5, ClientVersion::V217),
 ];
 
 /// The first known build for `token` and `gen`. Several builds share a
@@ -338,30 +345,15 @@ mod tests {
     #[test]
     fn stand_ins_for_125_127_140() {
         // gen 2, no key byte: id 0, token, account, password
-        let l = parse(
-            b" GSERV009%guest%guest
-",
-            &[],
-        )
-        .unwrap();
+        let l = parse(b" GSERV009%guest%guest\n", &[]).unwrap();
         assert_eq!(
             (l.gen, l.version),
             (EncryptionGen::Gen2, Some(ClientVersion::V121))
         );
-        let l = parse(
-            b" GSERV011%guest%guest
-",
-            &[],
-        )
-        .unwrap();
+        let l = parse(b" GSERV011%guest%guest\n", &[]).unwrap();
         assert_eq!(l.version, Some(ClientVersion::V121));
         // gen 3: type 0, key byte, token (the real 1.40r1 line, lab)
-        let l = parse(
-            b" rGNW23090(labguest%guest
-",
-            &[],
-        )
-        .unwrap();
+        let l = parse(b" rGNW23090(labguest%guest\n", &[]).unwrap();
         assert_eq!(
             (l.gen, l.key, l.token.as_str(), l.version),
             (
@@ -371,6 +363,19 @@ mod tests {
                 Some(ClientVersion::V141)
             )
         );
+        // 2.19 (type 4): the line reads as gen 5, served as 2.17.1
+        let l = parse(b"$JGNW15053#acc\"pw\n", &[]).unwrap();
+        assert_eq!(
+            (l.client_type, l.gen, l.key, l.token.as_str(), l.version),
+            (
+                4,
+                EncryptionGen::Gen5,
+                0x2A,
+                "GNW15053",
+                Some(ClientVersion::V217)
+            )
+        );
+        assert!(is_gen4(l.client_type));
         // a stand-in never hides a real profile
         for &(t, g, _) in STAND_INS {
             assert!(versions_for(t, g).next().is_none(), "{t} now has a profile");
