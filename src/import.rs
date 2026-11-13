@@ -267,6 +267,7 @@ pub fn convert_account(
             until: None,
             admin: "import-v2".to_string(),
             reason: get("BANREASON").unwrap_or_default().to_string(),
+            with: String::new(),
         });
     for (k, v) in fields {
         let read = ACCOUNT_KEYS.contains(&k.as_str()) || k == "BANREASON";

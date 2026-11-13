@@ -47,6 +47,11 @@ What is built:
   message floods can be logged, put back, kicked or banned, with staff
   exempt per check if the admin wants (`anticheat.*` in
   `config/server.txt`; it only logs until the admin says more);
+* bans in `config/bans.txt` by account, address (`ip:ADDR`) or machine
+  (`machine:ID`, the ids a 5.00+ client sends at login), with an end time,
+  the admin and a reason; `seihai-gserver ban` / `unban`. An anti-cheat
+  ban takes the player's machine ids with the account. Address and machine
+  bans do not keep out staff accounts;
 * packages: `.gpak` and `.gpake` for the builds that load them, the key
   (`PLO_FILEDECRYPTKEY`, 104) first from `config/gpakkeys.txt`, which is never
   served; `gpaks =` pushes packages at login;

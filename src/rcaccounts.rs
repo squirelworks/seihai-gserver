@@ -374,6 +374,7 @@ fn set_ban(ctx: &Ctx, account: &str, banned: bool, reason: &[u8]) -> Option<Stri
                 until,
                 admin: ctx.admin.to_string(),
                 reason: reason_line(reason),
+                with: String::new(),
             })
             .map(|()| "banned")
     } else {

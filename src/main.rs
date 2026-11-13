@@ -13,9 +13,11 @@ usage:
   seihai-gserver account NAME --password-env VAR [--world DIR]
       make an account, or set its password, from the environment variable VAR
   seihai-gserver ban NAME [--for 30m|12h|3d|2w] [--reason TEXT] [--admin NAME] [--world DIR]
-      ban an account (no --for: until unbanned); it takes effect at its next login
+      ban an account, or with ip:ADDR or machine:ID an address or a machine
+      (not for staff accounts); no --for: until unbanned; it takes effect at
+      the next login
   seihai-gserver unban NAME [--world DIR]
-      lift a ban
+      lift a ban (an account's lifts the machine bans the anti-cheat made with it)
   seihai-gserver key-fingerprint [--world DIR]
       print the secure-login (SEI00001) public key and its fingerprint; reads
       the key file and never makes one
@@ -161,7 +163,7 @@ fn account_command(world: &std::path::Path, args: &[String]) -> ExitCode {
 }
 
 fn ban_command(world: &std::path::Path, args: &[String]) -> ExitCode {
-    use seihai_gserver::bans::{parse_span, Ban, Bans};
+    use seihai_gserver::bans::{parse_key, parse_span, Ban, Bans};
     let mut args = args.to_vec();
     let span = take_value(&mut args, "--for");
     let reason = take_value(&mut args, "--reason").unwrap_or_default();
@@ -170,10 +172,10 @@ fn ban_command(world: &std::path::Path, args: &[String]) -> ExitCode {
         eprintln!("{USAGE}");
         return ExitCode::FAILURE;
     };
-    if !valid_account_name(&name) {
-        eprintln!("`{name}`: not an account name");
+    let Some(name) = parse_key(&name) else {
+        eprintln!("`{name}`: not an account name, ip:ADDR or machine:ID");
         return ExitCode::FAILURE;
-    }
+    };
     let until = match span.as_deref().map(parse_span) {
         None => None,
         Some(Some(s)) => Some(seihai_gserver::bans::now() + s),
@@ -188,6 +190,7 @@ fn ban_command(world: &std::path::Path, args: &[String]) -> ExitCode {
         until,
         admin,
         reason,
+        with: String::new(),
     }) {
         Ok(()) => {
             eprintln!("{name} banned ({})", bans.path().display());
@@ -205,7 +208,9 @@ fn unban_command(world: &std::path::Path, args: &[String]) -> ExitCode {
         eprintln!("{USAGE}");
         return ExitCode::FAILURE;
     };
-    match seihai_gserver::bans::Bans::new(world).remove(name) {
+    // `ip:` and `machine:` keys in the form the file keeps them.
+    let key = seihai_gserver::bans::parse_key(name).unwrap_or_else(|| name.clone());
+    match seihai_gserver::bans::Bans::new(world).remove(&key) {
         Ok(true) => {
             eprintln!("{name}: ban lifted");
             ExitCode::SUCCESS
