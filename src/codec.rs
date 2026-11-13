@@ -10,6 +10,12 @@
 //! | 4 | 2.19 to 2.21, 3.0, 3.01 (login type 4) | bz2 body, partial XOR, no comp byte | the same, own iterator |
 //! | 5 | 2.22 to 6.x | comp byte + partial XOR of the compressed body | the same, own iterator |
 //!
+//! **Gen 4 is not observed.** No type-4 login or frame has been captured
+//! (graal_analysis `protocol/codec-and-framing.md`, server source only).
+//! For 2.19 to 2.21, which no binary survives of, graal-client-repro's
+//! clients use this same framing as an INVENTED link (Squirrel,
+//! 2026-11-13); a real 3.0beta or 3.01 capture would settle it.
+//!
 //! The ciphers are `seihai-core`'s ([`Gen3`], [`Gen5`]), the ones the
 //! Seihai client uses, so both ends share one definition. For gen 3 the
 //! messages behind the login line in the login frame already carry their
