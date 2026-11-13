@@ -280,13 +280,13 @@ pub mod ids {
     pub const PLO_NPCBYTECODE: u8 = 131;
     /// Behind [`PLO_RAWDATA`]: `GCHAR` length and a weapon name, then the
     /// weapon's GS2 bytecode file whole, the compiler's `\n` included, then
-    /// the raw block's own closing `\n`. The
-    /// answer to [`PLI_UPDATESCRIPT`]. Confirmed: GServer-v2 sends it to
-    /// real 4.20r8 after [`PLO_WEAPONHASH`], and the client caches the
-    /// body (lab, 2026-11-13). The lab note gives the message without its
-    /// framing; it goes behind `PLO_RAWDATA` here, as 131 does, because
-    /// the bytecode holds line feeds. Core names it `UNKNOWN132`; gs2lib's
-    /// name was not checked.
+    /// the raw block's own closing `\n`. The answer to
+    /// [`PLI_UPDATESCRIPT`]. Confirmed: GServer-v2 sends it to real 4.20r8
+    /// after [`PLO_WEAPONHASH`]; this server's copy behind `PLO_RAWDATA` is
+    /// taken by real 4.20r8 too, which writes its `.code` cache (an encoded
+    /// form, not these bytes) and asks no more on the next login (lab,
+    /// 2026-11-13, #120). Core names it `UNKNOWN132`; gs2lib's name was not
+    /// checked.
     pub const PLO_UNKNOWN132: u8 = 132;
     // Named for a later stage. Not sent yet.
     /// `{108}{sub}{GSHORT value}`. Confirmed for sub 0: the client answers
@@ -307,9 +307,10 @@ pub mod ids {
     pub const PLO_ONLINEMODE: u8 = 168;
     /// `{193}{GINT5 crc32}{weapon name}`: use the cached weapon script when
     /// the CRC matches. Confirmed. 4.04r2 to 5.12. Not a modification time.
-    /// The CRC is CRC-32 of the whole bytecode file [`PLO_UNKNOWN132`]
-    /// carries, its final `\n` included (GServer-v2 to real 4.20r8, lab,
-    /// 2026-11-13).
+    /// The CRC is zlib CRC-32 of the bytecode bytes [`PLO_UNKNOWN132`] sends,
+    /// the file's own final `\n` included (GServer-v2 and this server to real
+    /// 4.20r8, lab, 2026-11-13). It is not the CRC of the client's cached
+    /// `.code` file, which holds an encoded form.
     /// Seihai name until 2026-11-11: `PLO_WEAPONCRC`.
     pub const PLO_WEAPONHASH: u8 = 193;
     /// Empty. Confirmed: clears the loaded weapon and class scripts.

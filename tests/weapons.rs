@@ -272,8 +272,8 @@ fn a_gs2_build_gets_the_weapon_hash_and_the_bytecode_it_asks_for() {
     let block = &body[found + 5..found + 5 + n];
     assert_eq!(block[0], 132 + 32);
     assert_eq!(&block[1..9], b"'Lantern");
-    // The client caches the block less its closing `\n`: the bytecode
-    // file, its own `\n` included, which is what 193's CRC is of.
+    // The bytecode as sent is the block less its closing `\n`: the file,
+    // its own `\n` included, which is what 193's CRC is of.
     assert!(block.ends_with(b"\n\n"));
     let code = &block[9..block.len() - 1];
     let mut sum = flate2::Crc::new();
