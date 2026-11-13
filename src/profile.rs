@@ -72,6 +72,14 @@ pub struct ServerProfile {
     /// private messages, is one `GCHAR` (capped at 223), not a `GSHORT`
     /// (`others.rs`, [`ONE_BYTE_ID`]).
     pub one_byte_id: bool,
+    /// The extension the build's own player art has: sword, shield, head
+    /// and body names in player props go with it, and the stock ones as
+    /// their preset number (`others::for_receiver`).
+    pub image_ext: &'static str,
+    /// Status (prop 18) value 4 means "swimming", not "male" as from 2.0
+    /// on. Another player's male bit would make the build draw that
+    /// player as a swimmer, with no body (`others::for_receiver`).
+    pub status_4_swims: bool,
 }
 
 /// Builds that read and write another player's id as one `GCHAR`: up to
@@ -133,6 +141,13 @@ impl ServerProfile {
             prop10_bow: core.props.bow_prop10,
             ping: core.protocol.plo.contains(PLO_PING) || PING_BEFORE_SWITCH.contains(&version),
             one_byte_id: ONE_BYTE_ID.contains(&version),
+            image_ext: core.files.image_ext,
+            // A static read of 1.39 shows status value 4 setting its
+            // swimming flag, and the draw skipping every body part while
+            // it is set; a real 1.39 drew others as heads only until the
+            // bit was cleared (GServer-v2 fork lab, 2026-11-13, #27 rerun).
+            // The 1.x line shares the status prop's layout.
+            status_4_swims: version.label().starts_with("1."),
         };
         if version == ClientVersion::V205 {
             // Real 2.05 rev 2 takes a file only with the mod time; sent
@@ -144,6 +159,9 @@ impl ServerProfile {
             // `baddygray.gif` it draws the shadow but no soldier, and asks
             // for the file (Wine lab, 2026-11-05). beta4 sends `.png` too.
             p.baddy_image_ext = ".png";
+            // The same for its player art: 2.05 rev 2 draws `head0.png`
+            // and `body.png` players (Wine lab, 2026-11-12, hurt run).
+            p.image_ext = ".png";
             // 2.05 rev 2 sends and reads prop 10 as the gani (`sword`,
             // `hurt`), as 2.1 on do; the lab GServer relays it to and from
             // a 2.22 unchanged, and that is how the two hurt each other
@@ -166,10 +184,12 @@ mod tests {
             if v == ClientVersion::V205 {
                 assert!(p.file_modtime && !core.files.modtime);
                 assert_eq!(p.baddy_image_ext, ".png");
+                assert_eq!(p.image_ext, ".png");
                 assert!(!p.prop10_bow && core.props.bow_prop10);
             } else {
                 assert_eq!(p.file_modtime, core.files.modtime, "{v:?}");
                 assert_eq!(p.baddy_image_ext, core.files.image_ext, "{v:?}");
+                assert_eq!(p.image_ext, core.files.image_ext, "{v:?}");
                 assert_eq!(p.prop10_bow, core.props.bow_prop10, "{v:?}");
             }
             assert!(!p.loads_gpak || p.loads_gpake, "{v:?}");
@@ -199,6 +219,20 @@ mod tests {
         }
         assert!(ServerProfile::of(ClientVersion::V135).one_byte_id);
         assert!(!ServerProfile::of(ClientVersion::V136).one_byte_id);
+        for v in [
+            ClientVersion::V121,
+            ClientVersion::V139,
+            ClientVersion::V141,
+        ] {
+            assert!(ServerProfile::of(v).status_4_swims, "{v:?}");
+        }
+        for v in [
+            ClientVersion::V200,
+            ClientVersion::V205,
+            ClientVersion::V222,
+        ] {
+            assert!(!ServerProfile::of(v).status_4_swims, "{v:?}");
+        }
     }
 
     #[test]

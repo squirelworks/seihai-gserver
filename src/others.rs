@@ -53,6 +53,11 @@ pub fn one_byte_id(v: ClientVersion) -> bool {
 
 pub const JOINLEAVELVL: u8 = 50;
 pub const PCONNECTED: u8 = 51;
+const SWORD: u8 = 8;
+const SHIELD: u8 = 9;
+const HEAD: u8 = 11;
+const STATUS: u8 = 18;
+const BODY: u8 = 35;
 const X: u8 = 15;
 const Y: u8 = 16;
 const X2: u8 = 78;
@@ -65,6 +70,9 @@ pub struct Props {
     values: BTreeMap<u8, Vec<u8>>,
     x: Option<f32>,
     y: Option<f32>,
+    /// The kept status (18) came from a build whose value 4 is
+    /// "swimming" (`ServerProfile::status_4_swims`).
+    status_swims: bool,
 }
 
 /// What changed in one update, to pass on.
@@ -73,6 +81,8 @@ pub struct Change {
     values: BTreeMap<u8, Vec<u8>>,
     x: Option<f32>,
     y: Option<f32>,
+    /// As `Props::status_swims`, for the status in this change.
+    status_swims: bool,
 }
 
 impl Change {
@@ -82,6 +92,9 @@ impl Change {
 
     /// Add a later change: where both set a prop, the later value stays.
     pub fn merge(&mut self, later: Change) {
+        if later.values.contains_key(&STATUS) {
+            self.status_swims = later.status_swims;
+        }
         self.values.extend(later.values);
         if later.x.is_some() {
             self.x = later.x;
@@ -210,6 +223,116 @@ pub fn server_message(
     Some(msg(PLO_PRIVATEMESSAGE, &p))
 }
 
+/// A player prop's value bytes (2.22 encoding) as `receiver` reads them
+/// (issue #45, `docs/CLIENT-PROFILES.md`, image names row):
+///
+/// - Sword (8), shield (9), head (11) and body (35) name `.png` art. A
+///   build whose art is `.gif` (`ServerProfile::image_ext`) gets a stock
+///   `swordN`, `shieldN` or `headN` as its preset number, so it draws its
+///   own built-in image and asks for no file, and any other `.png` name
+///   with its own extension.
+/// - Status (18): where value 4 means "swimming" to the receiver
+///   (`ServerProfile::status_4_swims`), it is cleared, unless `swims` says
+///   the value came from such a build and already means that. A player's
+///   own status always loses it: the build works out its own swimming
+///   from the tiles.
+///
+/// Anything else, and any value that does not parse, goes unchanged.
+pub fn for_receiver<'a>(
+    receiver: &ClientProfile,
+    pid: u8,
+    v: &'a [u8],
+    swims: bool,
+) -> std::borrow::Cow<'a, [u8]> {
+    use std::borrow::Cow;
+    let server = &receiver.server;
+    match pid {
+        STATUS if server.status_4_swims && !swims => match v {
+            [s, rest @ ..] => {
+                let mut w = vec![gchar(s.wrapping_sub(0x20) & !4)];
+                w.extend_from_slice(rest);
+                Cow::Owned(w)
+            }
+            _ => Cow::Borrowed(v),
+        },
+        SWORD | SHIELD | HEAD | BODY if server.image_ext != ".png" => {
+            image_for(server.image_ext, pid, v).map_or(Cow::Borrowed(v), Cow::Owned)
+        }
+        _ => Cow::Borrowed(v),
+    }
+}
+
+/// [`for_receiver`]'s image rule; `None` when nothing changes.
+fn image_for(ext: &str, pid: u8, v: &[u8]) -> Option<Vec<u8>> {
+    let byte = |i: usize| v.get(i).map(|b| b.wrapping_sub(0x20));
+    // (the byte before the name, the preset limit and bias, the stock stem)
+    let (lead, name) = match pid {
+        SWORD | SHIELD => {
+            let (limit, bias, stem) = if pid == SWORD {
+                (4, 30, "sword")
+            } else {
+                (3, 10, "shield")
+            };
+            let b = byte(0)?;
+            if b <= limit {
+                return None; // already a preset
+            }
+            let len = byte(1)? as usize;
+            let name = v.get(2..2 + len)?;
+            let power = b - bias;
+            if (1..=limit).contains(&power) && stock(name, stem) == Some(power) {
+                return Some(vec![gchar(power)]);
+            }
+            (Some(v[0]), name)
+        }
+        HEAD => {
+            let b = byte(0)?;
+            if b < 100 {
+                return None;
+            }
+            let name = v.get(1..1 + (b - 100) as usize)?;
+            if let Some(n) = stock(name, "head").filter(|n| *n < 100) {
+                return Some(vec![gchar(n)]);
+            }
+            (None, name)
+        }
+        _ => {
+            let len = byte(0)? as usize;
+            (None, v.get(1..1 + len)?)
+        }
+    };
+    let stem = name
+        .len()
+        .checked_sub(4)
+        .filter(|&i| name[i..].eq_ignore_ascii_case(b".png"))?;
+    let mut renamed = name[..stem].to_vec();
+    renamed.extend_from_slice(ext.as_bytes());
+    let mut w = Vec::new();
+    match (pid, lead) {
+        (HEAD, _) => {
+            let renamed = &renamed[..renamed.len().min(123)];
+            w.push(gchar(100 + renamed.len() as u8));
+            w.extend_from_slice(renamed);
+        }
+        (_, Some(lead)) => {
+            w.push(lead);
+            crate::wire::gstring(&renamed, &mut w);
+        }
+        _ => crate::wire::gstring(&renamed, &mut w),
+    }
+    Some(w)
+}
+
+/// `N` when `name` is `<stem>N.png` (any case), the stock art's name.
+fn stock(name: &[u8], stem: &str) -> Option<u8> {
+    let name = std::str::from_utf8(name).ok()?.to_ascii_lowercase();
+    let n = name.strip_prefix(stem)?.strip_suffix(".png")?;
+    if n.is_empty() || n.len() > 2 || !n.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    n.parse().ok()
+}
+
 /// A classic `X`/`Y` byte in tiles. A byte under 0x20 is a step off
 /// the level's left or top edge: a 2.05 walking past the edge where no
 /// link is writes -0.5 as 0x1F, which must not read as 127.5.
@@ -237,6 +360,10 @@ impl Props {
                     }
                 }
             }
+        }
+        if c.values.contains_key(&STATUS) {
+            c.status_swims = ServerProfile::of(sender).status_4_swims;
+            self.status_swims = c.status_swims;
         }
         self.values
             .extend(c.values.iter().map(|(k, v)| (*k, v.clone())));
@@ -359,6 +486,7 @@ impl Props {
                 .filter(|(k, _)| ids.contains(k))
                 .map(|(k, v)| (*k, v.clone()))
                 .collect(),
+            status_swims: change.status_swims,
             ..Change::default()
         }
     }
@@ -408,6 +536,7 @@ impl Props {
             values: self.values.clone(),
             x: self.x,
             y: self.y,
+            status_swims: self.status_swims,
         }
     }
 }
@@ -431,7 +560,7 @@ pub fn message(
     let mut put = |pid: u8, v: &[u8]| {
         if other.contains(pid) && !(pid == 10 && receiver.server.prop10_bow) {
             body.push(gchar(pid));
-            body.extend_from_slice(v);
+            body.extend_from_slice(&for_receiver(&receiver, pid, v, change.status_swims));
         }
     };
     for (&pid, v) in &change.values {
@@ -536,12 +665,13 @@ pub const MAX_HEARTS: u8 = 20;
 /// encoding, no position), keeping only the props the build reads as its
 /// own. `None` when nothing is left.
 pub fn own_message(to: impl Into<ClientProfile>, changed: &[(u8, Vec<u8>)]) -> Option<Vec<u8>> {
-    let own = &to.into().core.props.own;
+    let to = to.into();
+    let own = &to.core.props.own;
     let mut body = Vec::new();
     for (id, v) in changed {
         if own.contains(*id) {
             body.push(gchar(*id));
-            body.extend_from_slice(v);
+            body.extend_from_slice(&for_receiver(&to, *id, v, false));
         }
     }
     (!body.is_empty()).then(|| msg(crate::wire::ids::PLO_PLAYERPROPS, &body))
@@ -582,6 +712,150 @@ mod tests {
         st.apply_body(&m);
         assert_eq!(st.own_rupees, Some(r as u32 + 131));
         assert!(own_message(ClientVersion::V222, &[]).is_none());
+    }
+
+    /// The value bytes of prop `pid` in a `PLO_OTHERPLPROPS` for a build
+    /// with a two-byte id (parsed with the receiver's own prop set).
+    fn prop_in(m: &[u8], to: ClientVersion, pid: u8) -> Option<Vec<u8>> {
+        let bow = bow_prop10(to);
+        let other = to.profile().props.other;
+        let body = &m[1 + if one_byte_id(to) { 1 } else { 2 }..];
+        seihai_core::protocol::parse_player_props_in(body, bow, Some(&other))
+            .into_iter()
+            .find(|p| p.id == pid)
+            .map(|p| p.raw)
+    }
+
+    /// A 1.x build reads status value 4 as "swimming" and draws a swimmer
+    /// with no body (#45; the GServer-v2 fork's #27 rerun with a real
+    /// 1.39). It loses the bit, unless the player is itself 1.x, whose
+    /// bit 4 is its own swimming.
+    #[test]
+    fn status_4_is_cleared_for_1x_receivers() {
+        let p = alice(); // STATUS 20 (male, weapons) from a 2.22
+        let to139 = message(ClientVersion::V139, 7, &p.all(), &JOINED).unwrap();
+        assert_eq!(
+            prop_in(&to139, ClientVersion::V139, STATUS),
+            Some(vec![gchar(16)])
+        );
+        let to222 = message(ClientVersion::V222, 7, &p.all(), &JOINED).unwrap();
+        assert_eq!(
+            prop_in(&to222, ClientVersion::V222, STATUS),
+            Some(vec![gchar(20)])
+        );
+
+        let mut swimmer = Props::default();
+        let c = swimmer.apply(&[gchar(STATUS), gchar(20)], ClientVersion::V139);
+        let m = message(ClientVersion::V139, 7, &c, &[]).unwrap();
+        assert_eq!(
+            prop_in(&m, ClientVersion::V139, STATUS),
+            Some(vec![gchar(20)])
+        );
+        let m = message(ClientVersion::V141, 7, &swimmer.all(), &[]).unwrap();
+        assert_eq!(
+            prop_in(&m, ClientVersion::V141, STATUS),
+            Some(vec![gchar(20)])
+        );
+        // A later 2.x status for the same player is cleared again.
+        let c = swimmer.apply(&[gchar(STATUS), gchar(21)], ClientVersion::V222);
+        let m = message(ClientVersion::V139, 7, &c, &[]).unwrap();
+        assert_eq!(
+            prop_in(&m, ClientVersion::V139, STATUS),
+            Some(vec![gchar(17)])
+        );
+        // The own status always loses it.
+        let own = own_message(ClientVersion::V139, &[(STATUS, vec![gchar(20)])]).unwrap();
+        assert_eq!(
+            own,
+            msg(
+                crate::wire::ids::PLO_PLAYERPROPS,
+                &[gchar(STATUS), gchar(16)]
+            )
+        );
+    }
+
+    /// Stock art goes to a `.gif` build as its preset number, other art
+    /// with `.gif`; `.png` builds and 2.05 rev 2 get the names unchanged.
+    #[test]
+    fn player_art_for_gif_builds() {
+        let gif = ClientProfile::of(ClientVersion::V139);
+        let named = |lead: Option<u8>, name: &[u8]| {
+            let mut v: Vec<u8> = lead.into_iter().collect();
+            crate::wire::gstring(name, &mut v);
+            v
+        };
+        let head = |name: &[u8]| {
+            let mut v = vec![gchar(100 + name.len() as u8)];
+            v.extend_from_slice(name);
+            v
+        };
+        let f = |pid, v: &[u8]| for_receiver(&gif, pid, v, false).into_owned();
+        // Stock sword, shield and head: the preset number alone.
+        assert_eq!(
+            f(SWORD, &named(Some(gchar(31)), b"sword1.png")),
+            vec![gchar(1)]
+        );
+        assert_eq!(
+            f(SHIELD, &named(Some(gchar(12)), b"Shield2.PNG")),
+            vec![gchar(2)]
+        );
+        assert_eq!(f(HEAD, &head(b"head0.png")), vec![gchar(0)]);
+        assert_eq!(f(HEAD, &head(b"head17.png")), vec![gchar(17)]);
+        // A stock name with another power keeps the name, as `.gif`.
+        assert_eq!(
+            f(SWORD, &named(Some(gchar(33)), b"sword1.png")),
+            named(Some(gchar(33)), b"sword1.gif")
+        );
+        // Custom art: `.gif`.
+        assert_eq!(f(HEAD, &head(b"myhead.png")), head(b"myhead.gif"));
+        assert_eq!(f(BODY, &named(None, b"body.png")), named(None, b"body.gif"));
+        // Presets and names already `.gif` are left alone.
+        assert_eq!(f(SWORD, &[gchar(3)]), vec![gchar(3)]);
+        assert_eq!(f(HEAD, &[gchar(5)]), vec![gchar(5)]);
+        assert_eq!(f(HEAD, &head(b"me.gif")), head(b"me.gif"));
+        // A short value is passed on unchanged rather than cut.
+        assert_eq!(
+            f(SWORD, &[gchar(31), gchar(9), b's']),
+            vec![gchar(31), gchar(9), b's']
+        );
+        for v in [
+            ClientVersion::V205,
+            ClientVersion::V222,
+            ClientVersion::V603R7,
+        ] {
+            let p = ClientProfile::of(v);
+            let h = head(b"head0.png");
+            assert_eq!(&*for_receiver(&p, HEAD, &h, false), &h[..], "{v:?}");
+        }
+        // Through the writers: a 1.39 gets the presets from alice's props.
+        let p = alice();
+        let m = message(ClientVersion::V139, 7, &p.all(), &JOINED).unwrap();
+        assert_eq!(prop_in(&m, ClientVersion::V139, HEAD), Some(vec![gchar(0)]));
+        assert_eq!(
+            prop_in(&m, ClientVersion::V139, SWORD),
+            Some(vec![gchar(1)])
+        );
+        assert_eq!(
+            prop_in(&m, ClientVersion::V139, SHIELD),
+            Some(vec![gchar(1)])
+        );
+        let a = Account::new("bob", "", 30.0, 30.5);
+        let own = own_props(
+            ClientVersion::V139,
+            &Player {
+                id: 2,
+                account: &a,
+                leader: true,
+            },
+        );
+        let parsed = seihai_core::protocol::parse_player_props_in(
+            &own,
+            true,
+            Some(&ClientVersion::V139.profile().props.own),
+        );
+        let get = |id| parsed.iter().find(|p| p.id == id).map(|p| p.raw.clone());
+        assert_eq!(get(HEAD), Some(vec![gchar(0)]));
+        assert_eq!(get(STATUS).map(|s| (s[0] - 0x20) & 4), Some(0));
     }
 
     fn alice() -> Props {
