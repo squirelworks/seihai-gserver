@@ -337,8 +337,10 @@ mod tests {
     #[test]
     fn gs1_builds_get_name_image_and_script() {
         let w = Weapon::parse(FILE).unwrap();
+        // `say2` arrives in 1.41 (seihai-core v0.0.21's per-build tables), so
+        // 1.39 can't run this script and gets no weapon.
+        assert!(w.message(ClientVersion::V139).is_none());
         for v in [
-            ClientVersion::V139,
             ClientVersion::V205,
             ClientVersion::V222,
             ClientVersion::V231,

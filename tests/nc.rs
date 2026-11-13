@@ -106,7 +106,7 @@ fn an_nc_lists_reads_sets_and_deletes_npcs() {
     let (addr, link, _server) = start(&w);
     let npc_world = w.clone();
     std::thread::spawn(move || {
-        let mut scripts = Scripts::with_world(Era::V21, &npc_world);
+        let mut scripts = Scripts::with_world(Era::V217, &npc_world);
         let timing = Timing {
             tick: Duration::from_millis(20),
             ..Timing::default()
