@@ -122,11 +122,32 @@ pub fn versions_for(token: &str, gen: EncryptionGen) -> impl Iterator<Item = Cli
         .filter(move |v| v.token() == token && v.encryption() == gen)
 }
 
+/// Builds `seihai-core` has no profile for yet, served as the nearest build
+/// with the same login line and wire. Each token was read from its binary
+/// and seen on the wire against the real client (graal-client-repro lab,
+/// 2026-11-13):
+///
+/// - 1.25 (`GSERV009`) and 1.27 (`GSERV011`): gen 2, the 1.21 login line,
+///   and a one-byte player id in `PLO_OTHERPLPROPS`, as 1.21;
+/// - 1.40 rev 1 (`GNW23090`): gen 3 with the key byte and no language
+///   packet, as 1.41 rev 1.
+pub const STAND_INS: &[(&str, EncryptionGen, ClientVersion)] = &[
+    ("GSERV009", EncryptionGen::Gen2, ClientVersion::V121),
+    ("GSERV011", EncryptionGen::Gen2, ClientVersion::V121),
+    ("GNW23090", EncryptionGen::Gen3, ClientVersion::V141),
+];
+
 /// The first known build for `token` and `gen`. Several builds share a
 /// token (5.30r3, 5.31r4 and 6.00r2 all send `G3D26090`); the oldest is
-/// taken, which only matters for which messages it is sent.
+/// taken, which only matters for which messages it is sent. A token in
+/// [`STAND_INS`] gets its stand-in.
 pub fn version_for(token: &str, gen: EncryptionGen) -> Option<ClientVersion> {
-    versions_for(token, gen).next()
+    versions_for(token, gen).next().or_else(|| {
+        STAND_INS
+            .iter()
+            .find(|(t, g, _)| *t == token && *g == gen)
+            .map(|&(_, _, v)| v)
+    })
 }
 
 /// Read the login line. `extra_tokens` are tokens from the allow-list that
@@ -284,6 +305,48 @@ mod tests {
         assert_eq!(build_label(1, None), "RC");
         assert_eq!(build_label(3, None), "NC");
         assert_eq!(build_label(0, None), "unknown build");
+    }
+
+    #[test]
+    fn stand_ins_for_125_127_140() {
+        // gen 2, no key byte: id 0, token, account, password
+        let l = parse(
+            b" GSERV009%guest%guest
+",
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            (l.gen, l.version),
+            (EncryptionGen::Gen2, Some(ClientVersion::V121))
+        );
+        let l = parse(
+            b" GSERV011%guest%guest
+",
+            &[],
+        )
+        .unwrap();
+        assert_eq!(l.version, Some(ClientVersion::V121));
+        // gen 3: type 0, key byte, token (the real 1.40r1 line, lab)
+        let l = parse(
+            b" rGNW23090(labguest%guest
+",
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            (l.gen, l.key, l.token.as_str(), l.version),
+            (
+                EncryptionGen::Gen3,
+                b'r' - 0x20,
+                "GNW23090",
+                Some(ClientVersion::V141)
+            )
+        );
+        // a stand-in never hides a real profile
+        for &(t, g, _) in STAND_INS {
+            assert!(versions_for(t, g).next().is_none(), "{t} now has a profile");
+        }
         assert_eq!(
             build_label(5, Some(ClientVersion::V222)),
             ClientVersion::V222.label()
