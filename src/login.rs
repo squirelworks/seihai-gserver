@@ -1,7 +1,8 @@
 //! The login line: the first message of the first frame.
 //!
 //! ```text
-//! GCHAR type            0 for 1.21 to 2.17, 5 for 2.22 and later
+//! GCHAR type            0 for 1.21 to 2.17, 4 for 2.19 to 2.21 and 3.0 to
+//!                       3.01 (gen 4), 5 for 2.22 and later
 //! GCHAR key             not in gen 2 (1.21 to 1.39): the token follows the type
 //! char[8] token         the build's version token, e.g. GNW03081
 //! GSTRING account
@@ -69,6 +70,16 @@ pub fn is_nc(client_type: u8) -> bool {
 /// - 6, the newer RCs: a key byte after the type, then gen-5 frames.
 pub fn is_rc(client_type: u8) -> bool {
     matches!(client_type, 1 | 6)
+}
+
+/// Login type 4: the 2.19 to 2.21 and 3.0 to 3.01 clients (`G3D16053`,
+/// `G3D27063`). After the login frame their frames are gen 4: no
+/// compression byte, every body bz2, the first 4 dwords XORed with the
+/// gen-5 LCG (graal_analysis `protocol/codec-and-framing.md`,
+/// `ENCRYPT_GEN_4`). `seihai-core` has no gen 4, so the login reads as gen
+/// 5 and the codec switches its framing.
+pub fn is_gen4(client_type: u8) -> bool {
+    client_type == 4
 }
 
 /// What the log calls the build that logged in. An RC's token (`GSERV025`
@@ -182,7 +193,9 @@ pub fn parse(line: &[u8], extra_tokens: &[String]) -> Result<Login, LoginError> 
                 }
             }
         }
-        5 | 6 => {
+        // Type 4 (gen 4) has the gen-5 line and cipher; only its frames
+        // differ (`Login::gen4`, `Codec::gen4`).
+        4..=6 => {
             let t = token_at(1).ok_or(LoginError::Short)?;
             (EncryptionGen::Gen5, rest[0].wrapping_sub(0x20), t, 9)
         }
@@ -305,6 +318,21 @@ mod tests {
         assert_eq!(build_label(1, None), "RC");
         assert_eq!(build_label(3, None), "NC");
         assert_eq!(build_label(0, None), "unknown build");
+    }
+
+    #[test]
+    fn type_4_is_read_as_the_gen5_line() {
+        // type 4 ('$'), key, the 3.01 token, account, password
+        let l = parse(b"$7G3D27063'labacct'labpass\n", &["G3D27063".into()]).unwrap();
+        assert_eq!(
+            (l.client_type, l.gen, l.key),
+            (4, EncryptionGen::Gen5, 0x17)
+        );
+        assert_eq!(
+            (l.token.as_str(), l.account.as_str()),
+            ("G3D27063", "labacct")
+        );
+        assert!(is_gen4(l.client_type) && !is_gen4(5));
     }
 
     #[test]
