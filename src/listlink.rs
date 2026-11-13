@@ -14,12 +14,14 @@
 //!
 //! Inside, the classic link: `SVO_REGISTERV3` (30) as one line, then zlib
 //! frames. Sent: `NEWSERVER` (22), `SETPLYR` (7), `PLYRADD` (14),
-//! `PLYRREM` (15), `VERIACC2` (17), `SVO_PMPLAYER` (29), `SETIP` (5) as
+//! `PLYRREM` (15), `VERIACC2` (17), `SERVERINFO` (25, a player's server
+//! warp), `SVO_PMPLAYER` (29), `SETIP` (5) as
 //! the keep-alive, and `SVO_PING` (16) only as the answer to the
 //! listserver's ping (99). Id 16 is a pong: it is never sent on its own,
 //! and a listserver does not answer it (answering 16 with another 99
 //! would loop).
-//! Read: `SVI_VERIACC2` (11), `SVI_PING` (99), `SVI_PMPLAYER` (29), and
+//! Read: `SVI_VERIACC2` (11), `SVI_SERVERINFO` (18), `SVI_PING` (99),
+//! `SVI_PMPLAYER` (29), and
 //! the file transfer. `SVI_FILESTART` (2) and `SVI_FILESTART3` (15) both
 //! open an empty partial (kind, then a GSTRING name). `SVI_FILEDATA3`
 //! (16) appends to it. `SVI_FILEEND3` (17) finishes it and tells the
@@ -57,6 +59,9 @@ mod svo {
     /// A private message for a player on another server.
     pub const PMPLAYER: u8 = 29;
     pub const REGISTERV3: u8 = 30;
+    /// Where a named server is, for a player's server warp: `GSHORT`
+    /// player id, then the name (seihai-listserver `v0.1.1`).
+    pub const SERVERINFO: u8 = 25;
 }
 const SVI_VERIACC2: u8 = 11;
 /// Opens a file partial. Same fields as [`SVI_FILESTART3`].
@@ -70,6 +75,8 @@ const SVI_FILEEND3: u8 = 17;
 /// A private message for a player on this server. No player id: seven
 /// text fields, packed the way [`seihai_core::net::gtokenize`] packs lines.
 const SVI_PMPLAYER: u8 = 29;
+/// The answer to `SERVERINFO`: the player id and `0,name,host,port`.
+const SVI_SERVERINFO: u8 = 18;
 /// The listserver's ping. Answered with [`svo::PING`], nothing else.
 const SVI_PING: u8 = 99;
 /// The next GINT3 bytes of the decompressed stream are one message.
@@ -131,6 +138,10 @@ pub enum Delivery {
     },
     /// A head, body, sword or shield image that finished downloading.
     Image { kind: u8, name: String },
+    /// The answer to the player's server warp (`PLI_SERVERWARP`): the
+    /// `SVI_SERVERINFO` text, `0,name,host,port`, which the client gets as
+    /// `PLO_SERVERWARP` (178) unchanged.
+    ServerWarp(Vec<u8>),
 }
 
 enum Cmd {
@@ -158,6 +169,11 @@ enum Cmd {
     },
     /// The listserver sent ping 99. Reply with one empty `SVO_PING`.
     Pong,
+    /// A player asked to warp to the server `name`.
+    ServerInfo {
+        player: u16,
+        name: Vec<u8>,
+    },
 }
 
 /// The handle the rest of the server uses.
@@ -307,6 +323,19 @@ impl ListLink {
             to_server: to_server.to_string(),
             to_account: to_account.to_string(),
             text: text.to_string(),
+        });
+    }
+
+    /// Ask where the server `name` is, for player `player`'s server warp
+    /// (`PLI_SERVERWARP`). The answer arrives as [`Delivery::ServerWarp`];
+    /// an unknown name gets none. Dropped when the link is down.
+    pub fn server_info(&self, player: u16, name: &[u8]) {
+        if !self.connected() || name.is_empty() {
+            return;
+        }
+        self.send(Cmd::ServerInfo {
+            player,
+            name: name.to_vec(),
         });
     }
 
@@ -637,6 +666,7 @@ fn on_line(line: &[u8], state: &Mutex<State>, tx: &Sender<Cmd>) -> bool {
             false
         }
         Some(SVI_PMPLAYER) => take_pm(payload, state),
+        Some(SVI_SERVERINFO) => take_server_info(payload, state),
         Some(SVI_FILESTART) | Some(SVI_FILESTART3) => {
             open_partial(payload, state);
             false
@@ -724,6 +754,27 @@ fn field_text(bytes: &[u8]) -> String {
 /// `SVI_PMPLAYER`: destination server, sender account, sender nickname,
 /// weapon, kind, destination account, then the message (the rest, so a
 /// newline in it stays). The destination account is a player here.
+/// `SVI_SERVERINFO`: the player's `GSHORT` id as the gserver sent it, then
+/// the warp text. Kept for that player when it is still listed.
+fn take_server_info(payload: &[u8], state: &Mutex<State>) -> bool {
+    let [a, b, text @ ..] = payload else {
+        return false;
+    };
+    if text.is_empty() {
+        return false;
+    }
+    let id = (u16::from(a.wrapping_sub(32) & 0x7F) << 7) | u16::from(b.wrapping_sub(32) & 0x7F);
+    let mut st = state.lock().unwrap();
+    if !st.players.contains_key(&id) {
+        return false;
+    }
+    st.inbox
+        .entry(id)
+        .or_default()
+        .push(Delivery::ServerWarp(text.to_vec()));
+    true
+}
+
 fn take_pm(payload: &[u8], state: &Mutex<State>) -> bool {
     let fields = unpack_fields(payload);
     if fields.len() < 7 {
@@ -1039,6 +1090,12 @@ fn run(
                     message(svo::PMPLAYER, &body)
                 }
                 Ok(Cmd::Pong) => message(svo::PING, b""),
+                Ok(Cmd::ServerInfo { player, name }) => {
+                    let mut body = Vec::new();
+                    gshort(&mut body, player);
+                    body.extend(name);
+                    message(svo::SERVERINFO, &body)
+                }
                 Ok(Cmd::Verify {
                     account,
                     password,
@@ -1101,7 +1158,7 @@ fn wait_or_apply(rx: &Receiver<Cmd>, state: &Mutex<State>, d: Duration) -> Resul
                 let _ = reply.send(Verdict::Unreachable);
             }
             // The link is down, so a ping or a PM has nobody to reach.
-            Ok(Cmd::Pong | Cmd::Private { .. }) => {}
+            Ok(Cmd::Pong | Cmd::Private { .. } | Cmd::ServerInfo { .. }) => {}
             Err(RecvTimeoutError::Timeout) => return Ok(()),
             Err(RecvTimeoutError::Disconnected) => return Err(()),
         }

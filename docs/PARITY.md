@@ -39,7 +39,7 @@ test) and the lab notes.
 | Ping (`PLO_PING` 108 / `PLI_PONG` 162) | tests | `ping.rs` | The lab capture is open (#56, "Lab") |
 | Word filter | no | | |
 | UPnP port forwarding | no | | Low priority: `seihai-servertools setup` covers going public |
-| Login lobby and server warp (`PLO_SERVERWARP` 178, `PLI_SERVERWARP`) for 5.x/6.x | partial | `lobby.rs` | `lobby_port` in `config/server.txt` (off by default) answers a 4.x–6.x lobby build's login with 178 to this server. `PLI_SERVERWARP` is not read yet. No real-client run (#102) |
+| Login lobby and server warp (`PLO_SERVERWARP` 178, `PLI_SERVERWARP`) for 5.x/6.x | partial | `lobby.rs` | `lobby_port` in `config/server.txt` (off by default) answers a 4.x–6.x lobby build's login with 178 to this server. `PLI_SERVERWARP` (41) asks the listserver (`SERVERINFO`) and passes its answer on as 178 (`listserver_link.rs`). No real-client run (#102) |
 
 ## World
 
@@ -51,7 +51,7 @@ test) and the lab notes.
 | Items on the ground (`PLI_ITEMADD`, `ITEMDEL`, `ITEMTAKE`) | lab | `floor_items.rs`; `lab/stage2` | |
 | Player flags and server flags (`PLI_FLAGSET`, `FLAGDEL`) | lab | `lab/stage2` | Server flags come from the NPC-server (stage 5) |
 | Level changes on disk reloaded | tests | `npc_messages.rs` (`LEVEL_RELOADED`) | |
-| Board changes (`PLI_BOARDMODIFY`, `PLI_REQUESTUPDATEBOARD`) | partial | `board_changes.rs` | `PLI_BOARDMODIFY` is passed on to the level and sent to later arrivals; 2x2 changes grow back after 15 s (`rules = 1999`: 7.5 to 12.5 s). Not on gmaps, and `PLI_REQUESTUPDATEBOARD` is not read yet. A level keeps at most 256 changes (#106). Blocks are not checked against the level yet (#107) |
+| Board changes (`PLI_BOARDMODIFY`, `PLI_REQUESTUPDATEBOARD`, `PLO_BOARDMODIFY2`) | partial | `board_changes.rs` | `PLI_BOARDMODIFY` is passed on to the level and sent to later arrivals; 2x2 changes grow back after 15 s (`rules = 1999`: 7.5 to 12.5 s). On a gmap, players in that cell or next to it get 186 with the cell, arrivals and neighbour loads included. `PLI_REQUESTUPDATEBOARD` (130) gets the kept changes in its rectangle; no server's answer to 130 is known, so this is this server's choice. A level keeps at most 256 changes (#106). Blocks are not checked against the level yet (#107) |
 | Horses (`PLI_HORSEADD`, `HORSEDEL`) | tests | `original_rules.rs`, `horses.rs` | As the 1999 servers keep them (`ORIGINAL-SERVERS.md`): shown to arrivals, gone after `horse_lifetime` |
 | `PLI_ENTERLEVEL` (newer builds' level entry) | no | | |
 | Level groups (`gr.setlevelgroup`) | no | | |
@@ -68,7 +68,7 @@ test) and the lab notes.
 | Carry and throw (`PLI_THROWCARRIED`) | no | | Its shape needs a capture of a real throw |
 | `PLI_HITOBJECTS`, `PLI_SHOOT`, `PLI_SHOOT2` | no | | |
 | `PLI_SHOWIMGPLAYER` | no | | |
-| Private messages between players (`PLI_PRIVATEMESSAGE`) | partial | `listserver_link.rs` | From RCs and the listserver; player-to-player PMs are not relayed yet |
+| Private messages between players (`PLI_PRIVATEMESSAGE`) | partial | `listserver_link.rs`, `private_messages.rs` | From RCs, the listserver and players online. 1.21 to 1.35 read and write one-byte ids. A target whose build reads no 37 makes the sender get a server message, and a text over 1024 bytes an admin message (GServer 1.3). PMs to players on other servers from a game client are not sent on yet |
 | Guilds (`gr.setguild` and the rest) | no | | |
 | Player groups (`gr.setgroup`, `gr.setplayergroup`) | no | | |
 
@@ -81,7 +81,7 @@ test) and the lab notes.
 | Baddies (`PLI_BADDYPROPS`, `BADDYHURT`) | lab | `baddies.rs`; `lab/stage3` | `PLI_BADDYADD` is not handled |
 | NPCs a client puts or deletes (`PLI_PUTNPC`, `PLI_NPCDEL`) | no | | |
 | Trigger actions (`PLI_TRIGGERACTION`, `gr.*` commands) | no | | `PLO_TRIGGERACTION` needs a capture (#53) |
-| Weapons: `PLI_WEAPONADD`, `PLI_TOWEAPON` | partial | `weapons.rs`, `npc_messages.rs` | `PLI_WEAPONADD` gives default weapons and level-NPC weapons (`toweapons`), kept in `weapons/` and on the account. GS1 weapons go only to builds that run GS1. `PLI_TOWEAPON` is still read and not answered (#101) |
+| Weapons: `PLI_WEAPONADD`, `PLI_TOWEAPON` | partial | `weapons.rs`, `npc_messages.rs` | `PLI_WEAPONADD` gives default weapons and level-NPC weapons (`toweapons`), kept in `weapons/` and on the account. GS1 weapons go only to builds that run GS1. `PLI_TOWEAPON` (25, 1.21 to 1.37) keeps the weapon when the world has it or an NPC in the level gives it; the uploaded script is never used (`weapons.rs`) |
 | Weapon scripts and the weapon cache (`PLO_NPCWEAPONSCRIPT` 140, `PLO_WEAPONHASH` 193) | no | | Named in `packet-ids.md`, not sent |
 | `PLI_NPCWEAPONDEL` | no | | |
 | Classes and GS2 script updates (`PLI_UPDATECLASS`, `UPDATESCRIPT`, `UPDATEGANI`) | no | | |
@@ -128,9 +128,9 @@ From the rows above, in the roadmap's order:
 
 1. **Lab runs** for the lobby, weapons and board changes, which are built
    and covered by loopback tests only.
-2. **Weapons:** `PLI_TOWEAPON`, weapon scripts for GS2 builds and the
-   weapon cache.
-3. **Board changes:** `PLI_REQUESTUPDATEBOARD` and gmaps.
+2. **Weapons:** weapon scripts for GS2 builds (140) and the weapon cache
+   (193). Both wait for a capture of the fork sending them.
+3. **Board changes:** the check of what a block writes (#107).
 4. **Trigger actions**, once `PLO_TRIGGERACTION` has a capture.
 5. Carry and throw, guilds and the word filter.
 

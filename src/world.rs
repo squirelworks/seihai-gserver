@@ -116,6 +116,8 @@ type Batch = (Vec<u8>, Vec<(u16, usize, usize)>);
 const ID_LIMIT: u16 = 1 << 14;
 /// Prop 0, the nickname.
 const NICKNAME: u8 = 0;
+/// The head image (player prop 11).
+const HEAD: u8 = 11;
 
 /// The id the NPC-server's PMs come from. Never given to a player.
 pub const NPC_SERVER_ID: u16 = ID_LIMIT - 1;
@@ -244,6 +246,12 @@ pub enum WorldIn {
     FromNpc(Message),
     /// `PLI_WEAPONADD`.
     WeaponAdd { player: u16, raw: Vec<u8> },
+    /// `PLI_TOWEAPON`.
+    ToWeapon { player: u16, raw: Vec<u8> },
+    /// `PLI_PRIVATEMESSAGE`.
+    PrivateMessage { player: u16, raw: Vec<u8> },
+    /// `PLI_REQUESTUPDATEBOARD`.
+    RequestBoard { player: u16, raw: Vec<u8> },
     /// The NPC-server link closed: its NPCs go.
     NpcGone,
 }
@@ -676,6 +684,30 @@ impl World {
     /// `PLI_WEAPONADD` (33), as sent.
     pub fn weapon_add(&self, player: u16, raw: &[u8]) {
         let _ = self.tx.send(WorldIn::WeaponAdd {
+            player,
+            raw: raw.to_vec(),
+        });
+    }
+
+    /// `PLI_TOWEAPON` (25), as sent.
+    pub fn weapon_upload(&self, player: u16, raw: &[u8]) {
+        let _ = self.tx.send(WorldIn::ToWeapon {
+            player,
+            raw: raw.to_vec(),
+        });
+    }
+
+    /// `PLI_PRIVATEMESSAGE` (28), as sent.
+    pub fn private_message(&self, player: u16, raw: &[u8]) {
+        let _ = self.tx.send(WorldIn::PrivateMessage {
+            player,
+            raw: raw.to_vec(),
+        });
+    }
+
+    /// `PLI_REQUESTUPDATEBOARD` (130), as sent.
+    pub fn request_board(&self, player: u16, raw: &[u8]) {
+        let _ = self.tx.send(WorldIn::RequestBoard {
             player,
             raw: raw.to_vec(),
         });
@@ -1183,6 +1215,9 @@ impl WorldTask {
             }
             WorldIn::FromNpc(m) => self.apply_npc(m),
             WorldIn::WeaponAdd { player, raw } => self.weapon_add(player, &raw),
+            WorldIn::ToWeapon { player, raw } => self.weapon_upload(player, &raw),
+            WorldIn::PrivateMessage { player, raw } => self.player_pm(player, &raw),
+            WorldIn::RequestBoard { player, raw } => self.request_board(player, &raw),
             WorldIn::NpcGone => self.npc_gone(),
         }
     }
@@ -1518,6 +1553,17 @@ impl WorldTask {
             let level = self.view(id, &level);
             let f = crate::burst::gmap_level(p.version, &level, &gmap.gmap, full);
             let _ = p.outbox.send(vec![f]);
+            // Its tile changes, under its cell (`board.rs`).
+            let key = level.name.to_ascii_lowercase();
+            let place = self.gmaps.find(&key);
+            if let (Some(form), Some(c)) =
+                (board_form(p, &key, place.as_ref()), self.boards.get(&key))
+            {
+                let msgs = c.messages(form);
+                if !msgs.is_empty() {
+                    let _ = p.outbox.send(msgs);
+                }
+            }
         }
     }
 
@@ -1966,11 +2012,11 @@ impl WorldTask {
             }
         }
         // The level's tile changes (`board.rs`).
-        if reads_board_modify(me) {
+        if let Some(form) = board_form(me, &me.level, me.gmap.as_ref()) {
             for m in self
                 .boards
                 .get(&me.level)
-                .map(|c| c.messages())
+                .map(|c| c.messages(form))
                 .unwrap_or_default()
             {
                 let _ = me.outbox.send(vec![m]);
@@ -2351,9 +2397,8 @@ impl WorldTask {
             .get(&level)
             .map(|l| l.board.clone())
             .unwrap_or_default();
-        let m = block.message();
         let kept = self.boards.entry(level.clone()).or_default().add(
-            block,
+            block.clone(),
             &file,
             Instant::now(),
             self.rules.bush_regrowth(crate::rules::roll()),
@@ -2369,9 +2414,13 @@ impl WorldTask {
             }
             return;
         }
+        let place = self.gmaps.find(&level);
         for (&other, o) in &self.players {
-            if other != id && o.level == level && reads_board_modify(o) {
-                let _ = o.outbox.send(vec![m.clone()]);
+            if other == id {
+                continue;
+            }
+            if let Some(form) = board_form(o, &level, place.as_ref()) {
+                let _ = o.outbox.send(vec![block.message_as(form)]);
             }
         }
     }
@@ -2386,10 +2435,12 @@ impl WorldTask {
             }
         }
         self.boards.retain(|_, c| !c.is_empty());
-        for (level, msgs) in back {
+        for (level, blocks) in back {
+            let place = self.gmaps.find(&level);
             for o in self.players.values() {
-                if o.level == level && reads_board_modify(o) {
-                    let _ = o.outbox.send(msgs.clone());
+                if let Some(form) = board_form(o, &level, place.as_ref()) {
+                    let msgs = blocks.iter().map(|b| b.message_as(form)).collect();
+                    let _ = o.outbox.send(msgs);
                 }
             }
         }
@@ -2560,9 +2611,32 @@ impl WorldTask {
         if !self.players.contains_key(&id) {
             return;
         }
+        if self.rules.era == crate::rules::Era::Y1999 {
+            if let Some(p) = self.players.get_mut(&id) {
+                let told = p.props.limit_1999(&mut change);
+                if let Some(m) = others::own_message(p.version, &told) {
+                    let _ = p.outbox.send(vec![m]);
+                }
+            }
+        }
         self.check_counted(id, &mut change, &counted);
         if change.has(NICKNAME) {
             self.to_rcs(None, self.player_entry(id));
+        }
+        // On the 1999 servers a new nickname or head reaches every player
+        // online, not only the level (`docs/ORIGINAL-SERVERS.md`).
+        if self.rules.era == crate::rules::Era::Y1999 && (change.has(NICKNAME) || change.has(HEAD))
+        {
+            let only = Props::only(&change, &[NICKNAME, HEAD]);
+            if let Some(level) = self.players.get(&id).map(|p| p.level.clone()) {
+                for (&o, op) in &self.players {
+                    if o != id && op.level != level {
+                        if let Some(m) = others::message(op.version, id, &only, &[]) {
+                            let _ = op.outbox.send(vec![m]);
+                        }
+                    }
+                }
+            }
         }
         if !change.is_empty() {
             self.pending.entry(id).or_default().merge(change);
@@ -3025,6 +3099,160 @@ impl WorldTask {
             _ => return,
         };
         self.add_weapon(id, &crate::wire::latin1(&name));
+    }
+
+    /// `PLI_TOWEAPON` (25), which 1.21 to 1.37 send for a weapon they
+    /// hold: `GCHAR` length and the name, then the image and script as in
+    /// `PLO_NPCWEAPONADD`. Only the name is read. The player keeps the
+    /// weapon when the world already has it, or when an NPC in the
+    /// player's level gives it with `toweapons` (then the world's copy is
+    /// made from that NPC, as for `PLI_WEAPONADD` type 1). A script the
+    /// client wrote itself is never kept or passed on. GServer 1.3 adds
+    /// the weapon to the account the same way (`docs/ORIGINAL-SERVERS.md`).
+    fn weapon_upload(&mut self, id: u16, raw: &[u8]) {
+        let Some(p) = self.players.get(&id) else {
+            return;
+        };
+        let Some((&n, rest)) = raw.split_first() else {
+            return;
+        };
+        let Some(name) = rest.get(..usize::from(n.wrapping_sub(0x20))) else {
+            return;
+        };
+        let name = latin1_text(name).trim().to_string();
+        if name.is_empty() {
+            return;
+        }
+        if crate::weapons::default_id(&name).is_none() && self.weapons.get(&name).is_none() {
+            let giver = self.npcs.get(&p.level).and_then(|l| {
+                l.iter().find(|npc| {
+                    npc.script.as_ref().is_some_and(|s| {
+                        crate::weapons::toweapons_name(s.prepared().source())
+                            .iter()
+                            .any(|w| w.eq_ignore_ascii_case(&name))
+                    })
+                })
+            });
+            let Some(npc) = giver else {
+                eprintln!("player {id}: weapon upload {name} refused: no such weapon and no NPC here gives it");
+                return;
+            };
+            let source = npc
+                .script
+                .as_ref()
+                .map(|s| s.prepared().source().to_string())
+                .unwrap_or_default();
+            let image = npc
+                .props
+                .get(&crate::npcs::IMAGE)
+                .and_then(|v| v.get(1..))
+                .map(latin1_text)
+                .unwrap_or_default();
+            self.weapons
+                .add(crate::weapons::Weapon::new(&name, &image, &source));
+        }
+        let Some(p) = self.players.get_mut(&id) else {
+            return;
+        };
+        if !p.weapons.iter().any(|w| w.eq_ignore_ascii_case(&name)) {
+            p.weapons.push(name);
+        }
+    }
+
+    /// `PLI_PRIVATEMESSAGE` (28) from a player: a count, that many ids
+    /// and the text (`GCHAR`s from a build whose player id is one byte,
+    /// else `GSHORT`s). Each listed player online gets it in the form
+    /// their build reads (`others::private_message`). As on GServer 1.3:
+    /// a text over [`MAX_PM`] bytes is refused with an admin message, and
+    /// a listed player whose build reads no private messages makes the
+    /// server tell the sender so (`PLO_PRIVATEMESSAGE` with that id and
+    /// a `"Server message:"`). Ids that are not online are passed over.
+    fn player_pm(&mut self, id: u16, raw: &[u8]) {
+        let Some(p) = self.players.get(&id) else {
+            return;
+        };
+        let narrow = others::one_byte_id(p.version);
+        let Some((to, text)) = parse_pm(raw, narrow) else {
+            return;
+        };
+        if text.len() > MAX_PM {
+            if p.version
+                .profile()
+                .protocol
+                .plo
+                .contains(crate::rc::PLO_RC_ADMINMESSAGE)
+            {
+                let mut b = b"Server message:".to_vec();
+                b.push(0xA7);
+                b.extend_from_slice(b"Your message was too long.");
+                let _ = p
+                    .outbox
+                    .send(vec![crate::wire::msg(crate::rc::PLO_RC_ADMINMESSAGE, &b)]);
+            }
+            return;
+        }
+        let nick = p
+            .props
+            .values()
+            .get(&0)
+            .and_then(|v| v.get(1..))
+            .unwrap_or_default()
+            .to_vec();
+        let account = crate::wire::latin1(&p.account);
+        let sender = p.version;
+        let mut back = Vec::new();
+        let mut done = HashSet::new();
+        for t in to {
+            if t == id || !done.insert(t) {
+                continue;
+            }
+            let Some(o) = self.players.get(&t) else {
+                continue;
+            };
+            if o.version
+                .profile()
+                .protocol
+                .plo
+                .contains(PLO_PRIVATEMESSAGE)
+            {
+                let m = others::private_message(o.version, id, &nick, &account, text);
+                let _ = o.outbox.send(vec![m]);
+            } else if let Some(m) = others::server_message(sender, t, OLD_BUILD_PM) {
+                back.extend(m);
+            }
+        }
+        if !back.is_empty() {
+            if let Some(p) = self.players.get(&id) {
+                let _ = p.outbox.send(vec![back]);
+            }
+        }
+    }
+
+    /// `PLI_REQUESTUPDATEBOARD` (130): the level name, its mod time and a
+    /// rectangle. No server's answer is known (GServer-v2 sends nothing,
+    /// and neither 1999 server has the id), so this one sends the kept
+    /// changes of that level that touch the rectangle, the same messages
+    /// an arriving player gets (`PLO_BOARDMODIFY`, or 186 on a gmap). A
+    /// level the player is not in, or has no changes, gets nothing.
+    fn request_board(&mut self, id: u16, raw: &[u8]) {
+        let Some(p) = self.players.get(&id) else {
+            return;
+        };
+        let Some(r) = crate::board::UpdateRequest::parse(raw) else {
+            return;
+        };
+        let level = r.level.to_ascii_lowercase();
+        let place = self.gmaps.find(&level);
+        let Some(form) = board_form(p, &level, place.as_ref()) else {
+            return;
+        };
+        let Some(changes) = self.boards.get(&level) else {
+            return;
+        };
+        let msgs = changes.messages_in(r.rect(), form);
+        if !msgs.is_empty() {
+            let _ = p.outbox.send(vec![msgs.concat()]);
+        }
     }
 
     /// `SERVER_FLAG`: kept, and set or unset for everyone online.
@@ -3731,6 +3959,30 @@ mod tests {
 }
 
 /// Player prop 32: alignment points (AP), 0 to 100.
+/// The longest private message text taken, in bytes (GServer 1.3).
+const MAX_PM: usize = 1024;
+/// What a sender is told when a listed player's build reads no private
+/// messages (GServer 1.3's wording, `docs/ORIGINAL-SERVERS.md`).
+const OLD_BUILD_PM: &str =
+    "The player cannot read the message because he/she has an older Graal version.";
+
+/// `PLI_PRIVATEMESSAGE`: the ids and the text. `narrow` reads the count
+/// and the ids as one `GCHAR` each.
+fn parse_pm(raw: &[u8], narrow: bool) -> Option<(Vec<u16>, &[u8])> {
+    let w = if narrow { 1 } else { 2 };
+    let read = |b: &[u8]| -> Option<u16> {
+        if narrow {
+            b.first().map(|c| u16::from(c.wrapping_sub(0x20)))
+        } else {
+            seihai_core::protocol::read_gshort(b.get(..2)?)
+        }
+    };
+    let n = usize::from(read(raw)?);
+    let ids = raw.get(w..w + n * w)?;
+    let to = ids.chunks(w).filter_map(read).collect();
+    Some((to, &raw[w + n * w..]))
+}
+
 const ALIGNMENT: u8 = 32;
 
 /// The counted props the items check guards: max hearts, hearts (in
@@ -3812,16 +4064,21 @@ fn with_id(props: &[u8], id: u16) -> Vec<u8> {
     out
 }
 
-/// The player is sent `PLO_BOARDMODIFY` (7): a build that reads it, off a
-/// gmap. On a gmap the change belongs to a cell, which 7 cannot name
-/// (that is `PLO_BOARDMODIFY2`, 186, not sent yet).
-fn reads_board_modify(p: &Online) -> bool {
-    p.gmap.is_none()
-        && p.version
-            .profile()
-            .protocol
-            .plo
-            .contains(crate::board::PLO_BOARDMODIFY)
+/// How `p` reads a change to `level` (which is the gmap cell `at`, if on
+/// a gmap): `PLO_BOARDMODIFY` (7) off a gmap in that level,
+/// `PLO_BOARDMODIFY2` (186) on the same gmap in that cell or one next to
+/// it, else not at all (`board.rs`).
+fn board_form(p: &Online, level: &str, at: Option<&Place>) -> Option<crate::board::Form> {
+    use crate::board::{Form, PLO_BOARDMODIFY, PLO_BOARDMODIFY2};
+    let plo = &p.version.profile().protocol.plo;
+    match (&p.gmap, at) {
+        (Some(mine), Some(at)) if mine.gmap == at.gmap => {
+            let near = mine.cell.0.abs_diff(at.cell.0) <= 1 && mine.cell.1.abs_diff(at.cell.1) <= 1;
+            (near && plo.contains(PLO_BOARDMODIFY2)).then_some(Form::Cell(at.cell.0, at.cell.1))
+        }
+        (None, _) if p.level == level => plo.contains(PLO_BOARDMODIFY).then_some(Form::Level),
+        _ => None,
+    }
 }
 
 /// NPC messages for a player in `level`. A gmap client keeps NPCs under

@@ -1411,6 +1411,18 @@ impl Session {
                 PLI_NPCPROPS => server.world.npc_props(self.id, payload),
                 crate::board::PLI_BOARDMODIFY => server.world.board_modify(self.id, payload),
                 PLI_WEAPONADD => server.world.weapon_add(self.id, payload),
+                PLI_TOWEAPON => server.world.weapon_upload(self.id, payload),
+                PLI_PRIVATEMESSAGE => server.world.private_message(self.id, payload),
+                PLI_REQUESTUPDATEBOARD => server.world.request_board(self.id, payload),
+                // A server warp: the listserver says where that server
+                // is, and the answer comes back through `link_out`.
+                PLI_SERVERWARP => match &server.listlink {
+                    Some(l) => l.server_info(self.id, payload),
+                    None if first_time && server.verbose => {
+                        server.log(peer, "server warp: no listserver link")
+                    }
+                    None => {}
+                },
                 PLI_BADDYPROPS => server.world.baddy_props(self.id, payload),
                 crate::horses::PLI_HORSEADD => server.world.horse(self.id, true, payload),
                 crate::horses::PLI_HORSEDEL => server.world.horse(self.id, false, payload),
@@ -1564,6 +1576,13 @@ impl Session {
                         &latin1(&account),
                         quoted(&text).as_bytes(),
                     ));
+                }
+                // The listserver's answer to `PLI_SERVERWARP`, unchanged,
+                // to the builds that read 178.
+                Delivery::ServerWarp(text) => {
+                    if prof.protocol.plo.contains(PLO_SERVERWARP) {
+                        out.extend(msg(PLO_SERVERWARP, &text));
+                    }
                 }
                 Delivery::Image { kind, name } => {
                     server.remember_image(&self.account, kind, &name);

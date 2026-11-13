@@ -24,6 +24,13 @@
 //! takes an NPC weapon only when that NPC is in the player's level and its
 //! script has `toweapons` with that name. A name the world has no file
 //! for gets one from the NPC's image and script.
+//!
+//! `PLI_TOWEAPON` (25) is the same ask from 1.21 to 1.37, which send it
+//! for every weapon they hold: the name, then an image and the client's
+//! own copy of the script. Only the name is read. The player keeps the
+//! weapon when the world has it, or when an NPC in the level gives it
+//! with `toweapons` (the world's copy then comes from that NPC); the
+//! uploaded script is never kept or passed on.
 
 use crate::npcs::{Script, LEVEL_ERA};
 use crate::wire::ids::{PLO_DEFAULTWEAPON, PLO_NPCWEAPONADD};

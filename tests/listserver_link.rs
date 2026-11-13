@@ -558,3 +558,41 @@ fn stored_alignment_and_login_type_reach_the_list_link() {
     let add = next_msg(&seen, 14);
     assert_eq!(plyradd_alignment(&add), Some(0), "{add:?}");
 }
+
+/// A server warp (`PLI_SERVERWARP` 41): the gserver asks the listserver
+/// where that server is (`SERVERINFO` 25, the player's id and the name),
+/// and passes the answer (`SVI_SERVERINFO` 18) to the player as
+/// `PLO_SERVERWARP` (178), unchanged.
+#[test]
+fn a_server_warp_asks_the_listserver_and_passes_the_answer_on() {
+    let w = world("listlink-warp", "*\n");
+    let FakeList {
+        addr: ls,
+        seen,
+        tap: _tap,
+        inject,
+    } = fake_listserver(ServerIdentity::generate());
+    let (addr, server) = start_with_link(
+        &w,
+        &format!("listserver = {ls}\nlistserver_accounts = true\ncreate_accounts = false\n"),
+    );
+    wait_connected(&server);
+    let mut c = common::raw::RawClient::join(&addr, ClientVersion::V231, "warper", |m| {
+        m.iter().any(|(id, _)| *id == 6)
+    });
+    let add = next_msg(&seen, 14);
+    let player = &add[..2];
+
+    c.send(41, b"Other World");
+    let ask = next_msg(&seen, 25);
+    assert_eq!(&ask[..2], player, "{ask:?}");
+    assert_eq!(&ask[2..], b"Other World");
+
+    let mut answer = vec![18 + 32];
+    answer.extend(player);
+    answer.extend(b"0,Other World,127.0.0.1,14900\n");
+    inject.send(zlib_frame(&answer)).unwrap();
+    let got = c.until("the warp", |m| m.iter().any(|(id, _)| *id == 178));
+    let (_, p) = got.iter().find(|(id, _)| *id == 178).unwrap();
+    assert_eq!(p, b"0,Other World,127.0.0.1,14900");
+}

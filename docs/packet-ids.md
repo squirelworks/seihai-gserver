@@ -24,8 +24,7 @@ still finds this table:
 
 25 is `PLI_TOWEAPON`: the weapon upload from 1.21 to 1.37 (name, image,
 full script). `PLI_WEAPONADD` is 33, which 1.38 and later send. Both are
-accepted and not answered until weapons are a stage, and neither is logged
-as unhandled.
+read (`weapons.rs`); 25's script is never used.
 
 ## Sent
 
@@ -33,6 +32,8 @@ as unhandled.
 |---|---|---|
 | S→C 104 | `PLO_FILEDECRYPTKEY` | file name, byte 1, two GINT5; the DES key, before a `.gpake` |
 | S→C 131 | `PLO_NPCBYTECODE` | behind `PLO_RAWDATA` (the count covers the id byte to the end): GINT3 NPC id, then the GS2 bytecode file, ending in the compiler's `\n`. Sent right after the NPC's `PLO_NPCPROPS`, in the same frame, to builds whose profile runs GS2; the client drops it for an NPC it has not been sent. Layout from seihai's `documentation/gs2-receive.md`; no capture of a real 131 yet |
+| S→C 178 | `PLO_SERVERWARP` | comma text `0,name,host,port`: the lobby's own, or the listserver's `SVI_SERVERINFO` answer to a `PLI_SERVERWARP` (41) passed on unchanged |
+| S→C 186 | `PLO_BOARDMODIFY2` | `GCHAR` cell column and row, then `PLO_BOARDMODIFY`'s block; no trailer |
 
 ## Named, not sent yet
 

@@ -345,12 +345,16 @@ pub mod ids {
     /// An image update. Confirmed: read and not answered.
     pub const PLI_SHOWIMG: u8 = 24;
     /// `{25}{name}{image}{script}`, same shape as a weapon add from the server.
-    /// Confirmed: 1.21 to 1.37 send this for every weapon they hold. Accepted
-    /// and not answered until weapons are a stage.
+    /// Confirmed: 1.21 to 1.37 send this for every weapon they hold. The
+    /// name is read; the script and image are not trusted (`world.rs`).
     /// Seihai name until 2026-11-11: `PLI_WEAPONUPLOAD`.
     pub const PLI_TOWEAPON: u8 = 25;
     /// A hurt player. Confirmed.
     pub const PLI_HURTPLAYER: u8 = 26;
+    /// A count, that many player ids, then the tokenized text. The count
+    /// and ids are one `GCHAR` each from builds whose remote-player id is
+    /// one byte (`others::one_byte_id`), else `GSHORT`s. Confirmed.
+    pub const PLI_PRIVATEMESSAGE: u8 = 28;
     /// An explosion. Confirmed.
     pub const PLI_EXPLOSION: u8 = 27;
     /// GINT5 modification time, then a warp. Confirmed.
@@ -370,6 +374,10 @@ pub mod ids {
     pub const PLI_LANGUAGE: u8 = 37;
     /// Two hashes. Confirmed: read and not answered. Never required.
     pub const PLI_TAMPERCHECK: u8 = 39;
+    /// The name of a server to warp to. Confirmed (2.31 lab, request
+    /// injected): the game server asks the listserver and answers with
+    /// [`PLO_SERVERWARP`].
+    pub const PLI_SERVERWARP: u8 = 41;
     /// The process list, answering [`PLO_LISTPROCESSES`]. Confirmed: read and not answered.
     pub const PLI_PROCESSLIST: u8 = 44;
     /// Entered a level. Confirmed: read and not answered.
@@ -382,6 +390,12 @@ pub mod ids {
     pub const PLI_UPDATEGANI: u8 = 157;
     /// The script name. Confirmed: the client asks again when its cache does not match.
     pub const PLI_UPDATESCRIPT: u8 = 158;
+    /// `GCHAR` length and a level name, `GINT5` mod time, then `GSHORT` x,
+    /// y, width and height. Layout from the notes (4.04r2 on); no server
+    /// answer is known (GServer-v2 logs it and sends nothing, and the 1999
+    /// servers have no such id). This one sends the kept board changes
+    /// inside that rectangle (`board.rs`).
+    pub const PLI_REQUESTUPDATEBOARD: u8 = 130;
     /// Game clients: `!` and a GSHORT of the [`PLO_PING`] value, capped at
     /// 28671. RCs: empty, every 60 s. Confirmed layout. Inferred that it is a ping.
     /// Seihai name until 2026-11-11: `PLI_PING`.
@@ -394,7 +408,6 @@ pub mod ids {
             id,
             PLI_LANGUAGE
                 | PLI_PACKETCOUNT
-                | PLI_TOWEAPON
                 | PLI_WEAPONADD
                 | PLI_TAMPERCHECK
                 | PLI_PROCESSLIST
@@ -473,7 +486,6 @@ mod tests {
     fn weapon_ids_and_the_quiet_set() {
         assert_eq!(ids::PLI_TOWEAPON, 25);
         assert_eq!(ids::PLI_WEAPONADD, 33);
-        assert!(ids::stage1_quiet(ids::PLI_TOWEAPON));
         assert!(ids::stage1_quiet(ids::PLI_WEAPONADD));
         assert!(ids::stage1_quiet(ids::PLI_UPDATEGANI));
         assert!(!ids::stage1_quiet(7));
