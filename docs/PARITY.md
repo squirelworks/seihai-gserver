@@ -32,7 +32,7 @@ test) and the lab notes.
 | Flat-file accounts, saving on logout and on stop | lab | `save_on_stop.rs` | |
 | Listserver link: registering, the player count, account checks | lab | `listserver_link.rs`; `lab/listserver-link-2026-10-31.md`, `lab/listlink-stage3-2026-11-01.md` | |
 | Secure login (`SEI00001`) | lab | `secure_login.rs`; `lab/secure-login-2026-10-31.md` | Seihai's own. GServer-v2 has its own secure login, which is a different scheme |
-| Bans: account, IP | tests | `items_bans.rs`, `rc_accounts.rs` | Machine-field bans for 5.00+ are not started (#56, "Later") |
+| Bans: account, address, machine | tests | `items_bans.rs`, `rc_accounts.rs`, `machine_bans.rs` | Machine bans use the machine fields that 5.00+ send on the login line. Staff accounts are not kept out by a machine or address ban (#99) |
 | Ping (`PLO_PING` 108 / `PLI_PONG` 162) | tests | `ping.rs` | The lab capture is open (#56, "Lab") |
 | Word filter | no | | |
 | UPnP port forwarding | no | | Low priority: `seihai-servertools setup` covers going public |
