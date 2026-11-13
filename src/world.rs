@@ -185,6 +185,8 @@ pub enum WorldIn {
     HurtPlayer { player: u16, raw: Vec<u8> },
     /// `PLI_CLAIMPKER` (14): `GSHORT killer`, from the player who died.
     ClaimPker { player: u16, raw: Vec<u8> },
+    /// `PLI_BOARDMODIFY`, as sent.
+    BoardModify { player: u16, raw: Vec<u8> },
     /// A message passed on to the others in the player's level as `out`,
     /// with the player's id first when `named` (bombs, shots, blasts).
     Relay {
@@ -361,6 +363,7 @@ impl World {
                 saver: None,
                 anticheat: None,
                 floor: HashMap::new(),
+                boards: HashMap::new(),
                 npcs: HashMap::new(),
                 last_npc: 0,
                 baddies: HashMap::new(),
@@ -467,6 +470,14 @@ impl World {
             player,
             out,
             named,
+            raw: raw.to_vec(),
+        });
+    }
+
+    /// `PLI_BOARDMODIFY` (1), as sent.
+    pub fn board_modify(&self, player: u16, raw: &[u8]) {
+        let _ = self.tx.send(WorldIn::BoardModify {
+            player,
             raw: raw.to_vec(),
         });
     }
@@ -845,6 +856,8 @@ pub struct WorldTask {
     anticheat: Option<Arc<AntiCheat>>,
     /// Items lying in each level (lower-case name).
     floor: HashMap<String, Vec<FloorItem>>,
+    /// Tile changes to each level's board (lower-case name), `board.rs`.
+    boards: HashMap<String, crate::board::Changes>,
     /// The NPCs of each level read so far (lower-case name).
     npcs: HashMap<String, Vec<Npc>>,
     last_npc: u32,
@@ -886,6 +899,7 @@ impl WorldTask {
                 _ = tick.tick() => {
                     self.flush();
                     self.baddy_timers(Instant::now());
+                    self.board_timers(Instant::now());
                 }
                 _ = check.tick() => self.check_levels(),
             }
@@ -1006,6 +1020,7 @@ impl WorldTask {
                 raw,
             } => self.relay(player, out, named, &raw),
             WorldIn::LevelWarp(w) => self.warp(w),
+            WorldIn::BoardModify { player, raw } => self.board_modify(player, &raw),
             WorldIn::OpenChest { player, x, y } => self.open_chest(player, x, y),
             WorldIn::Item {
                 player,
@@ -1848,6 +1863,17 @@ impl WorldTask {
                 let _ = me.outbox.send(vec![m]);
             }
         }
+        // The level's tile changes (`board.rs`).
+        if reads_board_modify(me) {
+            for m in self
+                .boards
+                .get(&me.level)
+                .map(|c| c.messages())
+                .unwrap_or_default()
+            {
+                let _ = me.outbox.send(vec![m]);
+            }
+        }
         // The level's leader, if it has none, and its baddies.
         if self.leader_of(&me.level).is_none() {
             self.leaders.insert(me.level.clone(), id);
@@ -2080,6 +2106,52 @@ impl WorldTask {
     }
 
     /// Deaths that are over, and dead baddies that are back.
+    /// A block of tiles a player changed in their level: kept, and sent
+    /// to the others there (`board.rs`).
+    fn board_modify(&mut self, id: u16, raw: &[u8]) {
+        let Some(p) = self.players.get(&id) else {
+            return;
+        };
+        let Some(block) = crate::board::Block::parse(raw) else {
+            return;
+        };
+        let level = p.level.clone();
+        let file = self
+            .loaded
+            .get(&level)
+            .map(|l| l.board.clone())
+            .unwrap_or_default();
+        let m = block.message();
+        self.boards
+            .entry(level.clone())
+            .or_default()
+            .add(block, &file, Instant::now());
+        for (&other, o) in &self.players {
+            if other != id && o.level == level && reads_board_modify(o) {
+                let _ = o.outbox.send(vec![m.clone()]);
+            }
+        }
+    }
+
+    /// Changes whose time is up grow back for everyone in the level.
+    fn board_timers(&mut self, now: Instant) {
+        let mut back = Vec::new();
+        for (level, c) in &mut self.boards {
+            let msgs = c.expire(now);
+            if !msgs.is_empty() {
+                back.push((level.clone(), msgs));
+            }
+        }
+        self.boards.retain(|_, c| !c.is_empty());
+        for (level, msgs) in back {
+            for o in self.players.values() {
+                if o.level == level && reads_board_modify(o) {
+                    let _ = o.outbox.send(msgs.clone());
+                }
+            }
+        }
+    }
+
     fn baddy_timers(&mut self, now: Instant) {
         // (level, baddy, the props that changed, or none for the whole baddy)
         type Due = (String, u8, Option<Vec<(u8, Vec<u8>)>>);
@@ -3387,6 +3459,18 @@ fn with_id(props: &[u8], id: u16) -> Vec<u8> {
 /// level is what the login burst made active). Real 2.22 neither draws nor
 /// moves a gmap level's NPC sent under the level's own name (Wine lab,
 /// 2026-11-05).
+/// The player is sent `PLO_BOARDMODIFY` (7): a build that reads it, off a
+/// gmap. On a gmap the change belongs to a cell, which 7 cannot name
+/// (that is `PLO_BOARDMODIFY2`, 186, not sent yet).
+fn reads_board_modify(p: &Online) -> bool {
+    p.gmap.is_none()
+        && p.version
+            .profile()
+            .protocol
+            .plo
+            .contains(crate::board::PLO_BOARDMODIFY)
+}
+
 fn under_gmap(gmap: Option<&Place>, level: &str, msgs: Vec<Vec<u8>>) -> Vec<Vec<u8>> {
     let Some(g) = gmap else {
         return msgs;
