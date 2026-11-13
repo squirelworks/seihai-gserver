@@ -434,6 +434,9 @@ impl Conn {
         };
         let version = burst::shape_version(login.version, login.gen);
         let mut codec = Codec::new(login.gen, login.key, login.version);
+        if login::is_gen4(login.client_type) {
+            codec = codec.gen4();
+        }
         if !self.server.login_rate.allow(self.peer.ip()) {
             self.server.log(
                 &self.peer,
@@ -451,7 +454,7 @@ impl Conn {
             .is_some_and(|v| v.profile().protocol.gen5_long_frames);
         let label = login::build_label(login.client_type, login.version);
         let who = format!(
-            "{} [{}{} {}, {:?}]",
+            "{} [{}{} {}, {}]",
             login.account,
             if secure_at.is_some() {
                 "SEI00001 inner "
@@ -460,7 +463,11 @@ impl Conn {
             },
             login.token,
             label,
-            login.gen
+            if login::is_gen4(login.client_type) {
+                "Gen4".to_string()
+            } else {
+                format!("{:?}", login.gen)
+            }
         );
         if secure_at.is_none() && cfg.require_secure_login {
             self.server.log(

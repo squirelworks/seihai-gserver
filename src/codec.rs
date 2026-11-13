@@ -7,6 +7,7 @@
 //! |---|---|---|---|
 //! | 2 | 1.21 to 1.39 | zlib | zlib |
 //! | 3 | 1.41 to 2.17 | zlib, one LCG byte inserted in each message | zlib |
+//! | 4 | 2.19 to 2.21, 3.0, 3.01 (login type 4) | bz2 body, partial XOR, no comp byte | the same, own iterator |
 //! | 5 | 2.22 to 6.x | comp byte + partial XOR of the compressed body | the same, own iterator |
 //!
 //! The ciphers are `seihai-core`'s ([`Gen3`], [`Gen5`]), the ones the
@@ -37,6 +38,9 @@ pub struct Codec {
     out5: Option<Gen5>,
     /// 5.12 sends (and so we send it) every body compressed.
     compress_all: bool,
+    /// Gen 4 (login type 4): the gen-5 cipher on bz2 bodies with no
+    /// compression byte ([`Self::gen4`]).
+    gen4: bool,
     /// Gen-3 messages whose inserted byte did not check out, in a row.
     pub bad_in_a_row: u32,
 }
@@ -59,8 +63,16 @@ impl Codec {
             in5: (gen == EncryptionGen::Gen5).then(g5),
             out5: (gen == EncryptionGen::Gen5).then(g5),
             compress_all: round_down,
+            gen4: false,
             bad_in_a_row: 0,
         }
+    }
+
+    /// The same gen-5 codec with gen-4 frames: every body bz2, no
+    /// compression byte, the XOR as for a compressed gen-5 body.
+    pub fn gen4(mut self) -> Self {
+        self.gen4 = self.out5.is_some();
+        self
     }
 
     pub fn gen(&self) -> EncryptionGen {
@@ -70,6 +82,13 @@ impl Codec {
     /// One whole frame to write for `body` (one or more messages).
     pub fn encode(&mut self, body: &[u8]) -> io::Result<Vec<u8>> {
         let frame = match self.out5.as_mut() {
+            Some(g) if self.gen4 => {
+                let packed = bz2_compress(body)?;
+                let mut out = Vec::with_capacity(packed.len() + 2);
+                push_len(&mut out, packed.len())?;
+                out.extend_from_slice(&g.encode(packed, Gen5Comp::Bz2));
+                out
+            }
             Some(g) => {
                 // Small bodies go plain; the rest go zlib at the fast level,
                 // which every gen-5 build reads at any size. bz2 packs a big
@@ -111,6 +130,7 @@ impl Codec {
     /// The body of one frame the client sent (the bytes after its length).
     pub fn decode(&mut self, raw: &[u8]) -> io::Result<Vec<u8>> {
         match self.in5.as_mut() {
+            Some(g) if self.gen4 => bz2_decompress(&g.decode(raw.to_vec(), Gen5Comp::Bz2)),
             Some(g) => {
                 let (&c, rest) = raw.split_first().ok_or_else(|| bad("empty gen-5 frame"))?;
                 let comp = match c {
@@ -258,6 +278,25 @@ mod tests {
                 let got = read_frame(&mut frame.as_slice(), &mut client).unwrap();
                 assert_eq!(got, body, "{v:?}");
             }
+        }
+    }
+
+    /// Gen 4 (login type 4, 3.0 and 3.01): bz2 bodies with no compression
+    /// byte, XORed as a compressed gen-5 body, both ways.
+    #[test]
+    fn gen4_frames_both_ways() {
+        let key = 0x2a;
+        let mut server = Codec::new(EncryptionGen::Gen5, key, None).gen4();
+        let mut client_in = Gen5::new(key);
+        let mut client_out = Gen5::new(key);
+        for body in [b"a\n".to_vec(), vec![b'x'; 100], vec![b'y'; 9000]] {
+            let frame = server.encode(&body).unwrap();
+            let len = u16::from_be_bytes([frame[0], frame[1]]) as usize;
+            assert_eq!(len, frame.len() - 2, "no compression byte in the length");
+            let plain = client_in.decode(frame[2..].to_vec(), Gen5Comp::Bz2);
+            assert_eq!(bz2_decompress(&plain).unwrap(), body);
+            let sent = client_out.encode(bz2_compress(&body).unwrap(), Gen5Comp::Bz2);
+            assert_eq!(server.decode(&sent).unwrap(), body);
         }
     }
 
