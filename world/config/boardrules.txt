@@ -1,0 +1,8 @@
+# Board changes a player may make, for the board check (anticheat.board,
+# off by default). One rule a line:
+#   name  width height  tiles before  ->  tiles after
+# Tiles are tile indexes, row by row; `*` before the arrow takes any tiles.
+#
+# A cut bush as real 2.22 writes it over the stock bush tiles
+# (lab, 2026-11-13, #107).
+bush222  2 2  2 3 18 19  ->  677 678 693 694
