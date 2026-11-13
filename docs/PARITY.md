@@ -82,9 +82,10 @@ test) and the lab notes.
 | NPCs a client puts or deletes (`PLI_PUTNPC`, `PLI_NPCDEL`) | no | | |
 | Trigger actions (`PLI_TRIGGERACTION`, `gr.*` commands) | no | | `PLO_TRIGGERACTION` needs a capture (#53) |
 | Weapons: `PLI_WEAPONADD`, `PLI_TOWEAPON` | partial | `weapons.rs`, `npc_messages.rs` | `PLI_WEAPONADD` gives default weapons and level-NPC weapons (`toweapons`), kept in `weapons/` and on the account. GS1 weapons go only to builds that run GS1. `PLI_TOWEAPON` (25, 1.21 to 1.37) keeps the weapon when the world has it or an NPC in the level gives it; the uploaded script is never used (`weapons.rs`) |
-| Weapon scripts and the weapon cache (`PLO_NPCWEAPONSCRIPT` 140, `PLO_WEAPONHASH` 193) | no | | Named in `packet-ids.md`, not sent |
+| GS2 weapons and the weapon cache (`PLO_WEAPONHASH` 193, `PLI_UPDATESCRIPT` 158, 132) | tests | `weapons.rs`; `tests/weapons.rs` | To builds that run GS2 and read 193 and 132 behind `PLO_RAWDATA` (4.04r2 to 4.20r8, the Mac 5.12): 33 with name and image, 193 with the CRC-32 of the bytecode; a 158 for a held weapon gets the bytecode in 132. The order and CRC are from GServer-v2 with real 4.20r8 (lab, 2026-11-13); no real client has been run against this server's copy yet |
+| `PLO_NPCWEAPONSCRIPT` (140) | no | | GServer-v2 never sent it to 4.20r8. 5.00r7, 5.12 and 5.24 on still get no scripted weapon |
 | `PLI_NPCWEAPONDEL` | no | | |
-| Classes and GS2 script updates (`PLI_UPDATECLASS`, `UPDATESCRIPT`, `UPDATEGANI`) | no | | |
+| Classes and GS2 script updates (`PLI_UPDATECLASS`, `UPDATEGANI`) | no | | `PLI_UPDATESCRIPT` is answered for weapons (above) |
 | Server-side scripts (the NPC-server) | tests | `npc_link.rs`, `npc_messages.rs`, `nc.rs`; `lab/npclink-2026-10-31.md`, `lab/nc-2026-11-12.md` | A separate program, `seihai-npcserver`, runs GS1. GServer-v2 runs GS2 server scripts in-process; there is no GS2 server engine here |
 
 ## Files and packages
@@ -128,8 +129,8 @@ From the rows above, in the roadmap's order:
 
 1. **Lab runs** for the lobby, weapons and board changes, which are built
    and covered by loopback tests only.
-2. **Weapons:** weapon scripts for GS2 builds (140) and the weapon cache
-   (193). Both wait for a capture of the fork sending them.
+2. **Weapons:** a real 4.20r8 against this server's 193 and 132 (lab).
+   140 for 5.24 on waits for a capture of the fork sending it.
 3. **Board changes:** lab captures of a pushed block and a dug hole, so a
    sample `boardrules.txt` can list them (#107).
 4. **Trigger actions**, once `PLO_TRIGGERACTION` has a capture.

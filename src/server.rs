@@ -1416,6 +1416,7 @@ impl Session {
                 crate::board::PLI_BOARDMODIFY => server.world.board_modify(self.id, payload),
                 PLI_WEAPONADD => server.world.weapon_add(self.id, payload),
                 PLI_TOWEAPON => server.world.weapon_upload(self.id, payload),
+                PLI_UPDATESCRIPT => server.world.update_script(self.id, payload),
                 PLI_PRIVATEMESSAGE => server.world.private_message(self.id, payload),
                 PLI_REQUESTUPDATEBOARD => server.world.request_board(self.id, payload),
                 // A server warp: the listserver says where that server

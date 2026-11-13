@@ -189,3 +189,93 @@ fn a_weapon_upload_is_kept_only_when_the_level_gives_it() {
     assert!(p.windows(8).any(|w| w == b"toweapon"), "{p:?}");
     assert!(!p.windows(6).any(|w| w == b"forged"));
 }
+
+/// A 4.20r8 holding a weapon gets `PLO_NPCWEAPONADD` (33) with its name
+/// and image, then `PLO_WEAPONHASH` (193). When it asks with
+/// `PLI_UPDATESCRIPT` (158) it gets the bytecode in `PLO_UNKNOWN132`
+/// behind `PLO_RAWDATA`, whose CRC-32 is the one 193 gave. A name it does
+/// not hold is not answered. (The order GServer-v2 used with a real
+/// 4.20r8, lab 2026-11-13.)
+#[test]
+fn a_gs2_build_gets_the_weapon_hash_and_the_bytecode_it_asks_for() {
+    use common::raw::RawClient;
+    let w = world("weaponhash", "*\n");
+    std::fs::create_dir_all(w.join("weapons")).unwrap();
+    std::fs::write(
+        w.join("weapons/weaponLantern.txt"),
+        "GRAWP001\nREALNAME Lantern\nIMAGE lantern.png\nSCRIPT\nif (weaponfired) {\n  say2 light;\n}\nSCRIPTEND\n",
+    )
+    .unwrap();
+    let (addr, _server) = start(&w);
+    let v = ClientVersion::V420R8;
+    let in_level = |m: &common::raw::Seen| m.iter().any(|(id, _)| *id == 6);
+
+    // The first login makes the account; then it holds the weapon.
+    drop(RawClient::join(&addr, v, "gs2", in_level));
+    let account = w.join("accounts/gs2.txt");
+    let end = Instant::now() + Duration::from_secs(10);
+    let text = loop {
+        let text = std::fs::read_to_string(&account).unwrap_or_default();
+        if !text.is_empty() {
+            break text;
+        }
+        assert!(Instant::now() < end, "account not saved");
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    std::fs::write(&account, format!("{text}WEAPON Lantern\n")).unwrap();
+
+    let end = Instant::now() + Duration::from_secs(10);
+    let hash = |m: &common::raw::Seen| m.iter().any(|(id, _)| *id == 193);
+    let mut c = loop {
+        // The first session may still be leaving.
+        match std::panic::catch_unwind(|| RawClient::join(&addr, v, "gs2", hash)) {
+            Ok(c) => break c,
+            Err(e) if Instant::now() >= end => std::panic::resume_unwind(e),
+            Err(_) => std::thread::sleep(Duration::from_millis(200)),
+        }
+    };
+    let add = c
+        .seen
+        .iter()
+        .position(|(id, p)| *id == 33 && p.starts_with(b"'Lantern"))
+        .unwrap();
+    let (_, add_p) = &c.seen[add];
+    assert_eq!(add_p.as_slice(), b"'Lantern +lantern.png");
+    let at = c.seen.iter().position(|(id, _)| *id == 193).unwrap();
+    assert!(add < at);
+    let (_, h) = &c.seen[at];
+    assert_eq!(&h[5..], b"Lantern");
+    let crc = h[..5].iter().fold(0u64, |a, b| a << 7 | u64::from(b - 32));
+
+    // A name the account does not hold gets nothing.
+    c.send(158, b"Evil");
+    c.send(158, b"Lantern");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut body = Vec::new();
+    // PLO_RAWDATA (`0x84`), its GINT3 count and `\n`, then 132 (`0xa4`).
+    let raw_at = |b: &[u8]| {
+        (0..b.len().saturating_sub(5))
+            .find(|&i| b[i] == 0x84 && b[i + 4] == b'\n' && b[i + 5] == 0xa4)
+    };
+    let found = loop {
+        if let Some(i) = raw_at(&body) {
+            break i;
+        }
+        assert!(Instant::now() < deadline, "no 132: {body:?}");
+        if let Ok(Ok(b)) = c.rx.recv_timeout(Duration::from_millis(100)) {
+            body.extend(b);
+        }
+    };
+    let n = body[found + 1..found + 4]
+        .iter()
+        .fold(0usize, |a, c| a << 7 | usize::from(c - 32));
+    let block = &body[found + 5..found + 5 + n];
+    assert_eq!(block[0], 132 + 32);
+    assert_eq!(&block[1..9], b"'Lantern");
+    let code = &block[9..];
+    assert!(code.ends_with(b"\n"));
+    let mut sum = flate2::Crc::new();
+    sum.update(code);
+    assert_eq!(u64::from(sum.sum()), crc);
+    assert!(!body.windows(4).any(|w| w == b"Evil"));
+}

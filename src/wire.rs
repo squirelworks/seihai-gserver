@@ -278,6 +278,15 @@ pub mod ids {
     /// `PLO_NPCPROPS`. Read by core's client reader; no original client
     /// has been seen running it. 3.153 and 4.x to 6.x (issue #45).
     pub const PLO_NPCBYTECODE: u8 = 131;
+    /// Behind [`PLO_RAWDATA`]: `GCHAR` length and a weapon name, then the
+    /// weapon's GS2 bytecode file (ending in the compiler's `\n`). The
+    /// answer to [`PLI_UPDATESCRIPT`]. Confirmed: GServer-v2 sends it to
+    /// real 4.20r8 after [`PLO_WEAPONHASH`], and the client caches the
+    /// body (lab, 2026-11-13). The lab note gives the message without its
+    /// framing; it goes behind `PLO_RAWDATA` here, as 131 does, because
+    /// the bytecode holds line feeds. Core names it `UNKNOWN132`; gs2lib's
+    /// name was not checked.
+    pub const PLO_UNKNOWN132: u8 = 132;
     // Named for a later stage. Not sent yet.
     /// `{108}{sub}{GSHORT value}`. Confirmed for sub 0: the client answers
     /// [`PLI_PONG`]. Sub 1 is stored and nothing that reads it was traced, so
@@ -297,6 +306,9 @@ pub mod ids {
     pub const PLO_ONLINEMODE: u8 = 168;
     /// `{193}{GINT5 crc32}{weapon name}`: use the cached weapon script when
     /// the CRC matches. Confirmed. 4.04r2 to 5.12. Not a modification time.
+    /// The CRC is CRC-32 of the whole bytecode file [`PLO_UNKNOWN132`]
+    /// carries, its final `\n` included (GServer-v2 to real 4.20r8, lab,
+    /// 2026-11-13).
     /// Seihai name until 2026-11-11: `PLO_WEAPONCRC`.
     pub const PLO_WEAPONHASH: u8 = 193;
     /// Empty. Confirmed: clears the loaded weapon and class scripts.
@@ -388,7 +400,9 @@ pub mod ids {
     /// [`PLI_WANTFILE`] for `idle.gani`, which already gets the file or a
     /// not-found. Read and not answered.
     pub const PLI_UPDATEGANI: u8 = 157;
-    /// The script name. Confirmed: the client asks again when its cache does not match.
+    /// The script name, as the rest of the message. Confirmed: the client
+    /// asks when its cache does not match [`PLO_WEAPONHASH`], and is
+    /// answered with [`PLO_UNKNOWN132`].
     pub const PLI_UPDATESCRIPT: u8 = 158;
     /// `GCHAR` length and a level name, `GINT5` mod time, then `GSHORT` x,
     /// y, width and height. Layout from the notes (4.04r2 on); no server
@@ -499,5 +513,6 @@ mod tests {
         assert_eq!(ids::PLO_NPCWEAPONSCRIPT, 140);
         assert_eq!(ids::PLO_LOADSCRIPT, 197);
         assert_eq!(ids::PLI_UPDATESCRIPT, 158);
+        assert_eq!(ids::PLO_UNKNOWN132, 132);
     }
 }

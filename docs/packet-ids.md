@@ -32,20 +32,26 @@ read (`weapons.rs`); 25's script is never used.
 |---|---|---|
 | S→C 104 | `PLO_FILEDECRYPTKEY` | file name, byte 1, two GINT5; the DES key, before a `.gpake` |
 | S→C 131 | `PLO_NPCBYTECODE` | behind `PLO_RAWDATA` (the count covers the id byte to the end): GINT3 NPC id, then the GS2 bytecode file, ending in the compiler's `\n`. Sent right after the NPC's `PLO_NPCPROPS`, in the same frame, to builds whose profile runs GS2; the client drops it for an NPC it has not been sent. Layout from seihai's `documentation/gs2-receive.md`; no capture of a real 131 yet |
+| S→C 132 | `PLO_UNKNOWN132` | behind `PLO_RAWDATA`: `GCHAR` length and a weapon name, then the weapon's GS2 bytecode file (ending in its `\n`). The answer to 158 (`weapons.rs`). GServer-v2 sent this to real 4.20r8 (lab, 2026-11-13; the note gives it without framing, and `PLO_RAWDATA` is used here because the bytecode holds line feeds); core calls it `UNKNOWN132` |
 | S→C 178 | `PLO_SERVERWARP` | comma text `0,name,host,port`: the lobby's own, or the listserver's `SVI_SERVERINFO` answer to a `PLI_SERVERWARP` (41) passed on unchanged |
 | S→C 186 | `PLO_BOARDMODIFY2` | `GCHAR` cell column and row, then `PLO_BOARDMODIFY`'s block; no trailer |
+| S→C 193 | `PLO_WEAPONHASH` | GINT5 CRC-32 (zlib) of the whole bytecode file 132 carries, then the weapon name; after the weapon's 33, which then has no script prop |
+
+## Read
+
+| Id | Name | Layout |
+|---|---|---|
+| C→S 158 | `PLI_UPDATESCRIPT` | the weapon name, as the rest of the message; answered with 132 for a weapon the player holds |
 
 ## Named, not sent yet
 
 | Id | Name | Layout |
 |---|---|---|
-| C→S 158 | `PLI_UPDATESCRIPT` | the script name; the client asks when its cache does not match |
 | C→S 162 | `PLI_PONG` | game clients: `!` and a GSHORT capped at 28671; an RC sends it empty |
 | S→C 108 | `PLO_PING` | sub byte, GSHORT. Sub 0 asks for 162. Sub 1 is not sent |
 | S→C 109 | `PLO_HTTPDOWNLOAD` | GINT5 mod time, local name, URL |
-| S→C 140 | `PLO_NPCWEAPONSCRIPT` | header (type, name, cache flag, two GINT5 key words), then the body |
+| S→C 140 | `PLO_NPCWEAPONSCRIPT` | header (type, name, cache flag, two GINT5 key words), then the body. GServer-v2 did not send it to 4.20r8 (lab, 2026-11-13) |
 | S→C 168 | `PLO_ONLINEMODE` | empty, after the login burst |
-| S→C 193 | `PLO_WEAPONHASH` | GINT5 CRC32, weapon name |
 | S→C 194 | `PLO_RESETCLIENT` | empty |
 | S→C 197 | `PLO_LOADSCRIPT` | the same key and the CRC32 of the plain body; no body |
 
@@ -53,6 +59,6 @@ read (`weapons.rs`); 25's script is never used.
 
 Server to client 60, 81, 83 and 110: no client in the notes handles them.
 124's layout is unknown (an RC logs that player flags arrived and reads
-nothing). 132 and 133 are a script-registration area whose bytes are unread.
+nothing). 133's bytes are unread.
 181 is a player id and a toggle; which flag it sets is unknown. 108 sub 1
 is stored by the client and nothing that reads it was traced.
