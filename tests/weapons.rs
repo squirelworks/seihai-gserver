@@ -206,34 +206,27 @@ fn a_gs2_build_gets_the_weapon_hash_and_the_bytecode_it_asks_for() {
         "GRAWP001\nREALNAME Lantern\nIMAGE lantern.png\nSCRIPT\nif (weaponfired) {\n  say2 light;\n}\nSCRIPTEND\n",
     )
     .unwrap();
-    let (addr, _server) = start(&w);
+    let (addr, server) = start(&w);
     let v = ClientVersion::V420R8;
     let in_level = |m: &common::raw::Seen| m.iter().any(|(id, _)| *id == 6);
 
-    // The first login makes the account; then it holds the weapon.
+    // The first login makes the account; then it holds the weapon. The
+    // account file is there from the login, but the server writes it again
+    // when the player leaves, so wait for the leave before editing it: an
+    // edit made first is overwritten, and the next login holds nothing.
     drop(RawClient::join(&addr, v, "gs2", in_level));
-    let account = w.join("accounts/gs2.txt");
     let end = Instant::now() + Duration::from_secs(10);
-    let text = loop {
-        let text = std::fs::read_to_string(&account).unwrap_or_default();
-        if !text.is_empty() {
-            break text;
-        }
-        assert!(Instant::now() < end, "account not saved");
-        std::thread::sleep(Duration::from_millis(50));
-    };
+    while server.online_accounts().contains(&"gs2".to_string()) {
+        assert!(Instant::now() < end, "gs2 never left");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let account = w.join("accounts/gs2.txt");
+    let text = std::fs::read_to_string(&account).unwrap();
+    assert!(!text.is_empty(), "account not saved");
     std::fs::write(&account, format!("{text}WEAPON Lantern\n")).unwrap();
 
-    let end = Instant::now() + Duration::from_secs(10);
     let hash = |m: &common::raw::Seen| m.iter().any(|(id, _)| *id == 193);
-    let mut c = loop {
-        // The first session may still be leaving.
-        match std::panic::catch_unwind(|| RawClient::join(&addr, v, "gs2", hash)) {
-            Ok(c) => break c,
-            Err(e) if Instant::now() >= end => std::panic::resume_unwind(e),
-            Err(_) => std::thread::sleep(Duration::from_millis(200)),
-        }
-    };
+    let mut c = RawClient::join(&addr, v, "gs2", hash);
     let add = c
         .seen
         .iter()
