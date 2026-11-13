@@ -18,7 +18,7 @@
 //!   On logout the lab GServer sent 50 = 0, then 51, to 2.22
 //!   (Seihai `lab-verification.md`), and this does the same.
 
-use crate::profile::ServerProfile;
+use crate::profile::{ClientProfile, ServerProfile};
 use crate::wire::{gchar, gshort, ids::PLO_OTHERPLPROPS, msg};
 use seihai_core::protocol::{
     decode_pos_precise, encode_pos_precise, parse_player_props_with, read_gint3, read_gshort,
@@ -31,8 +31,8 @@ use std::collections::BTreeMap;
 /// exact-build static evidence, graal-client-repro#179; 1.21 to 1.34 from
 /// the packet interface notes, one GCHAR through 1.35); 1.36 on read a
 /// GSHORT. A one-byte id is capped at 223, the largest GCHAR.
-pub fn put_id(receiver: ClientVersion, id: u16, out: &mut Vec<u8>) {
-    if one_byte_id(receiver) {
+pub fn put_id(receiver: impl Into<ClientProfile>, id: u16, out: &mut Vec<u8>) {
+    if receiver.into().server.one_byte_id {
         out.push(gchar(id.min(223) as u8));
     } else {
         gshort(id, out);
@@ -45,10 +45,10 @@ pub fn bow_prop10(v: ClientVersion) -> bool {
     ServerProfile::of(v).prop10_bow
 }
 
-/// Builds whose `PLO_OTHERPLPROPS` id is one GCHAR.
+/// Builds whose `PLO_OTHERPLPROPS` id is one GCHAR
+/// (`ServerProfile::one_byte_id`).
 pub fn one_byte_id(v: ClientVersion) -> bool {
-    use ClientVersion::*;
-    matches!(v, V121 | V128B2 | V13T | V131 | V132 | V133 | V134 | V135)
+    ServerProfile::of(v).one_byte_id
 }
 
 pub const JOINLEAVELVL: u8 = 50;
@@ -115,22 +115,28 @@ pub const RC_HEAD: &[u8] = b"head25.png";
 /// beta4 sends one for an RC to every player when the RC logs in, and a
 /// real 2.22 queues a PM from the RC under that entry in its player list
 /// (lab run 2026-11-12). `None` for a build that has no such list.
-pub fn rc_entry(receiver: ClientVersion, id: u16, nick: &[u8], account: &[u8]) -> Option<Vec<u8>> {
+pub fn rc_entry(
+    receiver: impl Into<ClientProfile>,
+    id: u16,
+    nick: &[u8],
+    account: &[u8],
+) -> Option<Vec<u8>> {
     list_entry(receiver, id, nick, account, Some(RC_HEAD))
 }
 
 /// A sender with no level as an entry in a player's list: nickname (0),
 /// `head` (11) if given, account (34).
 fn list_entry(
-    receiver: ClientVersion,
+    receiver: impl Into<ClientProfile>,
     id: u16,
     nick: &[u8],
     account: &[u8],
     head: Option<&[u8]>,
 ) -> Option<Vec<u8>> {
     use crate::wire::gstring;
-    let prof = receiver.profile();
-    if !prof.protocol.plo.contains(PLO_OTHERPLPROPS) {
+    let receiver = receiver.into();
+    let prof = receiver.core;
+    if !receiver.reads(PLO_OTHERPLPROPS) {
         return None;
     }
     let mut p = Vec::new();
@@ -162,19 +168,19 @@ fn list_entry(
 /// write 37 (`docs/ORIGINAL-SERVERS.md`). A build without either message
 /// gets nothing of it.
 pub fn private_message(
-    receiver: ClientVersion,
+    receiver: impl Into<ClientProfile>,
     from: u16,
     nick: &[u8],
     account: &[u8],
     text: &[u8],
 ) -> Vec<u8> {
     use crate::wire::ids::PLO_PRIVATEMESSAGE;
-    let plo = &receiver.profile().protocol.plo;
+    let receiver = receiver.into();
     let mut out = list_entry(receiver, from, nick, account, None).unwrap_or_default();
-    if plo.contains(PLO_PRIVATEMESSAGE) {
+    if receiver.reads(PLO_PRIVATEMESSAGE) {
         let mut p = Vec::new();
         put_id(receiver, from, &mut p);
-        if !one_byte_id(receiver) {
+        if !receiver.server.one_byte_id {
             p.extend_from_slice(b"\"\",\"Private message:\",");
         }
         p.extend_from_slice(text);
@@ -187,9 +193,14 @@ pub fn private_message(
 /// went nowhere: the target's id, then `"Server message:"` and `text`,
 /// as the 1999 servers bounce a message to a build that cannot read one.
 /// `None` when the receiver reads no 37.
-pub fn server_message(receiver: ClientVersion, about: u16, text: &str) -> Option<Vec<u8>> {
+pub fn server_message(
+    receiver: impl Into<ClientProfile>,
+    about: u16,
+    text: &str,
+) -> Option<Vec<u8>> {
     use crate::wire::ids::PLO_PRIVATEMESSAGE;
-    if !receiver.profile().protocol.plo.contains(PLO_PRIVATEMESSAGE) {
+    let receiver = receiver.into();
+    if !receiver.reads(PLO_PRIVATEMESSAGE) {
         return None;
     }
     let mut p = Vec::new();
@@ -406,19 +417,19 @@ impl Props {
 /// value bytes included). `None` when the build does not read message 8 or
 /// nothing is left to say.
 pub fn message(
-    receiver: ClientVersion,
+    receiver: impl Into<ClientProfile>,
     id: u16,
     change: &Change,
     tail: &[(u8, &[u8])],
 ) -> Option<Vec<u8>> {
-    let prof = receiver.profile();
-    if !prof.protocol.plo.contains(PLO_OTHERPLPROPS) {
+    let receiver = receiver.into();
+    if !receiver.reads(PLO_OTHERPLPROPS) {
         return None;
     }
-    let other = &prof.props.other;
+    let other = &receiver.core.props.other;
     let mut body = Vec::new();
     let mut put = |pid: u8, v: &[u8]| {
-        if other.contains(pid) && !(pid == 10 && bow_prop10(receiver)) {
+        if other.contains(pid) && !(pid == 10 && receiver.server.prop10_bow) {
             body.push(gchar(pid));
             body.extend_from_slice(v);
         }
@@ -524,8 +535,8 @@ pub const MAX_HEARTS: u8 = 20;
 /// `PLO_PLAYERPROPS` (9) for the player's own build with `changed` (2.22
 /// encoding, no position), keeping only the props the build reads as its
 /// own. `None` when nothing is left.
-pub fn own_message(version: ClientVersion, changed: &[(u8, Vec<u8>)]) -> Option<Vec<u8>> {
-    let own = &version.profile().props.own;
+pub fn own_message(to: impl Into<ClientProfile>, changed: &[(u8, Vec<u8>)]) -> Option<Vec<u8>> {
+    let own = &to.into().core.props.own;
     let mut body = Vec::new();
     for (id, v) in changed {
         if own.contains(*id) {

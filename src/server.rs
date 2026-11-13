@@ -657,6 +657,7 @@ impl Conn {
         let mut session = Session {
             id,
             version,
+            profile: crate::profile::ClientProfile::of(version),
             stats: BTreeMap::new(),
             nickname: account.nick.clone(),
             account: account.name.clone(),
@@ -1287,6 +1288,8 @@ impl Conn {
 struct Session {
     id: u16,
     version: ClientVersion,
+    /// What this connection's writes depend on, resolved at login.
+    profile: crate::profile::ClientProfile,
     stats: BTreeMap<u8, usize>,
     nickname: String,
     account: String,
@@ -1450,7 +1453,7 @@ impl Session {
                 PLI_FIRESPY => server.world.relay(self.id, PLO_FIRESPY, true, payload),
                 PLI_EXPLOSION => server.world.relay(self.id, PLO_EXPLOSION, true, payload),
                 PLI_PLAYERPROPS => {
-                    let bow = crate::others::bow_prop10(self.version);
+                    let bow = self.profile.server.prop10_bow;
                     server.world.props(self.id, payload);
                     let props = parse_player_props_with(payload, bow);
                     if let Some(nick) = props.iter().find(|p| p.id == 0) {
@@ -1557,7 +1560,7 @@ impl Session {
         let Some(link) = &server.listlink else {
             return Vec::new();
         };
-        let prof = self.version.profile();
+        let prof = self.profile.core;
         let mut out = Vec::new();
         for delivery in link.take(self.id) {
             match delivery {
@@ -1570,7 +1573,7 @@ impl Session {
                     // One quoted field, so a newline in the text stays
                     // one message. `""` is one quote.
                     out.extend(crate::others::private_message(
-                        self.version,
+                        self.profile,
                         from_id,
                         &latin1(&nick),
                         &latin1(&account),

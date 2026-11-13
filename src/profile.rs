@@ -16,7 +16,40 @@
 //! profile again. Code elsewhere asks this table, never `version == …`.
 
 use crate::wire::ids::PLO_PING;
-use seihai_core::protocol::ClientVersion;
+use seihai_core::protocol::{ClientVersion, VersionProfile};
+
+/// Everything one connection's writes depend on, resolved once at login
+/// (`docs/CLIENT-PROFILES.md`): the build, its shared `seihai-core` row
+/// and this server's rules for it. Writers ask this, not the version.
+#[derive(Debug, Clone, Copy)]
+pub struct ClientProfile {
+    pub version: ClientVersion,
+    /// The shared table: packet ids, props, files, levels, scripts.
+    pub core: &'static VersionProfile,
+    /// Server-only rules and lab overrides.
+    pub server: ServerProfile,
+}
+
+impl From<ClientVersion> for ClientProfile {
+    fn from(v: ClientVersion) -> ClientProfile {
+        ClientProfile::of(v)
+    }
+}
+
+impl ClientProfile {
+    pub fn of(version: ClientVersion) -> ClientProfile {
+        ClientProfile {
+            version,
+            core: version.profile(),
+            server: ServerProfile::of(version),
+        }
+    }
+
+    /// Whether the build reads server-to-client message `id`.
+    pub fn reads(&self, id: u8) -> bool {
+        self.core.protocol.plo.contains(id)
+    }
+}
 
 /// The server's rules for one client build.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,7 +68,26 @@ pub struct ServerProfile {
     /// Reads `PLO_PING` (108) and answers it with `PLI_PONG` (162), so the
     /// ping timer runs for it (`ping.rs`, issue #44).
     pub ping: bool,
+    /// Another player's id, at the head of `PLO_OTHERPLPROPS` and in
+    /// private messages, is one `GCHAR` (capped at 223), not a `GSHORT`
+    /// (`others.rs`, [`ONE_BYTE_ID`]).
+    pub one_byte_id: bool,
 }
+
+/// Builds that read and write another player's id as one `GCHAR`: up to
+/// 1.35 (1.35 from exact-build static evidence, graal-client-repro#179;
+/// 1.21 to 1.34 from the packet interface notes). 1.36 on use a `GSHORT`.
+/// Goes when `seihai-core`'s profile carries the id width.
+const ONE_BYTE_ID: &[ClientVersion] = &[
+    ClientVersion::V121,
+    ClientVersion::V128B2,
+    ClientVersion::V13T,
+    ClientVersion::V131,
+    ClientVersion::V132,
+    ClientVersion::V133,
+    ClientVersion::V134,
+    ClientVersion::V135,
+];
 
 /// Builds that load `.gpake`: 4.20r8 through 6.03r7 (lab, 2026-11-06).
 /// 4.04r2 and older load neither kind of package.
@@ -80,6 +132,7 @@ impl ServerProfile {
             loads_gpake: GPAKE.contains(&version),
             prop10_bow: core.props.bow_prop10,
             ping: core.protocol.plo.contains(PLO_PING) || PING_BEFORE_SWITCH.contains(&version),
+            one_byte_id: ONE_BYTE_ID.contains(&version),
         };
         if version == ClientVersion::V205 {
             // Real 2.05 rev 2 takes a file only with the mod time; sent
@@ -128,6 +181,24 @@ mod tests {
                 assert_eq!(p.ping, core_ping, "{v:?}");
             }
         }
+    }
+
+    #[test]
+    fn a_client_profile_is_the_core_row_and_the_server_rules() {
+        for &v in ClientVersion::all_versions() {
+            let c = ClientProfile::of(v);
+            assert!(std::ptr::eq(c.core, v.profile()));
+            assert_eq!(c.server, ServerProfile::of(v));
+            for id in [7u8, 37, 108, 178, 186] {
+                assert_eq!(
+                    c.reads(id),
+                    v.profile().protocol.plo.contains(id),
+                    "{v:?} {id}"
+                );
+            }
+        }
+        assert!(ServerProfile::of(ClientVersion::V135).one_byte_id);
+        assert!(!ServerProfile::of(ClientVersion::V136).one_byte_id);
     }
 
     #[test]

@@ -24,10 +24,13 @@ pub struct ClientProfile {
 }
 ```
 
-`ServerProfile::of(version)` already exists. `ClientProfile` adds the
-`&'static` core row next to it, so a writer is handed one value instead of
-calling `version.profile()` again at each site (there are about 50 such
-calls today). Code outside `profile.rs` never compares versions. When it
+`ClientProfile::of(version)` (`src/profile.rs`) puts the `&'static` core
+row next to `ServerProfile`, so a writer is handed one value instead of
+calling `version.profile()` again at each site. Each player in the world
+task and each connection keeps one from login; `reads(id)` answers
+"does this build read message `id`". The writers in `others.rs` take
+`impl Into<ClientProfile>`, so a caller passes the kept profile, and a
+test can still pass a `ClientVersion`. Code outside `profile.rs` never compares versions. When it
 needs something new, a field is added: to `seihai-core` when it is a fact
 about the client, and to `ServerProfile` when it is a server policy or a
 lab override waiting to move into core.
@@ -52,6 +55,7 @@ The **Source** column says where the value comes from: `core` is
 | Packet ids | which server-to-client ids the build handles; others are dropped or swapped for a near one | core `protocol.plo` | `world.rs`, `burst.rs`, `files.rs`, `others.rs`, `ping.rs`, `server.rs` | done |
 | Own props | which own-player props, and how many (below 2.1: the first 37) | core `props.own` | `others.rs`, `burst.rs` | done |
 | Other players' props | which props of others, prop 10 as bow or gani | core `props.other`, server `prop10_bow` (2.05 override) | `others.rs` | done |
+| Player id width | another player's id as one `GCHAR` (up to 1.35) or a `GSHORT`, in 8 and 37 | server `one_byte_id` (until core carries it) | `others.rs`, `world.rs` | done |
 | NPC props | ids up to `npc_max`, prop 12 in the build's shape | core `props.npc_max`, server `prop10_bow` (2.05 override) | `npcs.rs` | done: prop 12 and the own-props burst's prop 10 read `ServerProfile`, so the 2.05 override reaches them |
 | Positions | half-tile X/Y before 2.3, pixel X2/Y2 from 2.3 | core `props.precise_pos` | `others.rs`, `burst.rs` | partial: level NPCs are always written as half tiles (`npcs.rs`, `half_tiles`) |
 | Image names | `.gif` before 2.1, `.png` after; baddy images | core `files.image_ext`, server `baddy_image_ext` (2.05 override) | `baddies.rs`, `files.rs` | partial: NPC and player image props pass the world's name through unchanged |
@@ -122,9 +126,12 @@ which that run did not manage. Until then, a wire check is the evidence:
 
 ## Order of work
 
-1. **`ClientProfile` at login.** Pass it to writers instead of the
-   `ClientVersion`. This is mechanical and changes no bytes; the existing
-   tests show that.
+1. **`ClientProfile` at login.** Done for the world task, the connection
+   and `others.rs`; the version list for the id width moved into
+   `ServerProfile`. Left: the writers in `npcs.rs`, `weapons.rs`,
+   `files.rs` and `burst.rs` still take a `ClientVersion` and read
+   `version.profile()` themselves. Moving them is mechanical and changes
+   no bytes.
 2. **Fix the partial rows.** NPC prop 12 through `ServerProfile` is done.
    Left, each waiting on evidence rather than code:
    - Level NPC positions per `precise_pos`: needs a capture of what a 2.3+
