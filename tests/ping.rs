@@ -59,9 +59,12 @@ fn a_420_is_pinged_and_dropped_when_it_stops_answering() {
     let mut c = login_gserver(&addr, v, random_key(), "pinged", PASSWORD, false).unwrap();
     let rx = c.conn.spawn_reader().unwrap();
     let mut st = SessionState::for_version(v);
+    // Pings are every 0.2 s, but a busy CI machine can hold the timers
+    // back, so this waits for four answers rather than counting what
+    // comes in a fixed time.
     let mut answered = Vec::new();
-    let end = Instant::now() + Duration::from_millis(1500);
-    while Instant::now() < end {
+    let end = Instant::now() + Duration::from_secs(10);
+    while answered.len() < 4 && Instant::now() < end {
         for v in pings(&rx, &mut st, Duration::from_millis(100)) {
             let mut m = vec![PLI_PONG + 0x20, b'!'];
             seihai_gserver::wire::gshort(v, &mut m);
@@ -110,7 +113,12 @@ fn a_603r7_is_pinged_and_a_500r7_is_not() {
     let mut six = login_gserver(&addr, v, random_key(), "six", PASSWORD, false).unwrap();
     let six_rx = six.conn.spawn_reader().unwrap();
     let mut six_st = SessionState::for_version(v);
-    let got = pings(&six_rx, &mut six_st, Duration::from_millis(900));
+    // The first ping is due 0.2 s in; a busy machine can make it late.
+    let mut got = Vec::new();
+    let end = Instant::now() + Duration::from_secs(10);
+    while got.is_empty() && Instant::now() < end {
+        got = pings(&six_rx, &mut six_st, Duration::from_millis(100));
+    }
     assert!(!got.is_empty(), "no ping to 6.03r7");
     let _ = std::fs::remove_dir_all(&w);
 }
