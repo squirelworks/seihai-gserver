@@ -37,7 +37,7 @@ use std::sync::{Arc, Mutex};
 
 /// The GS1 era level NPC scripts are written in: the world's levels are
 /// 2.1-era files, as GServer-v2 serves them.
-pub const LEVEL_ERA: Era = Era::V21;
+pub const LEVEL_ERA: Era = Era::V217;
 
 /// Prop ids.
 pub const IMAGE: u8 = 0;
