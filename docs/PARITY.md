@@ -51,7 +51,7 @@ test) and the lab notes.
 | Items on the ground (`PLI_ITEMADD`, `ITEMDEL`, `ITEMTAKE`) | lab | `floor_items.rs`; `lab/stage2` | |
 | Player flags and server flags (`PLI_FLAGSET`, `FLAGDEL`) | lab | `lab/stage2` | Server flags come from the NPC-server (stage 5) |
 | Level changes on disk reloaded | tests | `npc_messages.rs` (`LEVEL_RELOADED`) | |
-| Board changes (`PLI_BOARDMODIFY`, `PLI_REQUESTUPDATEBOARD`, `PLO_BOARDMODIFY2`) | partial | `board_changes.rs` | `PLI_BOARDMODIFY` is passed on to the level and sent to later arrivals; 2x2 changes grow back after 15 s (`rules = 1999`: 7.5 to 12.5 s). On a gmap, players in that cell or next to it get 186 with the cell, arrivals and neighbour loads included. `PLI_REQUESTUPDATEBOARD` (130) gets the kept changes in its rectangle; no server's answer to 130 is known, so this is this server's choice. A level keeps at most 256 changes (#106). The board check (`anticheat.board`, off by default) refuses blocks that match none of the world's `config/boardrules.txt` (#107); only the 2.05 bush cut is captured, so pushed blocks and dug holes need the world's own lines |
+| Board changes (`PLI_BOARDMODIFY`, `PLI_REQUESTUPDATEBOARD`, `PLO_BOARDMODIFY2`) | partial | `board_changes.rs` | `PLI_BOARDMODIFY` is passed on to the level and sent to later arrivals; 2x2 changes grow back after 15 s (`rules = 1999`: 7.5 to 12.5 s). On a gmap, players in that cell or next to it get 186 with the cell, arrivals and neighbour loads included. `PLI_REQUESTUPDATEBOARD` (130) gets the kept changes in its rectangle; no server's answer to 130 is known, so this is this server's choice. A level keeps at most 256 changes (#106). The board check (`anticheat.board`, off by default) refuses blocks that match none of the world's `config/boardrules.txt` (#107); the bush cut is captured from 2.05 and 2.22 (the sample world has the 2.22 line); pushing a stone on 2.22 sends no board change, and dug holes are not captured, so a world with them needs its own lines |
 | Horses (`PLI_HORSEADD`, `HORSEDEL`) | tests | `original_rules.rs`, `horses.rs` | As the 1999 servers keep them (`ORIGINAL-SERVERS.md`): shown to arrivals, gone after `horse_lifetime` |
 | `PLI_ENTERLEVEL` (newer builds' level entry) | no | | |
 | Level groups (`gr.setlevelgroup`) | no | | |
@@ -151,8 +151,8 @@ From the rows above, in the roadmap's order:
 2. **Weapons:** a real 4.20r8 running a weapon from this server (the cache
    check passed; the lab world lacked stock art). 140 for 5.24 on waits
    for a capture of the fork sending it.
-3. **Board changes:** lab captures of a pushed block and a dug hole, so a
-   sample `boardrules.txt` can list them (#107).
+3. **Board changes:** a lab capture of a dug hole, for the sample
+   `boardrules.txt` (#107).
 4. **Trigger actions**, once `PLO_TRIGGERACTION` has a capture.
 5. Carry and throw, guilds and the word filter.
 

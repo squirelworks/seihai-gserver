@@ -35,9 +35,11 @@
 //! matches no rule is a violation. The rules are the world's own: they
 //! come from its tileset as the world's author knows it, or from what a
 //! real client wrote in a lab run, never from client binaries. A world
-//! without the file is not checked. The 2.05 lab's cut bush is the only
-//! capture so far, so pushed blocks and dug holes need lines of the
-//! world's own before the check is turned on for a world that has them.
+//! without the file is not checked. Captured so far: a cut bush from
+//! 2.05 and from 2.22 (the sample world's `config/boardrules.txt` has the
+//! 2.22 line). Pushing a stone on 2.22 sent no board change at all, only
+//! the push gani; dug holes are not captured yet, so a world that has
+//! them needs lines of its own before the check is turned on.
 
 use crate::wire::{gchar, gshort, msg};
 use std::time::{Duration, Instant};
@@ -512,6 +514,29 @@ mod tests {
         assert!(c.messages_in((0, 0, 39, 14), Form::Level).is_empty());
         assert!(c.messages_in((41, 14, 5, 5), Form::Level).is_empty());
         assert!(UpdateRequest::parse(&raw[..raw.len() - 1]).is_none());
+    }
+
+    /// Real 2.22 cutting a stock bush (lab, 2026-11-13, #107):
+    /// `PLI_BOARDMODIFY` as it arrived, over the level's tiles 2 3 / 18 19.
+    /// The line in the sample world's `config/boardrules.txt` takes it.
+    #[test]
+    fn the_2_22_bush_cut_matches_the_sample_rule() {
+        let raw = [
+            0x3e, 0x30, 0x22, 0x22, 0x25, 0x45, 0x25, 0x46, 0x25, 0x55, 0x25, 0x56,
+        ];
+        let b = Block::parse(&raw).unwrap();
+        assert_eq!((b.x, b.y, b.w, b.h), (30, 16, 2, 2));
+        assert_eq!(b.tiles, [677, 678, 693, 694]);
+        let sample = include_str!("../world/config/boardrules.txt");
+        let (r, warnings) = BoardRules::parse(sample);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let mut file = vec![0u16; SIDE * SIDE];
+        for (i, t) in [2, 3, 18, 19].into_iter().enumerate() {
+            file[(16 + i / 2) * SIDE + 30 + i % 2] = t;
+        }
+        assert!(r.allows(&b, &file).is_some());
+        // Somewhere that is not a bush, the same block is refused.
+        assert!(r.allows(&b, &vec![0u16; SIDE * SIDE]).is_none());
     }
 
     #[test]
