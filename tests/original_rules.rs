@@ -222,3 +222,36 @@ fn alignment_rises_with_time_online() {
     }
     let _ = std::fs::remove_dir_all(&w);
 }
+
+/// `rules = 1999`: arrows past 99 are cut to 99 and the player is told
+/// (`PLO_PLAYERPROPS`), and a new nickname reaches a player in another
+/// level, as on the 1999 servers.
+#[test]
+fn prop_limits_and_nicknames_everywhere_under_1999_rules() {
+    let w = setup("rules-1999-props", "rules = 1999\n", &[]);
+    std::fs::write(w.join("levels/house.nw"), "GLEVNW01\n").unwrap();
+    let store = seihai_gserver::accounts::Store::new(w.join("accounts"));
+    for (name, level) in [("amy", "onlinestartlocal.nw"), ("bob", "house.nw")] {
+        let mut a = seihai_gserver::accounts::Account::new(name, level, 30.0, 30.0);
+        a.set_password(PASSWORD.as_bytes());
+        store.save(&a).unwrap();
+    }
+    let (addr, _server) = start(&w);
+    let mut amy = RawClient::join(&addr, ClientVersion::V132, "amy", in_level);
+    let mut bob = RawClient::join(&addr, ClientVersion::V132, "bob", in_level);
+    amy.settle();
+    bob.settle();
+
+    amy.send(2, &[4 + 32, 120 + 32]);
+    amy.until("arrows cut to 99", |m| {
+        has(m, PLAYERPROPS, &[4 + 32, 99 + 32])
+    });
+
+    let mut nick = vec![32, 32 + 4];
+    nick.extend(b"Amy2");
+    amy.send(2, &nick);
+    bob.until("the new nickname", |m| {
+        m.iter()
+            .any(|(id, p)| *id == OTHERPLPROPS && p.windows(4).any(|w| w == b"Amy2"))
+    });
+}

@@ -157,7 +157,10 @@ fn list_entry(
 /// (34), where the build reads them, so the client can name the sender,
 /// then `PLO_PRIVATEMESSAGE` (37): `GSHORT from`, then `"","Private
 /// message:",` and `text`, which is already tokenized (one quoted item or
-/// more). A build without either message gets nothing of it.
+/// more). A build whose player id is one `GCHAR` ([`one_byte_id`]) gets
+/// the id that way and the text with no labels, as both 1999 servers
+/// write 37 (`docs/ORIGINAL-SERVERS.md`). A build without either message
+/// gets nothing of it.
 pub fn private_message(
     receiver: ClientVersion,
     from: u16,
@@ -170,12 +173,30 @@ pub fn private_message(
     let mut out = list_entry(receiver, from, nick, account, None).unwrap_or_default();
     if plo.contains(PLO_PRIVATEMESSAGE) {
         let mut p = Vec::new();
-        gshort(from, &mut p);
-        p.extend_from_slice(b"\"\",\"Private message:\",");
+        put_id(receiver, from, &mut p);
+        if !one_byte_id(receiver) {
+            p.extend_from_slice(b"\"\",\"Private message:\",");
+        }
         p.extend_from_slice(text);
         out.extend(msg(PLO_PRIVATEMESSAGE, &p));
     }
     out
+}
+
+/// `PLO_PRIVATEMESSAGE` (37) that tells `receiver` its message to `about`
+/// went nowhere: the target's id, then `"Server message:"` and `text`,
+/// as the 1999 servers bounce a message to a build that cannot read one.
+/// `None` when the receiver reads no 37.
+pub fn server_message(receiver: ClientVersion, about: u16, text: &str) -> Option<Vec<u8>> {
+    use crate::wire::ids::PLO_PRIVATEMESSAGE;
+    if !receiver.profile().protocol.plo.contains(PLO_PRIVATEMESSAGE) {
+        return None;
+    }
+    let mut p = Vec::new();
+    put_id(receiver, about, &mut p);
+    p.extend_from_slice(b"\"Server message:\",");
+    p.extend(crate::wire::tokenize(&[crate::wire::latin1(text)]));
+    Some(msg(PLO_PRIVATEMESSAGE, &p))
 }
 
 /// A classic `X`/`Y` byte in tiles. A byte under 0x20 is a step off
@@ -250,6 +271,84 @@ impl Props {
                 Some(v) => self.values.insert(*id, v.clone()),
                 None => self.values.remove(id),
             };
+        }
+    }
+
+    /// The 1999 servers' prop limits (`rules = 1999`,
+    /// `docs/ORIGINAL-SERVERS.md`), applied to a change just taken: max
+    /// hearts over 20, hearts over the max, arrows and bombs over 99 and
+    /// magic over 100 are cut down and the player is told (returned, for
+    /// `PLO_PLAYERPROPS`); a sword power from 5 to 9 becomes 4, colours
+    /// past 18 become 18, a sprite from 132 becomes 0 and AP past 100
+    /// becomes 100, without telling the player. The cut values are what
+    /// the others get and what is kept.
+    pub fn limit_1999(&mut self, change: &mut Change) -> Vec<(u8, Vec<u8>)> {
+        let mut told = Vec::new();
+        let byte = |v: &Vec<u8>| v.first().map(|b| b.wrapping_sub(0x20));
+        let max_hearts = self.values.get(&1).and_then(byte).unwrap_or(3).min(20);
+        let ids: Vec<u8> = change.values.keys().copied().collect();
+        for id in ids {
+            let v = change.values[&id].clone();
+            let mut new = v.clone();
+            let mut tell = false;
+            let mut cap = |limit: u8, answered: bool, new: &mut Vec<u8>| {
+                if let Some(b) = new.first_mut() {
+                    if b.wrapping_sub(0x20) > limit {
+                        *b = gchar(limit);
+                        tell |= answered;
+                    }
+                }
+            };
+            match id {
+                1 => cap(20, true, &mut new),
+                2 => cap(max_hearts.saturating_mul(2), true, &mut new),
+                4 | 5 => cap(99, true, &mut new),
+                26 => cap(100, true, &mut new),
+                32 => cap(100, false, &mut new),
+                8 => {
+                    if let Some(b) = new.first_mut() {
+                        if (5..=9).contains(&b.wrapping_sub(0x20)) {
+                            *b = gchar(4);
+                        }
+                    }
+                }
+                13 => {
+                    for b in new.iter_mut().take(5) {
+                        if b.wrapping_sub(0x20) > 18 {
+                            *b = gchar(18);
+                        }
+                    }
+                }
+                17 => {
+                    if let Some(b) = new.first_mut() {
+                        if b.wrapping_sub(0x20) >= 132 {
+                            *b = gchar(0);
+                        }
+                    }
+                }
+                _ => {}
+            }
+            if new != v {
+                change.values.insert(id, new.clone());
+                self.values.insert(id, new.clone());
+                if tell {
+                    told.push((id, new));
+                }
+            }
+        }
+        told
+    }
+
+    /// The props `ids` of a change, alone.
+    pub fn only(change: &Change, ids: &[u8]) -> Change {
+        Change {
+            values: change
+                .values
+                .iter()
+                .filter(|(k, _)| ids.contains(k))
+                .map(|(k, v)| (*k, v.clone()))
+                .collect(),
+            ..Change::default()
         }
     }
 

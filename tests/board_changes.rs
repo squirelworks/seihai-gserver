@@ -60,3 +60,66 @@ fn a_cut_bush_reaches_the_level_and_later_arrivals() {
         sc.board.as_ref().unwrap()[14 * 64 + 63]
     );
 }
+
+const GRID: &str = "GRMAP001\nWIDTH 2\nHEIGHT 1\nLEVELNAMES\n\
+\"onlinestartlocal.nw\",\"east.nw\",\nLEVELNAMESEND\n";
+
+/// On a gmap: a 2.05 (plain levels) cuts a bush in the west cell; a 2.22
+/// playing the gmap gets it as `PLO_BOARDMODIFY2` (186) with the cell, and
+/// so does a 2.22 that logs in later. A 4.04r2's `PLI_REQUESTUPDATEBOARD`
+/// (130) for the level gets the change again, in its form.
+#[test]
+fn gmap_players_get_cell_changes_and_an_update_request_is_answered() {
+    use common::raw::RawClient;
+    let w = world("board-gmap", "*\n");
+    std::fs::create_dir_all(w.join("levels")).unwrap();
+    std::fs::write(w.join("levels/world.gmap"), GRID).unwrap();
+    std::fs::write(w.join("levels/onlinestartlocal.nw"), "GLEVNW01\n").unwrap();
+    std::fs::write(w.join("levels/east.nw"), "GLEVNW01\n").unwrap();
+    let (addr, _server) = start(&w);
+    let in_level = |m: &common::raw::Seen| m.iter().any(|(id, _)| *id == 6);
+    let mut ann = RawClient::join(&addr, ClientVersion::V205, "ann", in_level);
+    let mut gia = RawClient::join(&addr, ClientVersion::V222, "gia", in_level);
+    gia.settle();
+
+    let cut = board_modify_message(39, 14, 2, 2, &[1834, 1835, 1850, 1851]);
+    ann.sess.conn.send_messages(&[cut]).unwrap();
+    let is_186 = |p: &[u8]| {
+        seihai_core::protocol::layouts::parse_board_modify2(p).is_some_and(|b| {
+            (b.map_x, b.map_y, b.x, b.y) == (0, 0, 39, 14) && b.tiles == [1834, 1835, 1850, 1851]
+        })
+    };
+    gia.until("the cut as 186", |m| {
+        m.iter().any(|(id, p)| *id == 186 && is_186(p))
+    });
+
+    let hal = RawClient::join(&addr, ClientVersion::V222, "hal", |m| {
+        m.iter().any(|(id, p)| *id == 186 && is_186(p))
+    });
+    assert!(!hal.seen.iter().any(|(id, _)| *id == 7));
+
+    // 130: name, mod time, x, y, width, height.
+    let request = |level: &str| {
+        let mut r = vec![level.len() as u8 + 32];
+        r.extend(level.as_bytes());
+        seihai_gserver::wire::gint5(0, &mut r);
+        for v in [38u16, 13, 4, 4] {
+            seihai_gserver::wire::gshort(v, &mut r);
+        }
+        r
+    };
+    // 4.04r2 is the first build that sends 130.
+    let mut kai = RawClient::join(&addr, ClientVersion::V404R2, "kai", in_level);
+    kai.settle();
+    kai.send(130, &request("onlinestartlocal.nw"));
+    kai.until("the update as 186", |m| {
+        m.iter().any(|(id, p)| *id == 186 && is_186(p))
+    });
+    // A rectangle away from the change gets nothing.
+    let mut away = request("onlinestartlocal.nw");
+    let n = away.len();
+    away[n - 8..n - 6].copy_from_slice(&[0x20, 0x20]);
+    away[n - 6..n - 4].copy_from_slice(&[0x20, 0x20]);
+    kai.send(130, &away);
+    assert!(!kai.settle().iter().any(|(id, _)| *id == 186));
+}

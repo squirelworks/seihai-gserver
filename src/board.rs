@@ -13,6 +13,19 @@
 //! both 1999 servers alike; the time is 15 s on GServer-v2 ([`RESPAWN`])
 //! and a random 7.5 to 12.5 s on the 1999 servers.
 //!
+//! On a gmap a change belongs to one cell. A build that plays gmaps gets
+//! it as `PLO_BOARDMODIFY2` (186): the cell's column and row, then the
+//! same block (layout from the 2.22 and 2.31 lab, seihai-core's
+//! `parse_board_modify2`). It goes to the players on that gmap whose cell
+//! is the change's or next to it, the cells such a client holds. A build
+//! that plays the same levels as plain levels gets 7 when it is in that
+//! level, as before.
+//!
+//! `PLI_REQUESTUPDATEBOARD` (130, 4.04r2 on) names a level, its mod time
+//! and a rectangle ([`UpdateRequest`]). No server's answer is known, so
+//! this one sends the kept changes that touch the rectangle, in the form
+//! the player reads.
+//!
 //! A level keeps at most [`MAX_CHANGES`]. The tiles a client writes are
 //! not checked against what may be cut or lifted there yet.
 
@@ -23,6 +36,8 @@ use std::time::{Duration, Instant};
 pub const PLO_BOARDMODIFY: u8 = 7;
 /// `PLI_BOARDMODIFY`.
 pub const PLI_BOARDMODIFY: u8 = 1;
+/// `PLO_BOARDMODIFY2`: a change to one gmap cell.
+pub const PLO_BOARDMODIFY2: u8 = 186;
 /// How long a 2x2 change lasts under the `v2` rules.
 pub const RESPAWN: Duration = Duration::from_secs(15);
 /// The most changes kept for one level. A change to a new rectangle past
@@ -71,11 +86,32 @@ impl Block {
 
     /// `PLO_BOARDMODIFY` for this block.
     pub fn message(&self) -> Vec<u8> {
-        let mut p = vec![gchar(self.x), gchar(self.y), gchar(self.w), gchar(self.h)];
+        self.message_as(Form::Level)
+    }
+
+    /// This block as a player in `form` reads it: 7 for the player's own
+    /// level, 186 with the cell on a gmap.
+    pub fn message_as(&self, form: Form) -> Vec<u8> {
+        let mut p = Vec::with_capacity(6 + 2 * self.tiles.len());
+        let id = match form {
+            Form::Level => PLO_BOARDMODIFY,
+            Form::Cell(cx, cy) => {
+                p.extend([gchar(cx), gchar(cy)]);
+                PLO_BOARDMODIFY2
+            }
+        };
+        p.extend([gchar(self.x), gchar(self.y), gchar(self.w), gchar(self.h)]);
         for &t in &self.tiles {
             gshort(t, &mut p);
         }
-        msg(PLO_BOARDMODIFY, &p)
+        msg(id, &p)
+    }
+
+    /// Whether the block shares a tile with the rectangle `(x, y, w, h)`.
+    pub fn touches(&self, (x, y, w, h): (u16, u16, u16, u16)) -> bool {
+        let (bx, by) = (u16::from(self.x), u16::from(self.y));
+        let (bw, bh) = (u16::from(self.w), u16::from(self.h));
+        bx < x.saturating_add(w) && x < bx + bw && by < y.saturating_add(h) && y < by + bh
     }
 
     fn same_place(&self, o: &Block) -> bool {
@@ -106,6 +142,51 @@ impl Block {
                 }
             }
         }
+    }
+}
+
+/// How a player reads a level's changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Form {
+    /// `PLO_BOARDMODIFY` (7): the player's own level.
+    Level,
+    /// `PLO_BOARDMODIFY2` (186): a gmap cell, column and row.
+    Cell(u8, u8),
+}
+
+/// `PLI_REQUESTUPDATEBOARD` (130): `GCHAR` length and a level name,
+/// `GINT5` mod time, then `GSHORT` x, y, width and height.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdateRequest {
+    pub level: String,
+    pub mod_time: u64,
+    pub x: u16,
+    pub y: u16,
+    pub w: u16,
+    pub h: u16,
+}
+
+impl UpdateRequest {
+    /// `None` when the payload is cut short.
+    pub fn parse(raw: &[u8]) -> Option<UpdateRequest> {
+        let (&n, rest) = raw.split_first()?;
+        let n = usize::from(n.wrapping_sub(0x20));
+        let name = rest.get(..n)?;
+        let rest = &rest[n..];
+        let t = rest.get(..5)?;
+        let s = |i: usize| seihai_core::protocol::read_gshort(rest.get(5 + 2 * i..7 + 2 * i)?);
+        Some(UpdateRequest {
+            level: seihai_core::protocol::latin1(name),
+            mod_time: crate::wire::read_gint5(t),
+            x: s(0)?,
+            y: s(1)?,
+            w: s(2)?,
+            h: s(3)?,
+        })
+    }
+
+    pub fn rect(&self) -> (u16, u16, u16, u16) {
+        (self.x, self.y, self.w, self.h)
     }
 }
 
@@ -153,17 +234,26 @@ impl Changes {
     }
 
     /// The messages that bring an arriving player up to date.
-    pub fn messages(&self) -> Vec<Vec<u8>> {
-        self.list.iter().map(|c| c.now.message()).collect()
+    pub fn messages(&self, form: Form) -> Vec<Vec<u8>> {
+        self.list.iter().map(|c| c.now.message_as(form)).collect()
     }
 
-    /// Drop the changes whose time is up; returns the messages that grow
+    /// The changes that touch the rectangle `(x, y, w, h)`, as messages.
+    pub fn messages_in(&self, rect: (u16, u16, u16, u16), form: Form) -> Vec<Vec<u8>> {
+        self.list
+            .iter()
+            .filter(|c| c.now.touches(rect))
+            .map(|c| c.now.message_as(form))
+            .collect()
+    }
+
+    /// Drop the changes whose time is up; returns the blocks that grow
     /// them back.
-    pub fn expire(&mut self, now: Instant) -> Vec<Vec<u8>> {
+    pub fn expire(&mut self, now: Instant) -> Vec<Block> {
         let mut out = Vec::new();
         self.list.retain(|c| match c.until {
             Some(t) if t <= now => {
-                out.push(c.old.message());
+                out.push(c.old.clone());
                 false
             }
             _ => true,
@@ -225,16 +315,13 @@ mod tests {
         c.add(push, &file, t0, RESPAWN);
         assert_eq!(c.board(&file)[14 * SIDE + 39], 1834);
         assert_eq!(c.board(&file)[10 * SIDE + 10], 9);
-        assert_eq!(c.messages().len(), 2);
+        assert_eq!(c.messages(Form::Level).len(), 2);
         assert!(c.expire(t0 + RESPAWN - Duration::from_millis(1)).is_empty());
         let back = c.expire(t0 + RESPAWN);
         assert_eq!(back.len(), 1);
-        let read =
-            seihai_core::protocol::layouts::parse_board_modify(&back[0][1..back[0].len() - 1])
-                .unwrap();
-        assert_eq!(read.tiles, [5, 5, 5, 5]);
+        assert_eq!(back[0].tiles, [5, 5, 5, 5]);
         assert_eq!(c.board(&file)[14 * SIDE + 39], 5);
-        assert_eq!(c.messages().len(), 1);
+        assert_eq!(c.messages(Form::Level).len(), 1);
     }
 
     #[test]
@@ -246,12 +333,9 @@ mod tests {
         c.add(b.clone(), &file, t0, RESPAWN);
         b.tiles = vec![7; 4];
         c.add(b, &file, t0, RESPAWN);
-        assert_eq!(c.messages().len(), 1);
+        assert_eq!(c.messages(Form::Level).len(), 1);
         let back = c.expire(t0 + RESPAWN);
-        let read =
-            seihai_core::protocol::layouts::parse_board_modify(&back[0][1..back[0].len() - 1])
-                .unwrap();
-        assert_eq!(read.tiles, [5, 5, 5, 5]);
+        assert_eq!(back[0].tiles, [5, 5, 5, 5]);
     }
 
     #[test]
@@ -272,7 +356,41 @@ mod tests {
         // A new place is refused; the same place is still taken.
         assert!(!c.add(at(MAX_CHANGES), &file, t0, RESPAWN));
         assert!(c.add(at(0), &file, t0, RESPAWN));
-        assert_eq!(c.messages().len(), MAX_CHANGES);
+        assert_eq!(c.messages(Form::Level).len(), MAX_CHANGES);
         assert_eq!(c.board(&file)[MAX_CHANGES], 5);
+    }
+
+    #[test]
+    fn a_gmap_cell_change_goes_out_as_186() {
+        let b = Block::parse(&bush_cut()).unwrap();
+        let m = b.message_as(Form::Cell(1, 2));
+        assert_eq!(m[0], gchar(PLO_BOARDMODIFY2));
+        let read = seihai_core::protocol::layouts::parse_board_modify2(&m[1..m.len() - 1]).unwrap();
+        assert_eq!((read.map_x, read.map_y), (1, 2));
+        assert_eq!((read.x, read.y, read.width, read.height), (39, 14, 2, 2));
+        assert_eq!(read.tiles, b.tiles);
+        assert!(read.trailer.is_empty());
+    }
+
+    #[test]
+    fn an_update_request_gets_the_changes_it_touches() {
+        let file = vec![5u16; SIDE * SIDE];
+        let t0 = Instant::now();
+        let mut c = Changes::default();
+        c.add(Block::parse(&bush_cut()).unwrap(), &file, t0, RESPAWN);
+        let mut raw = vec![gchar(4)];
+        raw.extend(b"a.nw");
+        crate::wire::gint5(1234, &mut raw);
+        for v in [38u16, 13, 2, 2] {
+            gshort(v, &mut raw);
+        }
+        let r = UpdateRequest::parse(&raw).unwrap();
+        assert_eq!(r.level, "a.nw");
+        assert_eq!(r.mod_time, 1234);
+        assert_eq!(r.rect(), (38, 13, 2, 2));
+        assert_eq!(c.messages_in(r.rect(), Form::Level).len(), 1);
+        assert!(c.messages_in((0, 0, 39, 14), Form::Level).is_empty());
+        assert!(c.messages_in((41, 14, 5, 5), Form::Level).is_empty());
+        assert!(UpdateRequest::parse(&raw[..raw.len() - 1]).is_none());
     }
 }

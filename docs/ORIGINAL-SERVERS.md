@@ -130,7 +130,41 @@ position.
 | A dead leader | stays leader | the same; `rules = 1999`: hands off |
 | Baddy changes from a follower | kept | the same; `rules = 1999`: dropped |
 | Swamp soldier and hare start modes | 0 | the same; `rules = 1999`: 6 and 7 |
+| Private messages between players | not relayed | relayed; old builds and long texts answered as on GServer 1.3 |
+| A new nickname or head | to the level | the same; `rules = 1999`: to everyone online |
+| Prop limits | the anti-cheat's counted props | the same; `rules = 1999`: the limits below |
 
-Still open: the private-message reply to old builds, the nickname and head
-of players in other levels, and the server-side prop limits (the anti-cheat
-covers the counted ones).
+## Private messages, nicknames and prop limits
+
+Read from GServer 1.3 and its December 1999 Linux port; 1.28 beta 2
+matches where it was read.
+
+- **Private messages.** A count, that many player ids and the text, each
+  id one byte for the builds of the time. Every listed player online gets
+  37 with the sender's id and the text; ids not online are passed over. A
+  text over 1024 bytes is refused, and the sender gets an admin message
+  (35), `Server message:`, then `Your message was too long.` When a
+  listed player's build is too old to read a private message, the sender
+  gets 37 with that player's id and `"Server message:","The player cannot
+  read the message because he/she has an older Graal version."` (both
+  servers turn such builds away at login, so in 1999 this never ran).
+  This server does all of it in either rule set, with 1.21 as the build
+  that reads no 37, and writes 37 to a one-byte-id build as the 1999
+  servers did: the id and the text, without GServer-v2's labels.
+- **Nickname and head.** A new nickname (prop 0) or head (11) goes as 8
+  to every player online, not only to the level. Under `rules = 1999`
+  this server does the same.
+- **Prop limits.** Under `rules = 1999` this server cuts these down as the
+  1999 servers do. The player is told (9) for max hearts over 20, hearts
+  over the max, arrows and bombs over 99 and magic over 100. Without
+  telling: a sword power from 5 to 9 becomes 4, a colour past 18 becomes
+  18, a sprite from 132 becomes 0, and AP past 100 becomes 100. Glove and
+  bomb power have no limit. Gralats stop at 9,999,999 there, more than a
+  `GINT3` holds, so nothing changes here.
+
+Not taken over: the 1999 servers drop a player who sends an unknown prop
+index, and the Linux port keeps a nickname's guild only when its guild
+list verifies it. Mixed-version worlds send props an old build may not
+know, so the first would drop honest players; there is no guild list yet
+for the second.
+
