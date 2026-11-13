@@ -32,10 +32,10 @@ read (`weapons.rs`); 25's script is never used.
 |---|---|---|
 | S→C 104 | `PLO_FILEDECRYPTKEY` | file name, byte 1, two GINT5; the DES key, before a `.gpake` |
 | S→C 131 | `PLO_NPCBYTECODE` | behind `PLO_RAWDATA` (the count covers the id byte to the end): GINT3 NPC id, then the GS2 bytecode file, ending in the compiler's `\n`. Sent right after the NPC's `PLO_NPCPROPS`, in the same frame, to builds whose profile runs GS2; the client drops it for an NPC it has not been sent. Layout from seihai's `documentation/gs2-receive.md`; no capture of a real 131 yet |
-| S→C 132 | `PLO_UNKNOWN132` | behind `PLO_RAWDATA`: `GCHAR` length and a weapon name, then the weapon's GS2 bytecode file (ending in its `\n`). The answer to 158 (`weapons.rs`). GServer-v2 sent this to real 4.20r8 (lab, 2026-11-13; the note gives it without framing, and `PLO_RAWDATA` is used here because the bytecode holds line feeds); core calls it `UNKNOWN132` |
+| S→C 132 | `PLO_UNKNOWN132` | behind `PLO_RAWDATA`: `GCHAR` length and a weapon name, then the weapon's GS2 bytecode file whole, its own `\n` included, then the block's closing `\n`. The answer to 158 (`weapons.rs`). GServer-v2 sends it to real 4.20r8, and real 4.20r8 takes this server's copy and keeps its cache on the next login; with the file's `\n` cut it asked again every login (lab, 2026-11-13, #120). Core calls it `UNKNOWN132` |
 | S→C 178 | `PLO_SERVERWARP` | comma text `0,name,host,port`: the lobby's own, or the listserver's `SVI_SERVERINFO` answer to a `PLI_SERVERWARP` (41) passed on unchanged |
 | S→C 186 | `PLO_BOARDMODIFY2` | `GCHAR` cell column and row, then `PLO_BOARDMODIFY`'s block; no trailer |
-| S→C 193 | `PLO_WEAPONHASH` | GINT5 CRC-32 (zlib) of the whole bytecode file 132 carries, then the weapon name; after the weapon's 33, which then has no script prop |
+| S→C 193 | `PLO_WEAPONHASH` | GINT5 CRC-32 (zlib) of the bytecode bytes 132 sends (the file's own `\n` included; not the CRC of the client's cached `.code`, which is encoded), then the weapon name; after the weapon's 33, which then has no script prop |
 
 ## Read
 
