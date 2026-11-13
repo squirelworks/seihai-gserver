@@ -26,7 +26,7 @@
 //! bytecode as `PLO_NPCBYTECODE` (131) right after the NPC's props, or
 //! no script at all (a stub), which is logged once per NPC and build.
 
-use crate::profile::ServerProfile;
+use crate::profile::ClientProfile;
 use crate::wire::ids::{PLO_NPCBYTECODE, PLO_NPCPROPS};
 use crate::wire::{gchar, gint3, gshort, latin1, msg, raw_block};
 use seihai_core::protocol::ClientVersion;
@@ -109,18 +109,20 @@ impl Script {
     }
 
     /// What `to` is sent, without logging.
-    pub fn delivery(&self, to: ClientVersion) -> Delivery<'_> {
-        self.0.prepared.for_client(to).delivery
+    pub fn delivery(&self, to: impl Into<ClientProfile>) -> Delivery<'_> {
+        let to = to.into();
+        self.0.prepared.for_client(to.version).delivery
     }
 
     /// What `to` is sent. A stub is logged the first time each build gets
     /// it, so a server owner can see which builds go without the script.
-    fn for_client(&self, npc: u32, to: ClientVersion) -> Delivery<'_> {
-        let d = self.0.prepared.for_client(to).delivery;
+    fn for_client(&self, npc: u32, to: impl Into<ClientProfile>) -> Delivery<'_> {
+        let to = to.into();
+        let d = self.0.prepared.for_client(to.version).delivery;
         if let Delivery::Stub(why) = d {
             let mut logged = self.0.stub_logged.lock().unwrap_or_else(|e| e.into_inner());
-            if logged.insert(to) {
-                eprintln!("npc {npc}: no script for {to:?} ({why:?})");
+            if logged.insert(to.version) {
+                eprintln!("npc {npc}: no script for {:?} ({why:?})", to.version);
             }
         }
         d
@@ -184,7 +186,8 @@ impl Npc {
 
     /// Take a client's update (as its build writes it); returns the props
     /// that changed, to pass on. Props a client may not set are dropped.
-    pub fn update(&mut self, raw: &[u8], sender: ClientVersion) -> Vec<(u8, Vec<u8>)> {
+    pub fn update(&mut self, raw: &[u8], sender: impl Into<ClientProfile>) -> Vec<(u8, Vec<u8>)> {
+        let sender = sender.into();
         let mut changed = Vec::new();
         for (id, v) in split(raw, bow12(sender)) {
             if SERVER_ONLY.contains(&id) || (id == GANI_OR_BOW && bow12(sender)) {
@@ -199,7 +202,8 @@ impl Npc {
     }
 
     /// The whole NPC for `to`'s build.
-    pub fn message(&self, to: ClientVersion) -> Option<Vec<u8>> {
+    pub fn message(&self, to: impl Into<ClientProfile>) -> Option<Vec<u8>> {
+        let to = to.into();
         self.message_on(to, None)
     }
 
@@ -211,7 +215,12 @@ impl Npc {
     /// The script goes in the form `to` runs (see [`Script`]): prop 1 for
     /// GS1 text; for GS2, `PLO_NPCBYTECODE` after the props, in the same
     /// bytes, since the client drops bytecode for an NPC it does not have.
-    pub fn message_on(&self, to: ClientVersion, cell: Option<(u8, u8)>) -> Option<Vec<u8>> {
+    pub fn message_on(
+        &self,
+        to: impl Into<ClientProfile>,
+        cell: Option<(u8, u8)>,
+    ) -> Option<Vec<u8>> {
+        let to = to.into();
         let delivery = self.script.as_ref().map(|s| s.for_client(self.id, to));
         let text = matches!(delivery, None | Some(Delivery::Gs1Text(_)));
         let mut all: Vec<_> = self
@@ -235,8 +244,9 @@ impl Npc {
 
 /// `PLO_NPCPROPS` for `to`, with the props its build reads. `None` when
 /// none of them is left.
-pub fn message(id: u32, props: &[(u8, Vec<u8>)], to: ClientVersion) -> Option<Vec<u8>> {
-    let max = to.profile().props.npc_max;
+pub fn message(id: u32, props: &[(u8, Vec<u8>)], to: impl Into<ClientProfile>) -> Option<Vec<u8>> {
+    let to = to.into();
+    let max = to.core.props.npc_max;
     let mut p = Vec::new();
     gint3(id, &mut p);
     let head = p.len();
@@ -264,8 +274,9 @@ pub fn bytecode_message(id: u32, code: &[u8]) -> Vec<u8> {
 /// Prop 12 is the bow (pre-2.1 shape) for this build. It follows prop 10
 /// of players (`ServerProfile::prop10_bow`), so the 2.05 rev 2 override
 /// reaches NPCs too: that build reads both as the gani.
-fn bow12(v: ClientVersion) -> bool {
-    ServerProfile::of(v).prop10_bow
+fn bow12(v: impl Into<ClientProfile>) -> bool {
+    let v = v.into();
+    v.server.prop10_bow
 }
 
 /// A script as the wire carries it: Latin-1, each line without its

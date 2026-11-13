@@ -126,12 +126,14 @@ which that run did not manage. Until then, a wire check is the evidence:
 
 ## Order of work
 
-1. **`ClientProfile` at login.** Done for the world task, the connection
-   and `others.rs`; the version list for the id width moved into
-   `ServerProfile`. Left: the writers in `npcs.rs`, `weapons.rs`,
-   `files.rs` and `burst.rs` still take a `ClientVersion` and read
-   `version.profile()` themselves. Moving them is mechanical and changes
-   no bytes.
+1. **`ClientProfile` at login.** Done. The world task and the connection
+   resolve it once; the writers in `others.rs`, `npcs.rs`, `weapons.rs`,
+   `files.rs` and `burst.rs` take `impl Into<ClientProfile>`, so a caller
+   passes the session's profile (or a bare `ClientVersion` in tests), and
+   none of them calls `version.profile()` any more. The version list for
+   the id width moved into `ServerProfile`. No bytes changed. (Baddies
+   and the login steps that run before the session exists still pass a
+   `ClientVersion`.)
 2. **Fix the partial rows.** NPC prop 12 through `ServerProfile` is done.
    Left, each waiting on evidence rather than code:
    - Level NPC positions per `precise_pos`: needs a capture of what a 2.3+

@@ -1396,7 +1396,7 @@ impl Session {
                         (None, Some(_)) => false,
                     };
                     let sent =
-                        crate::files::offer(self.version, raw, &name, found.as_ref(), since, key);
+                        crate::files::offer(self.profile, raw, &name, found.as_ref(), since, key);
                     match sent.len() {
                         1 => reply.extend_from_slice(&sent[0]),
                         n if n > 1 => {

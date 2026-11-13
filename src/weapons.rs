@@ -33,9 +33,10 @@
 //! uploaded script is never kept or passed on.
 
 use crate::npcs::{Script, LEVEL_ERA};
+use crate::profile::ClientProfile;
 use crate::wire::ids::{PLO_DEFAULTWEAPON, PLO_NPCWEAPONADD};
 use crate::wire::{gchar, gshort, latin1, msg};
-use seihai_core::protocol::{ClientVersion, Runs};
+use seihai_core::protocol::Runs;
 use seihai_core::scripting::delivery::Delivery;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -132,8 +133,9 @@ impl Weapon {
 
     /// `PLO_NPCWEAPONADD` for `to`, or `None` when the build does not run
     /// this weapon's script as GS1 text (or reads no 33 at all).
-    pub fn message(&self, to: ClientVersion) -> Option<Vec<u8>> {
-        if !to.profile().protocol.plo.contains(PLO_NPCWEAPONADD) {
+    pub fn message(&self, to: impl Into<ClientProfile>) -> Option<Vec<u8>> {
+        let to = to.into();
+        if !to.core.protocol.plo.contains(PLO_NPCWEAPONADD) {
             return None;
         }
         let text = match &self.script {
@@ -145,7 +147,7 @@ impl Weapon {
         };
         // A weapon without a script follows the same rule: only to builds
         // that would take GS1 text, so GS2 builds still get nothing.
-        let scripts = to.profile().scripts;
+        let scripts = to.core.scripts;
         if self.script.is_none() && (scripts.gs1 == Runs::No || scripts.gs2 == Runs::Yes) {
             return None;
         }
@@ -172,8 +174,9 @@ fn script_wire(s: &str) -> Vec<u8> {
 }
 
 /// `PLO_DEFAULTWEAPON` for `id`, when `to` reads it.
-pub fn default_message(id: u8, to: ClientVersion) -> Option<Vec<u8>> {
-    to.profile()
+pub fn default_message(id: u8, to: impl Into<ClientProfile>) -> Option<Vec<u8>> {
+    let to = to.into();
+    to.core
         .protocol
         .plo
         .contains(PLO_DEFAULTWEAPON)
@@ -303,7 +306,8 @@ impl Weapons {
 /// What `to` is sent for a weapon an account holds: a default weapon by
 /// id, or the world's weapon by name. `None` for a name the world does
 /// not have, or a weapon the build cannot run.
-pub fn give(weapons: &Weapons, name: &str, to: ClientVersion) -> Option<Vec<u8>> {
+pub fn give(weapons: &Weapons, name: &str, to: impl Into<ClientProfile>) -> Option<Vec<u8>> {
+    let to = to.into();
     match default_id(name) {
         Some(id) => default_message(id, to),
         None => weapons.get(name)?.message(to),
@@ -313,6 +317,7 @@ pub fn give(weapons: &Weapons, name: &str, to: ClientVersion) -> Option<Vec<u8>>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use seihai_core::protocol::ClientVersion;
 
     /// The weapons a client of `v` keeps from `m`, read with core's client.
     fn parse_weapon_add(
