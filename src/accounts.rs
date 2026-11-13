@@ -93,6 +93,9 @@ pub struct Account {
     pub chests: Vec<(String, u8, u8)>,
     /// Player flags as the client set them: `name` or `name=value`.
     pub flags: Vec<String>,
+    /// `WEAPON` lines: the weapons the account holds, default weapons by
+    /// name (`bow`, `bomb`) and the world's by their `REALNAME`.
+    pub weapons: Vec<String>,
     /// `STAFF`: the account may log in with an RC.
     pub staff: bool,
     /// `IPRANGE`: where its RC may come from (see `rc::ip_allowed`).
@@ -143,6 +146,7 @@ impl Account {
             kills: 0,
             chests: Vec::new(),
             flags: Vec::new(),
+            weapons: Vec::new(),
             staff: false,
             ip_ranges: Vec::new(),
             folder_rights: Vec::new(),
@@ -210,6 +214,11 @@ impl Account {
                     }
                 }
                 "FLAG" if !v.is_empty() => a.flags.push(v.to_string()),
+                "WEAPON" if !v.is_empty() => {
+                    if !a.weapons.iter().any(|w| w.eq_ignore_ascii_case(v)) {
+                        a.weapons.push(v.to_string());
+                    }
+                }
                 "STAFF" => a.staff = !matches!(v, "0" | "false" | "no"),
                 "FOLDER" if !v.is_empty() => a.folder_rights.push(v.to_string()),
                 "RCRIGHTS" => a.rc_rights = v.parse().unwrap_or(0),
@@ -266,6 +275,9 @@ impl Account {
         }
         for f in &self.flags {
             kv("FLAG", f.replace(['\n', '\r'], " "));
+        }
+        for w in &self.weapons {
+            kv("WEAPON", w.replace(['\n', '\r'], " "));
         }
         if self.staff {
             kv("STAFF", "1".into());

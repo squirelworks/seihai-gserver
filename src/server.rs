@@ -112,6 +112,7 @@ impl Server {
         // The world feeds the NPC-server link and applies what it sends.
         world.set_npc(npc.clone());
         world.set_server_flags_file(cfg.world.join("config").join("serverflags.txt"));
+        world.set_weapons_dir(cfg.world.join("weapons"));
         let login_rate = crate::ratelimit::LoginRate::new(cfg.login_rate, cfg.login_rate_loopback);
         let password_checks = crate::ratelimit::PasswordChecks::new(cfg.password_check_slots());
         Server {
@@ -190,11 +191,55 @@ impl Server {
 
 /// Start the world task and accept connections until the listener fails.
 pub async fn serve(server: Arc<Server>, listener: TcpListener) -> io::Result<()> {
+    serve_on(server, listener, None).await
+}
+
+/// Where the Login lobby sends 4.x to 6.x builds: the name, host and port
+/// of `PLO_SERVERWARP` (178).
+#[derive(Debug, Clone)]
+pub struct LobbyWarp {
+    pub name: String,
+    pub host: String,
+    pub port: u16,
+}
+
+impl LobbyWarp {
+    /// The 178 payload as the lab lobby sent it to real 5.24r4 and 6.03r7
+    /// (`docs/lab/five-clients-2026-11-12.md`): `0`, the name, the host
+    /// and the port, split on commas by the lobby builds, so no field may
+    /// hold one.
+    pub fn payload(&self) -> Vec<u8> {
+        let clean = |s: &str| s.replace([',', '\n', '\r'], " ");
+        crate::wire::latin1(&format!(
+            "0,{},{},{}",
+            clean(&self.name),
+            clean(&self.host),
+            self.port
+        ))
+    }
+}
+
+/// The Login lobby (stage 6) on its own listener: logins as on the game
+/// port, and builds with a lobby are sent on with `warp` after the burst.
+pub async fn serve_lobby(
+    server: Arc<Server>,
+    listener: TcpListener,
+    warp: LobbyWarp,
+) -> io::Result<()> {
+    serve_on(server, listener, Some(Arc::new(warp))).await
+}
+
+async fn serve_on(
+    server: Arc<Server>,
+    listener: TcpListener,
+    lobby: Option<Arc<LobbyWarp>>,
+) -> io::Result<()> {
     server.world.start();
     loop {
         let (stream, peer) = listener.accept().await?;
         let _ = stream.set_nodelay(true);
         let s = server.clone();
+        let lobby = lobby.clone();
         tokio::spawn(async move {
             let mut conn = Conn {
                 server: s.clone(),
@@ -202,6 +247,7 @@ pub async fn serve(server: Arc<Server>, listener: TcpListener) -> io::Result<()>
                 peer,
                 account: None,
                 player: None,
+                lobby,
             };
             let result = conn.run().await;
             if let Some(id) = conn.player.take() {
@@ -238,6 +284,8 @@ struct Conn {
     account: Option<String>,
     /// Player id, once logged in.
     player: Option<u16>,
+    /// This connection came in on the Login lobby's port.
+    lobby: Option<Arc<LobbyWarp>>,
 }
 
 /// Bytes read but not yet a whole frame.
@@ -508,6 +556,7 @@ impl Conn {
             kills: account.kills,
             flags: account.flags.clone(),
             staff: account.staff,
+            weapons: account.weapons.clone(),
             machines: machines.clone(),
         };
         let (id, level, gmap, leader) = match self.server.world.join(joining, outbox).await {
@@ -562,6 +611,36 @@ impl Conn {
         );
         for f in frames {
             self.send(&mut codec, &f).await?;
+        }
+        // On the lobby's port, a build with a Login lobby is sent on to
+        // the game port. It leaves the world first, so its login there is
+        // not turned away as already online; then the client closes.
+        if let Some(warp) = self.lobby.clone() {
+            if version.profile().protocol.lobby.is_some() {
+                if let Some(id) = self.player.take() {
+                    self.server.world.left(id);
+                    if let Some(l) = &self.server.listlink {
+                        l.player_removed(id);
+                    }
+                }
+                let m = crate::wire::msg(PLO_SERVERWARP, &warp.payload());
+                self.send(&mut codec, &m).await?;
+                self.server.log(
+                    &self.peer,
+                    &format!("{who}: sent on to {}:{}", warp.host, warp.port),
+                );
+                // Wait for the client to close, or give up after a while.
+                let mut sink = [0u8; 256];
+                let _ = tokio::time::timeout(Duration::from_secs(30), async {
+                    while let Ok(n) = self.stream.read(&mut sink).await {
+                        if n == 0 {
+                            break;
+                        }
+                    }
+                })
+                .await;
+                return Ok(());
+            }
         }
         // Packages named in `gpaks`, the same way a file request is answered.
         let packages = self.server.cfg.gpaks.clone();
@@ -1329,6 +1408,7 @@ impl Session {
                 }
                 PLI_NPCPROPS => server.world.npc_props(self.id, payload),
                 crate::board::PLI_BOARDMODIFY => server.world.board_modify(self.id, payload),
+                PLI_WEAPONADD => server.world.weapon_add(self.id, payload),
                 PLI_BADDYPROPS => server.world.baddy_props(self.id, payload),
                 PLI_BADDYHURT => server.world.baddy_hurt(self.id, payload),
                 PLI_HURTPLAYER | PLI_CLAIMPKER => {
