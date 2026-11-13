@@ -29,6 +29,7 @@ use crate::accounts::Account;
 use crate::config::Config;
 use crate::gmaps::Place;
 use crate::levels::{chest_record, link_line, sign_record, Level};
+use crate::profile::ClientProfile;
 use crate::wire::{self, gchar, gint3, gint4, gint5, gshort, gstring, ids::*, latin1, msg};
 use seihai_core::protocol::{encode_pos_precise, ClientVersion, EncryptionGen, IdSet};
 
@@ -53,15 +54,16 @@ pub struct Player<'a> {
 /// The burst as frame bodies, in order.
 pub fn login_burst(
     cfg: &Config,
-    version: ClientVersion,
+    version: impl Into<ClientProfile>,
     gen: EncryptionGen,
     p: &Player,
     level: &Level,
     gmap: Option<&Place>,
     world_time: u32,
 ) -> Vec<Vec<u8>> {
+    let version = version.into();
     let leader = p.leader;
-    let plo = &version.profile().protocol.plo;
+    let plo = &version.core.protocol.plo;
     let has = |id: u8| plo.contains(id);
     let mut out = Out {
         has: &has,
@@ -167,12 +169,13 @@ pub fn login_burst(
 /// is a frame of its own); whether a real gen-2 client needs that on a warp
 /// is not in any capture yet.
 pub fn level_answer(
-    version: ClientVersion,
+    version: impl Into<ClientProfile>,
     gen: EncryptionGen,
     level: &Level,
     cached: bool,
 ) -> Vec<Vec<u8>> {
-    let plo = &version.profile().protocol.plo;
+    let version = version.into();
+    let plo = &version.core.protocol.plo;
     let has = |id: u8| plo.contains(id);
     let mut out = Out {
         has: &has,
@@ -239,8 +242,14 @@ pub fn warp2(x: f32, y: f32, g: &Place) -> Vec<u8> {
 /// player's own level is current again. The lab's 2.22 and 2.31 crossings
 /// had this shape (Seihai `protocol.md`, "Gmaps"); the 35 answers are
 /// taken to be the same.
-pub fn gmap_level(version: ClientVersion, level: &Level, gmap: &str, full: bool) -> Vec<u8> {
-    let plo = &version.profile().protocol.plo;
+pub fn gmap_level(
+    version: impl Into<ClientProfile>,
+    level: &Level,
+    gmap: &str,
+    full: bool,
+) -> Vec<u8> {
+    let version = version.into();
+    let plo = &version.core.protocol.plo;
     let has = |id: u8| plo.contains(id);
     let mut out = Out {
         has: &has,
@@ -282,8 +291,9 @@ impl Out<'_> {
 }
 
 /// The player's own props, as `PLO_PLAYERPROPS` carries them.
-pub fn own_props(version: ClientVersion, p: &Player) -> Vec<u8> {
-    let prof = version.profile();
+pub fn own_props(version: impl Into<ClientProfile>, p: &Player) -> Vec<u8> {
+    let version = version.into();
+    let prof = version.core;
     let own: &IdSet = &prof.props.own;
     let a = p.account;
     let mut b = Vec::new();
@@ -313,7 +323,7 @@ pub fn own_props(version: ClientVersion, p: &Player) -> Vec<u8> {
     put(9, &power_image(a.shield.0, 10, &a.shield.1));
     // Before 2.1 prop 10 is the bow slot; it is left out there. 2.05 rev 2
     // reads it as the gani (`ServerProfile::prop10_bow`).
-    if !crate::profile::ServerProfile::of(version).prop10_bow {
+    if !version.server.prop10_bow {
         put(10, &s("idle"));
     }
     // Head: c(len + 100) + image.

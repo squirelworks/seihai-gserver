@@ -34,8 +34,8 @@
 //! (`gpak.rs`). A package the build does not load, or an encrypted package
 //! with no key, is `PLO_FILESENDFAILED`. `gpakkeys.txt` is never served.
 
+use crate::profile::ClientProfile;
 use crate::wire::{gint3, gint5, ids::*, latin1, msg};
-use seihai_core::protocol::ClientVersion;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -190,12 +190,19 @@ impl FileStore {
 
 /// Whether `PLO_FILE` carries the GINT5 mod time (and the closing line
 /// end) for `version` (`profile.rs`: 2.1 on, and 2.05).
-pub fn has_modtime(version: ClientVersion) -> bool {
-    crate::profile::ServerProfile::of(version).file_modtime
+pub fn has_modtime(version: impl Into<ClientProfile>) -> bool {
+    let version = version.into();
+    version.server.file_modtime
 }
 
 /// `RAWDATA` + `PLO_FILE` for one file or chunk, as `version` reads it.
-fn file_message(version: ClientVersion, name: &str, mod_time: u64, data: &[u8]) -> Vec<u8> {
+fn file_message(
+    version: impl Into<ClientProfile>,
+    name: &str,
+    mod_time: u64,
+    data: &[u8],
+) -> Vec<u8> {
+    let version = version.into();
     let modtime = has_modtime(version);
     let mut body = vec![crate::wire::gchar(PLO_FILE)];
     if modtime {
@@ -226,8 +233,9 @@ fn frames_of(bytes: Vec<u8>) -> Vec<Vec<u8>> {
 
 /// The frames that send `f` to a client of `version`, or `None` when the
 /// build cannot take a file that big.
-pub fn send_file(version: ClientVersion, f: &Found) -> Option<Vec<Vec<u8>>> {
-    let prof = version.profile();
+pub fn send_file(version: impl Into<ClientProfile>, f: &Found) -> Option<Vec<Vec<u8>>> {
+    let version = version.into();
+    let prof = version.core;
     let plo = &prof.protocol.plo;
     // The profiles' `plo` sets leave out ids that only come behind
     // `PLO_RAWDATA` (101, and 102 before 3.x). Every build that reads a
@@ -266,22 +274,23 @@ pub fn send_file(version: ClientVersion, f: &Found) -> Option<Vec<Vec<u8>>> {
 /// `key` is the `.gpake` key, when the world has one. A non-package is
 /// unchanged from [`send_file`] / [`up_to_date`] / [`failed`].
 pub fn offer(
-    version: ClientVersion,
+    version: impl Into<ClientProfile>,
     asked: &[u8],
     name: &str,
     found: Option<&Found>,
     since: Option<u64>,
     key: Option<[u8; 8]>,
 ) -> Vec<Vec<u8>> {
+    let version = version.into();
     let kind = crate::gpak::package_kind(name);
-    if !crate::gpak::client_loads(version, kind) {
+    if !crate::gpak::client_loads(version.version, kind) {
         return one(failed(version, asked));
     }
     let key_msg = if kind == crate::gpak::PackageKind::Encrypted {
         let Some(key) = key else {
             return one(failed(version, asked));
         };
-        if !version.profile().protocol.plo.contains(PLO_FILEDECRYPTKEY) {
+        if !version.core.protocol.plo.contains(PLO_FILEDECRYPTKEY) {
             return one(failed(version, asked));
         }
         Some(crate::gpak::file_key_packet(name, &key))
@@ -324,8 +333,9 @@ fn one(body: Vec<u8>) -> Vec<Vec<u8>> {
 
 /// "Could not send": `PLO_FILESENDFAILED` with the name, where the build
 /// reads it (1.21 reads neither file answer and gets none).
-pub fn failed(version: ClientVersion, name: &[u8]) -> Vec<u8> {
-    if version.profile().protocol.plo.contains(PLO_FILESENDFAILED) {
+pub fn failed(version: impl Into<ClientProfile>, name: &[u8]) -> Vec<u8> {
+    let version = version.into();
+    if version.core.protocol.plo.contains(PLO_FILESENDFAILED) {
         msg(PLO_FILESENDFAILED, name)
     } else {
         Vec::new()
@@ -334,8 +344,9 @@ pub fn failed(version: ClientVersion, name: &[u8]) -> Vec<u8> {
 
 /// "Your copy is current": `PLO_FILEUPTODATE`, or before 2.1 (no 45)
 /// `PLO_FILESENDFAILED`.
-pub fn up_to_date(version: ClientVersion, name: &[u8]) -> Vec<u8> {
-    let plo = &version.profile().protocol.plo;
+pub fn up_to_date(version: impl Into<ClientProfile>, name: &[u8]) -> Vec<u8> {
+    let version = version.into();
+    let plo = &version.core.protocol.plo;
     [PLO_FILEUPTODATE, PLO_FILESENDFAILED]
         .into_iter()
         .find(|&id| plo.contains(id))
@@ -345,7 +356,7 @@ pub fn up_to_date(version: ClientVersion, name: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use seihai_core::protocol::SessionState;
+    use seihai_core::protocol::{ClientVersion, SessionState};
 
     fn store(tag: &str) -> (PathBuf, FileStore) {
         let w =

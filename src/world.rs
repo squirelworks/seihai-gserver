@@ -1563,7 +1563,7 @@ impl WorldTask {
         if let Some(p) = self.players.get(&id) {
             let full = mod_time != level.mod_time;
             let level = self.view(id, &level);
-            let f = crate::burst::gmap_level(p.version, &level, &gmap.gmap, full);
+            let f = crate::burst::gmap_level(p.profile, &level, &gmap.gmap, full);
             let _ = p.outbox.send(vec![f]);
             // Its tile changes, under its cell (`board.rs`).
             let key = level.name.to_ascii_lowercase();
@@ -1615,7 +1615,7 @@ impl WorldTask {
         }
         if let Some(p) = self.players.get(&id) {
             let level = self.view(id, &level);
-            let f = crate::burst::gmap_level(p.version, &level, &gmap.gmap, full);
+            let f = crate::burst::gmap_level(p.profile, &level, &gmap.gmap, full);
             let _ = p.outbox.send(vec![f]);
         }
         self.tell_level(&old, id, &Change::default(), &others::LEFT_LEVEL);
@@ -1843,7 +1843,7 @@ impl WorldTask {
                         let _ = p.outbox.send(vec![warp]);
                     }
                 } else {
-                    let mut answer = crate::burst::level_answer(p.version, p.gen, &level, cached);
+                    let mut answer = crate::burst::level_answer(p.profile, p.gen, &level, cached);
                     if let Some(first) = answer.first_mut() {
                         warp.extend(std::mem::take(first));
                         *first = warp;
@@ -2016,7 +2016,7 @@ impl WorldTask {
             .get(&me.level)
             .into_iter()
             .flatten()
-            .filter_map(|n| n.message_on(me.version, me.gmap.as_ref().map(|g| g.cell)))
+            .filter_map(|n| n.message_on(me.profile, me.gmap.as_ref().map(|g| g.cell)))
             .collect();
         if !npcs.is_empty() {
             let name = self.loaded.get(&me.level).map_or(&me.level, |l| &l.name);
@@ -2548,14 +2548,14 @@ impl WorldTask {
         else {
             return;
         };
-        let changed = npc.update(rest, p.version);
+        let changed = npc.update(rest, p.profile);
         if changed.is_empty() {
             return;
         }
         let name = self.loaded.get(&p.level).map_or(&p.level, |l| &l.name);
         for (&other, o) in &self.players {
             if other != id && o.level == p.level {
-                if let Some(m) = crate::npcs::message(npc_id, &changed, o.version) {
+                if let Some(m) = crate::npcs::message(npc_id, &changed, o.profile) {
                     for m in under_gmap(o.gmap.as_ref(), name, vec![m]) {
                         let _ = o.outbox.send(vec![m]);
                     }
@@ -2931,7 +2931,7 @@ impl WorldTask {
             },
         );
         self.to_level_npc(&key, |o| {
-            npc.message_on(o.version, o.gmap.as_ref().map(|g| g.cell))
+            npc.message_on(o.profile, o.gmap.as_ref().map(|g| g.cell))
         });
         self.npcs.entry(key).or_default().push(npc);
     }
@@ -2953,7 +2953,7 @@ impl WorldTask {
             return;
         }
         self.to_level_npc(&s.level, |o| {
-            crate::npcs::message(s.id, &changed, o.version)
+            crate::npcs::message(s.id, &changed, o.profile)
         });
     }
 
@@ -3051,7 +3051,7 @@ impl WorldTask {
             p.weapons.push(name.clone());
         }
         let plo = &p.profile.core.protocol.plo;
-        let m = match crate::weapons::give(&self.weapons, &name, p.version) {
+        let m = match crate::weapons::give(&self.weapons, &name, p.profile) {
             Some(m) => m,
             None if crate::weapons::default_id(&name).is_none()
                 && self.weapons.get(&name).is_none()
@@ -3074,7 +3074,7 @@ impl WorldTask {
         };
         let mut out = Vec::new();
         for name in &p.weapons {
-            match crate::weapons::give(&self.weapons, name, p.version) {
+            match crate::weapons::give(&self.weapons, name, p.profile) {
                 Some(m) => out.push(m),
                 None if crate::weapons::default_id(name).is_none()
                     && self.weapons.get(name).is_none() =>
