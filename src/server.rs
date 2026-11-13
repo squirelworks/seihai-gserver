@@ -109,6 +109,7 @@ impl Server {
             &cfg.world,
         ));
         world.set_anticheat(anticheat.clone());
+        world.set_rules(cfg.rules.clone());
         // The world feeds the NPC-server link and applies what it sends.
         world.set_npc(npc.clone());
         world.set_server_flags_file(cfg.world.join("config").join("serverflags.txt"));
@@ -554,6 +555,7 @@ impl Conn {
             ),
             chests: account.chests.clone(),
             kills: account.kills,
+            deaths: account.deaths,
             flags: account.flags.clone(),
             staff: account.staff,
             weapons: account.weapons.clone(),
@@ -1410,6 +1412,9 @@ impl Session {
                 crate::board::PLI_BOARDMODIFY => server.world.board_modify(self.id, payload),
                 PLI_WEAPONADD => server.world.weapon_add(self.id, payload),
                 PLI_BADDYPROPS => server.world.baddy_props(self.id, payload),
+                crate::horses::PLI_HORSEADD => server.world.horse(self.id, true, payload),
+                crate::horses::PLI_HORSEDEL => server.world.horse(self.id, false, payload),
+                PLI_TOALL => server.world.toall(self.id, payload),
                 PLI_BADDYHURT => server.world.baddy_hurt(self.id, payload),
                 PLI_HURTPLAYER | PLI_CLAIMPKER => {
                     if server.verbose {

@@ -41,7 +41,7 @@ const SETTINGS: [(&str, &str); 5] = [
 const READ: [&str; 4] = ["startlevel", "startx", "starty", "staff"];
 
 /// Account keys carried over or read on purpose (`NAME` is the file name).
-const ACCOUNT_KEYS: [&str; 28] = [
+const ACCOUNT_KEYS: [&str; 29] = [
     "NAME",
     "NICK",
     "LEVEL",
@@ -64,6 +64,7 @@ const ACCOUNT_KEYS: [&str; 28] = [
     "STATUS",
     "AP",
     "KILLS",
+    "DEATHS",
     "EMAIL",
     "COMMENTS",
     "IPRANGE",
@@ -236,6 +237,9 @@ pub fn convert_account(
     }
     if let Some(v) = num("KILLS") {
         a.kills = v.max(0.0) as u32;
+    }
+    if let Some(v) = num("DEATHS") {
+        a.deaths = v.max(0.0) as u32;
     }
     if let Some(v) = get("EMAIL") {
         a.email = v.to_string();
@@ -661,17 +665,17 @@ mod tests {
             ("head7.png", "body2.png")
         );
         assert_eq!(a.colors, [1, 2, 3, 4, 5]);
-        assert_eq!((a.sprite, a.status, a.alignment, a.kills), (2, 20, 70, 4));
+        assert_eq!(
+            (a.sprite, a.status, a.alignment, a.kills, a.deaths),
+            (2, 20, 70, 4, 2)
+        );
         assert_eq!(a.comments, ["warned"]);
         assert_eq!(a.ip_ranges, ["*.*.*.*"]);
         assert_eq!(a.folder_rights, ["rw levels/*", "r config/*"]);
         assert_eq!(a.rc_rights, 513);
         let ban = ban.unwrap();
         assert_eq!((ban.until, ban.reason.as_str()), (None, "spam"));
-        assert_eq!(
-            unused.into_iter().collect::<Vec<_>>(),
-            ["DEATHS", "RATING", "WEAPON"]
-        );
+        assert_eq!(unused.into_iter().collect::<Vec<_>>(), ["RATING", "WEAPON"]);
         assert!(parse_account("SEIHAIACC 1\n").is_none());
         let (b, _) = convert_account(
             "x",

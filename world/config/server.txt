@@ -40,6 +40,19 @@ login_rate_loopback = false
 # A player saved at 0 hearts logs in at 0 (the client stands with one
 # empty heart, as on GServer-v2 beta4); true gives them full hearts.
 revive_dead = false
+
+# Game rules (docs/ORIGINAL-SERVERS.md): v2 plays as GServer-v2 does in the
+# lab; 1999 as the original GServer 1.28 beta 2 and 1.3 do (bushes grow
+# back after 0.75 to 1.25 times respawn_time, kills cost by the victim's
+# alignment, a dead leader hands the baddies on).
+rules = v2
+# Seconds a cut bush stays cut (unset: 15 for v2, 10 for 1999).
+#respawn_time = 10
+# Seconds a horse left in a level stays, and a dead baddy stays dead.
+horse_lifetime = 10
+baddy_respawn_time = 60
+# Seconds online for each alignment point gained, up to 100 (0 = off).
+alignment_time = 1200
 max_players = 256
 
 # The tile of the generated board, used only when the start level's file

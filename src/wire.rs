@@ -318,6 +318,8 @@ pub mod ids {
     pub const PLI_BOMBADD: u8 = 4;
     /// A bomb removed. Confirmed.
     pub const PLI_BOMBDEL: u8 = 5;
+    /// A message to everyone online.
+    pub const PLI_TOALL: u8 = 6;
     /// An arrow. Confirmed.
     pub const PLI_ARROWADD: u8 = 9;
     /// A fire spy. Confirmed.

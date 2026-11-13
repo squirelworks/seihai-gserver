@@ -52,8 +52,8 @@
 //! password is stored as a PBKDF2-SHA256 hash; `seihai-gserver account`
 //! sets it. Status bit 2 (hidden) is cleared on load: a player is never
 //! logged in hidden. `ALIGN` is alignment points (player prop 32), 0 to
-//! 100. Nothing else in this server sets it yet; the list link sends the
-//! stored value on `PLYRADD`.
+//! 100: kills lower it and time online raises it (`rules.rs`); the list
+//! link sends the stored value on `PLYRADD`.
 
 use sha2::Sha256;
 use std::io;
@@ -89,6 +89,9 @@ pub struct Account {
     /// Players this account killed (`KILLS`), counted from the victims'
     /// claims (`PLI_CLAIMPKER`).
     pub kills: u32,
+    /// Times this account died (`DEATHS`), counted when the client sets
+    /// its dead status bit, as the 1999 servers count them.
+    pub deaths: u32,
     /// Chests this account has opened: level (lower case), x, y.
     pub chests: Vec<(String, u8, u8)>,
     /// Player flags as the client set them: `name` or `name=value`.
@@ -144,6 +147,7 @@ impl Account {
             status: 20,
             alignment: 0,
             kills: 0,
+            deaths: 0,
             chests: Vec::new(),
             flags: Vec::new(),
             weapons: Vec::new(),
@@ -203,6 +207,7 @@ impl Account {
                 "STATUS" => a.status = v.parse().unwrap_or(0),
                 "ALIGN" => a.alignment = v.parse::<u8>().unwrap_or(0).min(100),
                 "KILLS" => a.kills = v.parse().unwrap_or(0),
+                "DEATHS" => a.deaths = v.parse().unwrap_or(0),
                 "CHEST" => {
                     let mut w = v.split_whitespace();
                     let level = w.next().map(str::to_ascii_lowercase);
@@ -269,6 +274,9 @@ impl Account {
         kv("ALIGN", self.alignment.to_string());
         if self.kills > 0 {
             kv("KILLS", self.kills.to_string());
+        }
+        if self.deaths > 0 {
+            kv("DEATHS", self.deaths.to_string());
         }
         for (level, x, y) in &self.chests {
             kv("CHEST", format!("{level} {x} {y}"));
