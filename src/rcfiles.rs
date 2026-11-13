@@ -462,7 +462,10 @@ impl Browser {
 
 /// Split an RC's frame body into messages, each with its `\n`. A raw
 /// block (`50`, `GINT3 n`, `\n`, then `n` bytes) is one message, line
-/// feeds and all, given a `\n` of its own.
+/// feeds and all. Real RCs end the block with a line feed that `n` counts
+/// (the 2004 RC and RC3: 32015 for a 32014-byte id 93, seihai-rc #45), and
+/// that line feed ends the message, as the gserver-v2 fork reads it; a
+/// block without one is given a `\n` of its own.
 pub fn split(body: &[u8]) -> Vec<Vec<u8>> {
     let mut out = Vec::new();
     let mut i = 0;
@@ -475,7 +478,9 @@ pub fn split(body: &[u8]) -> Vec<Vec<u8>> {
             });
             if let Some(inner) = rest.get(5..5 + n) {
                 let mut m = inner.to_vec();
-                m.push(b'\n');
+                if m.last() != Some(&b'\n') {
+                    m.push(b'\n');
+                }
                 out.push(m);
                 i += 5 + n;
                 continue;
@@ -514,7 +519,8 @@ mod tests {
     #[test]
     fn raw_blocks_split() {
         let mut body = b"\xc2hi\n".to_vec();
-        let inner = b"\x7d\x23a.txtline1\nline2\n";
+        // The closing line feed is the block's own, counted in its length.
+        let inner = b"\x7d\x23a.txtline1\nline2\n\n";
         body.extend([0x52, 0x20, 0x20, 0x20 + inner.len() as u8, b'\n']);
         body.extend(inner);
         body.extend(b"\xc2\n");
