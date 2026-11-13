@@ -13,10 +13,21 @@
 //!   the client (the bow, the bomb and the rest of [`DEFAULT`]);
 //! - `PLO_NPCWEAPONADD` (33): `GCHAR` length and the name, then NPC props:
 //!   the image (0) and the script (1), the layout core's client reader
-//!   takes (`SessionState::weapons`). Only builds that
-//!   run the script as GS1 text get it this way. A GS2-only build (5.x,
-//!   6.x) is sent nothing until `PLO_NPCWEAPONSCRIPT` (140) has a capture,
-//!   which is also what it was sent before weapons were served.
+//!   takes (`SessionState::weapons`). Builds that run the script as GS1
+//!   text get it this way.
+//! - For a build that runs GS2 and reads `PLO_WEAPONHASH` (193) and
+//!   `PLO_UNKNOWN132` (132) behind `PLO_RAWDATA` (by the profiles, 4.04r2
+//!   to 4.20r8 and the Mac 5.12; 5.00r7 and 5.12 list no 100 and are
+//!   left out until a lab run says otherwise): 33 with the name and image
+//!   only, then 193 with the CRC-32 of the weapon's bytecode and its name.
+//!   A client whose cached copy does not match asks with
+//!   `PLI_UPDATESCRIPT` (158), and gets the bytecode in 132 behind
+//!   `PLO_RAWDATA`. This is the order GServer-v2 used with real 4.20r8
+//!   (lab, 2026-11-13); GServer-v2 never sent that build
+//!   `PLO_NPCWEAPONSCRIPT` (140).
+//! - Builds that read neither (5.24 on) are sent nothing for a scripted
+//!   weapon until 140 has a capture, which is also what they were sent
+//!   before weapons were served.
 //!
 //! `PLI_WEAPONADD` (33), from 1.38 on, is a client asking to keep a
 //! weapon: type 0 and a default weapon's item id, or type 1 and the
@@ -34,8 +45,10 @@
 
 use crate::npcs::{Script, LEVEL_ERA};
 use crate::profile::ClientProfile;
-use crate::wire::ids::{PLO_DEFAULTWEAPON, PLO_NPCWEAPONADD};
-use crate::wire::{gchar, gshort, latin1, msg};
+use crate::wire::ids::{
+    PLO_DEFAULTWEAPON, PLO_NPCWEAPONADD, PLO_RAWDATA, PLO_UNKNOWN132, PLO_WEAPONHASH,
+};
+use crate::wire::{gchar, gint5, gshort, latin1, msg, raw_block};
 use seihai_core::protocol::Runs;
 use seihai_core::scripting::delivery::Delivery;
 use std::collections::BTreeMap;
@@ -142,6 +155,14 @@ impl Weapon {
             None => None,
             Some(s) => match s.delivery(to) {
                 Delivery::Gs1Text(_) => Some(script_wire(&self.source)),
+                Delivery::Gs2Bytecode(code) if reads_hash(&to) => {
+                    let mut m = msg(PLO_NPCWEAPONADD, &self.head());
+                    let mut h = Vec::new();
+                    gint5(crc32(code) as u64, &mut h);
+                    h.extend_from_slice(&self.wire_name());
+                    m.extend(msg(PLO_WEAPONHASH, &h));
+                    return Some(m);
+                }
                 _ => return None,
             },
         };
@@ -151,13 +172,7 @@ impl Weapon {
         if self.script.is_none() && (scripts.gs1 == Runs::No || scripts.gs2 == Runs::Yes) {
             return None;
         }
-        let name = latin1(&self.name);
-        let mut b = vec![gchar(name.len().min(223) as u8)];
-        b.extend_from_slice(&name[..name.len().min(223)]);
-        let image = latin1(&self.image);
-        b.push(gchar(0));
-        b.push(gchar(image.len().min(223) as u8));
-        b.extend_from_slice(&image[..image.len().min(223)]);
+        let mut b = self.head();
         if let Some(t) = text.filter(|t| t.len() <= crate::npcs::MAX_SCRIPT) {
             b.push(gchar(1));
             gshort(t.len() as u16, &mut b);
@@ -165,6 +180,63 @@ impl Weapon {
         }
         Some(msg(PLO_NPCWEAPONADD, &b))
     }
+
+    /// `PLO_UNKNOWN132` behind `PLO_RAWDATA`: the bytecode `to` asked for
+    /// with `PLI_UPDATESCRIPT`. `None` when the build reads no 132 or does
+    /// not get this weapon as bytecode.
+    pub fn bytecode_message(&self, to: impl Into<ClientProfile>) -> Option<Vec<u8>> {
+        let to = to.into();
+        if !reads_hash(&to) {
+            return None;
+        }
+        let Delivery::Gs2Bytecode(code) = self.script.as_ref()?.delivery(to) else {
+            return None;
+        };
+        let name = self.wire_name();
+        let mut b = vec![gchar(name.len() as u8)];
+        b.extend_from_slice(&name);
+        b.extend_from_slice(code.strip_suffix(b"\n").unwrap_or(code));
+        Some(raw_block(PLO_UNKNOWN132, &b))
+    }
+
+    /// The name as the wire carries it: Latin-1, at most 223 bytes.
+    fn wire_name(&self) -> Vec<u8> {
+        let mut name = latin1(&self.name);
+        name.truncate(223);
+        name
+    }
+
+    /// 33's name and image (prop 0), without the script.
+    fn head(&self) -> Vec<u8> {
+        let name = self.wire_name();
+        let mut b = vec![gchar(name.len() as u8)];
+        b.extend_from_slice(&name);
+        let image = latin1(&self.image);
+        b.push(gchar(0));
+        b.push(gchar(image.len().min(223) as u8));
+        b.extend_from_slice(&image[..image.len().min(223)]);
+        b
+    }
+}
+
+/// The build reads the hash-and-ask path: 33, 193, and 132 behind
+/// `PLO_RAWDATA`.
+fn reads_hash(to: &ClientProfile) -> bool {
+    [
+        PLO_NPCWEAPONADD,
+        PLO_WEAPONHASH,
+        PLO_UNKNOWN132,
+        PLO_RAWDATA,
+    ]
+    .into_iter()
+    .all(|id| to.reads(id))
+}
+
+/// CRC-32 (the zlib one) of `bytes`.
+fn crc32(bytes: &[u8]) -> u32 {
+    let mut c = flate2::Crc::new();
+    c.update(bytes);
+    c.sum()
 }
 
 /// A script as `PLO_NPCWEAPONADD` carries it: Latin-1, lines joined by
@@ -372,9 +444,51 @@ mod tests {
     }
 
     #[test]
+    fn gs2_builds_with_193_get_the_hash_and_ask_for_the_bytecode() {
+        let w = Weapon::parse(FILE).unwrap();
+        let code = w.script.as_ref().unwrap().prepared().bytecode().unwrap();
+        assert!(code.ends_with(b"\n"));
+        for v in [
+            ClientVersion::V404R2,
+            ClientVersion::V420R6,
+            ClientVersion::V420R8,
+        ] {
+            let m = w.message(v).unwrap_or_else(|| panic!("{v:?}"));
+            // 33 with the name and image only, then 193.
+            let mut want = msg(PLO_NPCWEAPONADD, b"'Lantern +lantern.png");
+            let mut h = Vec::new();
+            gint5(u64::from(crc32(code)), &mut h);
+            h.extend_from_slice(b"Lantern");
+            want.extend(msg(PLO_WEAPONHASH, &h));
+            assert_eq!(m, want, "{v:?}");
+            // 132 behind PLO_RAWDATA: the name, then the bytecode whose
+            // CRC 193 gave, its `\n` included.
+            let b = w.bytecode_message(v).unwrap();
+            let mut body = vec![gchar(7)];
+            body.extend_from_slice(b"Lantern");
+            body.extend_from_slice(&code[..code.len() - 1]);
+            assert_eq!(b, raw_block(PLO_UNKNOWN132, &body), "{v:?}");
+            assert_eq!(&b[b.len() - code.len()..], code);
+        }
+        // The GS1 builds get no 132.
+        assert!(w.bytecode_message(ClientVersion::V222).is_none());
+    }
+
+    /// The CRC and its `GINT5` as the lab saw them (GServer-v2 to real
+    /// 4.20r8, 2026-11-13): 0xd425d63c went as `2d 41 37 4c 5c`.
+    #[test]
+    fn the_hash_is_zlib_crc32_in_a_gint5() {
+        assert_eq!(crc32(b"123456789"), 0xcbf4_3926);
+        let mut h = Vec::new();
+        gint5(0xd425_d63c, &mut h);
+        assert_eq!(h, [0x2d, 0x41, 0x37, 0x4c, 0x5c]);
+    }
+
+    #[test]
     fn gs2_only_builds_get_nothing() {
         let w = Weapon::parse(FILE).unwrap();
         for v in [
+            ClientVersion::V500R7,
             ClientVersion::V512,
             ClientVersion::V524R4,
             ClientVersion::V603R7,

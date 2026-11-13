@@ -249,6 +249,8 @@ pub enum WorldIn {
     WeaponAdd { player: u16, raw: Vec<u8> },
     /// `PLI_TOWEAPON`.
     ToWeapon { player: u16, raw: Vec<u8> },
+    /// `PLI_UPDATESCRIPT`.
+    UpdateScript { player: u16, raw: Vec<u8> },
     /// `PLI_PRIVATEMESSAGE`.
     PrivateMessage { player: u16, raw: Vec<u8> },
     /// `PLI_REQUESTUPDATEBOARD`.
@@ -709,6 +711,14 @@ impl World {
     /// `PLI_TOWEAPON` (25), as sent.
     pub fn weapon_upload(&self, player: u16, raw: &[u8]) {
         let _ = self.tx.send(WorldIn::ToWeapon {
+            player,
+            raw: raw.to_vec(),
+        });
+    }
+
+    /// `PLI_UPDATESCRIPT` (158), as sent.
+    pub fn update_script(&self, player: u16, raw: &[u8]) {
+        let _ = self.tx.send(WorldIn::UpdateScript {
             player,
             raw: raw.to_vec(),
         });
@@ -1238,6 +1248,7 @@ impl WorldTask {
             WorldIn::FromNpc(m) => self.apply_npc(m),
             WorldIn::WeaponAdd { player, raw } => self.weapon_add(player, &raw),
             WorldIn::ToWeapon { player, raw } => self.weapon_upload(player, &raw),
+            WorldIn::UpdateScript { player, raw } => self.update_script(player, &raw),
             WorldIn::PrivateMessage { player, raw } => self.player_pm(player, &raw),
             WorldIn::RequestBoard { player, raw } => self.request_board(player, &raw),
             WorldIn::NpcGone => self.npc_gone(),
@@ -3139,6 +3150,27 @@ impl WorldTask {
             _ => return,
         };
         self.add_weapon(id, &crate::wire::latin1(&name));
+    }
+
+    /// `PLI_UPDATESCRIPT` (158): the client's cached copy of a weapon did
+    /// not match `PLO_WEAPONHASH`, and it asks for the weapon by name. It
+    /// gets the bytecode (`PLO_UNKNOWN132`) only for a weapon it holds;
+    /// any other name is not answered.
+    fn update_script(&mut self, id: u16, raw: &[u8]) {
+        let Some(p) = self.players.get(&id) else {
+            return;
+        };
+        let name = latin1_text(raw).trim().to_string();
+        if !p.weapons.iter().any(|w| w.eq_ignore_ascii_case(&name)) {
+            return;
+        }
+        if let Some(m) = self
+            .weapons
+            .get(&name)
+            .and_then(|w| w.bytecode_message(p.profile))
+        {
+            let _ = p.outbox.send(vec![m]);
+        }
     }
 
     /// `PLI_TOWEAPON` (25), which 1.21 to 1.37 send for a weapon they
