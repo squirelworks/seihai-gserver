@@ -258,12 +258,12 @@ pub mod ids {
     pub const PLO_FILE: u8 = 102;
     /// Level name. Confirmed: chests and NPCs apply to this level.
     pub const PLO_SETACTIVELEVEL: u8 = 156;
-    /// Status-list text. Confirmed.
     /// Text `0,name,host,port`: log in again there under that name. Sent
     /// by the Login lobby to 4.x to 6.x builds after the burst; real
     /// 5.24r4 and 6.03r7 followed it from a lab lobby
     /// (`docs/lab/five-clients-2026-11-12.md`).
     pub const PLO_SERVERWARP: u8 = 178;
+    /// Status-list text. Confirmed.
     pub const PLO_STATUSLIST: u8 = 180;
     /// Empty in the login burst. Confirmed: asks for the process list.
     pub const PLO_LISTPROCESSES: u8 = 182;
