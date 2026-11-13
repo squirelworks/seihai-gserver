@@ -35,6 +35,7 @@ pub mod rcprops;
 pub mod rcserver;
 pub mod secure;
 pub mod server;
+pub mod weapons;
 pub mod wire;
 pub mod world;
 

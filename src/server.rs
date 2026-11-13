@@ -112,6 +112,7 @@ impl Server {
         // The world feeds the NPC-server link and applies what it sends.
         world.set_npc(npc.clone());
         world.set_server_flags_file(cfg.world.join("config").join("serverflags.txt"));
+        world.set_weapons_dir(cfg.world.join("weapons"));
         let login_rate = crate::ratelimit::LoginRate::new(cfg.login_rate, cfg.login_rate_loopback);
         let password_checks = crate::ratelimit::PasswordChecks::new(cfg.password_check_slots());
         Server {
@@ -508,6 +509,7 @@ impl Conn {
             kills: account.kills,
             flags: account.flags.clone(),
             staff: account.staff,
+            weapons: account.weapons.clone(),
             machines: machines.clone(),
         };
         let (id, level, gmap, leader) = match self.server.world.join(joining, outbox).await {
@@ -1328,6 +1330,7 @@ impl Session {
                     }
                 }
                 PLI_NPCPROPS => server.world.npc_props(self.id, payload),
+                PLI_WEAPONADD => server.world.weapon_add(self.id, payload),
                 PLI_BADDYPROPS => server.world.baddy_props(self.id, payload),
                 PLI_BADDYHURT => server.world.baddy_hurt(self.id, payload),
                 PLI_HURTPLAYER | PLI_CLAIMPKER => {
