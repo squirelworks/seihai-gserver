@@ -64,7 +64,7 @@ test) and the lab notes.
 | Chat (prop 12) | lab | `lab/five-clients-2026-11-12.md` | |
 | `PLI_TOALL` (to everyone online, `PLO_TOALL` 13) | tests | `original_rules.rs` | |
 | Bombs, arrows, fire spy, explosions | lab | `bombs_arrows.rs`; `lab/stage3-2026-11-05.md` | |
-| Player hits, hurt and death, `PLI_CLAIMPKER` | lab | `hurt_death.rs`; `lab/hurt-2026-11-12.md` | The kill cost is GServer-v2's; `rules = 1999` takes the 1999 servers' (`original_rules.rs`). One-byte claims from 1.21 to 1.35, deaths and alignment over time: tests only |
+| Player hits, hurt and death, `PLI_CLAIMPKER` | lab | `hurt_death.rs`; `lab/hurt-2026-11-12.md` | The kill cost is GServer-v2's; `rules = 1999` takes the 1999 servers' (`original_rules.rs`). One-byte claims from 1.21 to 1.35: tests only. Deaths and alignment over time were saved for real 1.35 and 1.39 (`lab/rules-1999-2026-11-13.md`) |
 | Carry and throw (`PLI_THROWCARRIED`) | no | | Its shape needs a capture of a real throw |
 | `PLI_HITOBJECTS`, `PLI_SHOOT`, `PLI_SHOOT2` | no | | |
 | `PLI_SHOWIMGPLAYER` | no | | |
@@ -87,6 +87,25 @@ test) and the lab notes.
 | `PLI_NPCWEAPONDEL` | no | | |
 | Classes and GS2 script updates (`PLI_UPDATECLASS`, `UPDATEGANI`) | no | | `PLI_UPDATESCRIPT` is answered for weapons (above) |
 | Server-side scripts (the NPC-server) | tests | `npc_link.rs`, `npc_messages.rs`, `nc.rs`; `lab/npclink-2026-10-31.md`, `lab/nc-2026-11-12.md` | A separate program, `seihai-npcserver`, runs GS1. GServer-v2 runs GS2 server scripts in-process; there is no GS2 server engine here |
+
+## The 1999 rules (`rules = 1999`)
+
+What the original servers do (`ORIGINAL-SERVERS.md`) and where this server stands on each rule. Real-client runs: `lab/rules-1999-2026-11-13.md` (#110).
+
+| Rule | v2 (default) | 1999 | Status | Shown by | Notes |
+|---|---|---|---|---|---|
+| Horses kept per level, sent to arrivals, gone after `horse_lifetime` | same | same | partial | `original_rules.rs`; `lab/rules-1999-2026-11-13.md` | A real 1.39's dropped horse got `PLO_HORSEDEL` 10.04 s later (v2). A later arrival getting it: tests only |
+| `PLI_TOALL` to everyone else online | same | same | tests | `original_rules.rs` | No real-client way to send it is known yet |
+| Kill claim from 1.21 to 1.35 (one `GCHAR`) | counted, GServer-v2's cost | counted only when the victim has 10+ AP; cost (AP+10)/20 | tests | `original_rules.rs` | |
+| Deaths counted from the dead bit and saved | yes | yes | lab (v2) | `original_rules.rs`; `lab/rules-1999-2026-11-13.md` | `DEATHS 1` saved for real 1.35 and 1.39 |
+| Alignment +1 per `alignment_time` online, saved | yes | yes | lab | `original_rules.rs`; `lab/rules-1999-2026-11-13.md` | Saved under both rule sets |
+| A leader's own mode 9 starts the baddy respawn | yes | yes | tests | `baddies.rs`, `original_rules.rs` | |
+| Bush regrowth | 15 s | 0.75 to 1.25 x `respawn_time` | tests | `board_changes.rs`, `original_rules.rs` | The real-client cut was not captured in the 2026-11-13 run |
+| A dead leader hands off | no | yes | tests | `original_rules.rs` | |
+| Baddy changes from a follower | kept | dropped | tests | `baddies.rs` | |
+| Swamp soldier and hare start modes | 0 | 6 and 7 | tests | `baddies.rs` | |
+| A new nickname or head | to the level | to everyone online | tests | `original_rules.rs` | |
+| Prop limits (max hearts 20, gralats 9,999,999, arrows and bombs 99, alignment 0 to 100) | the anti-cheat's counted props | the 1999 limits | tests | `original_rules.rs` | |
 
 ## Files and packages
 
