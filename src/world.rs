@@ -82,6 +82,7 @@ use crate::levels::Level;
 use crate::npclink::Hub;
 use crate::npcs::Npc;
 use crate::others::{self, Change, Props};
+use crate::profile::ClientProfile;
 use crate::wire::gchar;
 use crate::wire::ids::{
     PLO_BADDYPROPS, PLO_FLAGDEL, PLO_FLAGSET, PLO_HURTPLAYER, PLO_ISLEADER, PLO_ITEMADD,
@@ -770,6 +771,8 @@ struct Online {
     /// Lower-case account name.
     account: String,
     version: ClientVersion,
+    /// What this player's writes depend on, resolved at login.
+    profile: ClientProfile,
     gen: EncryptionGen,
     /// Lower-case name of the level the player is in.
     level: String,
@@ -1207,7 +1210,7 @@ impl WorldTask {
                     // Off the players' lists, as a player who logs out.
                     for p in self.players.values() {
                         let gone = &Change::default();
-                        if let Some(m) = others::message(p.version, rc, gone, &others::LOGGED_OUT) {
+                        if let Some(m) = others::message(p.profile, rc, gone, &others::LOGGED_OUT) {
                             let _ = p.outbox.send(vec![m]);
                         }
                     }
@@ -1247,7 +1250,7 @@ impl WorldTask {
                     let Some(p) = self.players.get(&id).filter(|_| done.insert(id)) else {
                         continue;
                     };
-                    let m = others::private_message(p.version, rc, &nick, &account, &text);
+                    let m = others::private_message(p.profile, rc, &nick, &account, &text);
                     if !m.is_empty() {
                         let _ = p.outbox.send(vec![m]);
                     }
@@ -1256,12 +1259,7 @@ impl WorldTask {
             RcEvent::AdminAll(text) => {
                 let m = crate::rc::admin_message(&r.account, &text);
                 for p in self.players.values() {
-                    if p.version
-                        .profile()
-                        .protocol
-                        .plo
-                        .contains(crate::rc::PLO_RC_ADMINMESSAGE)
-                    {
+                    if p.profile.reads(crate::rc::PLO_RC_ADMINMESSAGE) {
                         let _ = p.outbox.send(vec![m.clone()]);
                     }
                 }
@@ -1269,12 +1267,7 @@ impl WorldTask {
             RcEvent::AdminTo(id, text) => {
                 let m = crate::rc::admin_message(&r.account, &text);
                 if let Some(p) = self.players.get(&id) {
-                    if p.version
-                        .profile()
-                        .protocol
-                        .plo
-                        .contains(crate::rc::PLO_RC_ADMINMESSAGE)
-                    {
+                    if p.profile.reads(crate::rc::PLO_RC_ADMINMESSAGE) {
                         let _ = p.outbox.send(vec![m]);
                     }
                 }
@@ -1442,7 +1435,7 @@ impl WorldTask {
             return;
         }
         let changed = others::give_item(&mut p.props, item);
-        if let Some(m) = others::own_message(p.version, &changed) {
+        if let Some(m) = others::own_message(p.profile, &changed) {
             let _ = p.outbox.send(vec![m]);
         }
     }
@@ -1487,8 +1480,8 @@ impl WorldTask {
                 // the raise that follows is not a cheat. Nothing is sent.
                 let self_giving = op == ItemOp::Del
                     && self.players.get(&id).is_some_and(|p| {
-                        !p.version
-                            .profile()
+                        !p.profile
+                            .core
                             .protocol
                             .pli
                             .contains(crate::wire::ids::PLI_ITEMTAKE)
@@ -1501,7 +1494,7 @@ impl WorldTask {
                 if op == ItemOp::Take {
                     if let Some(p) = self.players.get_mut(&id) {
                         let changed = others::give_item(&mut p.props, item);
-                        if let Some(m) = others::own_message(p.version, &changed) {
+                        if let Some(m) = others::own_message(p.profile, &changed) {
                             let _ = p.outbox.send(vec![m]);
                         }
                     }
@@ -1518,7 +1511,7 @@ impl WorldTask {
             PLO_ITEMDEL
         };
         for (&other, p) in &self.players {
-            if other != id && p.level == level && p.version.profile().protocol.plo.contains(id_of) {
+            if other != id && p.level == level && p.profile.reads(id_of) {
                 let _ = p.outbox.send(vec![tell.clone()]);
             }
         }
@@ -1818,7 +1811,7 @@ impl WorldTask {
             None => {
                 // A server warp says where first, as the login burst does.
                 let mut warp = Vec::new();
-                if server && p.version.profile().protocol.plo.contains(PLO_PLAYERWARP) {
+                if server && p.profile.reads(PLO_PLAYERWARP) {
                     let mut b = vec![
                         gchar((w.x * 2.0).clamp(0.0, 223.0) as u8),
                         gchar((w.y * 2.0).clamp(0.0, 223.0) as u8),
@@ -1922,7 +1915,7 @@ impl WorldTask {
         for (&other, p) in &self.players {
             if other != id && p.level == old {
                 let none = Change::default();
-                if let Some(m) = others::message(me.version, other, &none, &others::LEFT_LEVEL) {
+                if let Some(m) = others::message(me.profile, other, &none, &others::LEFT_LEVEL) {
                     let _ = me.outbox.send(vec![m]);
                 }
             }
@@ -1949,6 +1942,7 @@ impl WorldTask {
             Online {
                 account: key.to_string(),
                 version,
+                profile: ClientProfile::of(version),
                 gen,
                 level: String::new(),
                 gmap: None,
@@ -2027,7 +2021,7 @@ impl WorldTask {
             self.leaders.insert(me.level.clone(), id);
             let _ = me.outbox.send(vec![crate::wire::msg(PLO_ISLEADER, b"")]);
         }
-        if me.version.profile().protocol.plo.contains(PLO_BADDYPROPS) {
+        if me.profile.reads(PLO_BADDYPROPS) {
             let msgs: Vec<_> = self
                 .baddies
                 .get(&me.level)
@@ -2043,13 +2037,7 @@ impl WorldTask {
             }
         }
         // The horses left there (`horses.rs`).
-        if me
-            .version
-            .profile()
-            .protocol
-            .plo
-            .contains(crate::horses::PLO_HORSEADD)
-        {
+        if me.profile.reads(crate::horses::PLO_HORSEADD) {
             let msgs = self
                 .horses
                 .get(&me.level)
@@ -2063,7 +2051,7 @@ impl WorldTask {
             }
         }
         // The items lying there.
-        if me.version.profile().protocol.plo.contains(PLO_ITEMADD) {
+        if me.profile.reads(PLO_ITEMADD) {
             let now = Instant::now();
             for i in self.floor.get(&me.level).into_iter().flatten() {
                 if i.until > now {
@@ -2077,10 +2065,10 @@ impl WorldTask {
             if other == id || p.level != me.level {
                 continue;
             }
-            if let Some(m) = others::message(me.version, other, &p.props.all(), &others::JOINED) {
+            if let Some(m) = others::message(me.profile, other, &p.props.all(), &others::JOINED) {
                 let _ = me.outbox.send(vec![m]);
             }
-            if let Some(m) = others::message(p.version, id, &mine, &others::JOINED) {
+            if let Some(m) = others::message(p.profile, id, &mine, &others::JOINED) {
                 let _ = p.outbox.send(vec![m]);
             }
         }
@@ -2160,10 +2148,7 @@ impl WorldTask {
             return;
         }
         for (&other, o) in &self.players {
-            if other != id
-                && o.level == p.level
-                && o.version.profile().protocol.plo.contains(PLO_BADDYPROPS)
-            {
+            if other != id && o.level == p.level && o.profile.reads(PLO_BADDYPROPS) {
                 let _ = o
                     .outbox
                     .send(vec![crate::baddies::message(bid, &changed, o.version)]);
@@ -2202,7 +2187,7 @@ impl WorldTask {
         payload.extend_from_slice(raw);
         let m = crate::wire::msg(out, &payload);
         for (&other, o) in &self.players {
-            if other != id && o.level == p.level && o.version.profile().protocol.plo.contains(out) {
+            if other != id && o.level == p.level && o.profile.reads(out) {
                 let _ = o.outbox.send(vec![m.clone()]);
             }
         }
@@ -2226,7 +2211,7 @@ impl WorldTask {
         let Some(v) = self.players.get(&victim) else {
             return;
         };
-        if v.level != p.level || !v.version.profile().protocol.plo.contains(PLO_HURTPLAYER) {
+        if v.level != p.level || !v.profile.reads(PLO_HURTPLAYER) {
             return;
         }
         let ((ax, ay), (vx, vy)) = (p.global(), v.global());
@@ -2256,7 +2241,7 @@ impl WorldTask {
         let Some(victim) = self.players.get(&id) else {
             return;
         };
-        let killer = if others::one_byte_id(victim.version) {
+        let killer = if victim.profile.server.one_byte_id {
             raw.first().map(|b| u16::from(b.wrapping_sub(0x20)))
         } else {
             raw.get(..2).and_then(seihai_core::protocol::read_gshort)
@@ -2287,7 +2272,7 @@ impl WorldTask {
         let change = p
             .props
             .apply(&[gchar(ALIGNMENT), gchar(ap.min(100))], ClientVersion::V222);
-        if let Some(m) = others::own_message(p.version, &[(ALIGNMENT, vec![gchar(ap.min(100))])]) {
+        if let Some(m) = others::own_message(p.profile, &[(ALIGNMENT, vec![gchar(ap.min(100))])]) {
             let _ = p.outbox.send(vec![m]);
         }
         let level = p.level.clone();
@@ -2352,13 +2337,7 @@ impl WorldTask {
         self.horses.retain(|_, h| !h.is_empty());
         for (level, msgs) in gone {
             for o in self.players.values() {
-                if o.level == level
-                    && o.version
-                        .profile()
-                        .protocol
-                        .plo
-                        .contains(crate::horses::PLO_HORSEDEL)
-                {
+                if o.level == level && o.profile.reads(crate::horses::PLO_HORSEDEL) {
                     let _ = o.outbox.send(msgs.clone());
                 }
             }
@@ -2372,11 +2351,11 @@ impl WorldTask {
             return;
         }
         for (&other, o) in &self.players {
-            if other == id || !o.version.profile().protocol.plo.contains(PLO_TOALL) {
+            if other == id || !o.profile.reads(PLO_TOALL) {
                 continue;
             }
             let mut p = Vec::with_capacity(raw.len() + 2);
-            others::put_id(o.version, id, &mut p);
+            others::put_id(o.profile, id, &mut p);
             p.extend_from_slice(raw);
             let _ = o.outbox.send(vec![crate::wire::msg(PLO_TOALL, &p)]);
         }
@@ -2471,7 +2450,7 @@ impl WorldTask {
                 continue;
             };
             for o in self.players.values() {
-                if o.level == level && o.version.profile().protocol.plo.contains(PLO_BADDYPROPS) {
+                if o.level == level && o.profile.reads(PLO_BADDYPROPS) {
                     let m = match &changed {
                         Some(c) => crate::baddies::message(bid, c, o.version),
                         None => b.message(o.version),
@@ -2527,7 +2506,7 @@ impl WorldTask {
             .map(|&i| (i, p.props.values().get(&i).cloned()))
             .collect();
         if let Some(hub) = &self.npc {
-            hub.props(id, raw, others::bow_prop10(p.version));
+            hub.props(id, raw, p.profile.server.prop10_bow);
         }
         let before: Vec<(u8, Option<Vec<u8>>)> = [GMAPLEVELX, GMAPLEVELY]
             .iter()
@@ -2576,7 +2555,7 @@ impl WorldTask {
                             back.push((*i, v.clone()));
                         }
                     }
-                    if let Some(m) = others::own_message(p.version, &back) {
+                    if let Some(m) = others::own_message(p.profile, &back) {
                         let _ = p.outbox.send(vec![m]);
                     }
                 } else if let Some(p) = self.players.get_mut(&id) {
@@ -2614,7 +2593,7 @@ impl WorldTask {
         if self.rules.era == crate::rules::Era::Y1999 {
             if let Some(p) = self.players.get_mut(&id) {
                 let told = p.props.limit_1999(&mut change);
-                if let Some(m) = others::own_message(p.version, &told) {
+                if let Some(m) = others::own_message(p.profile, &told) {
                     let _ = p.outbox.send(vec![m]);
                 }
             }
@@ -2631,7 +2610,7 @@ impl WorldTask {
             if let Some(level) = self.players.get(&id).map(|p| p.level.clone()) {
                 for (&o, op) in &self.players {
                     if o != id && op.level != level {
-                        if let Some(m) = others::message(op.version, id, &only, &[]) {
+                        if let Some(m) = others::message(op.profile, id, &only, &[]) {
                             let _ = op.outbox.send(vec![m]);
                         }
                     }
@@ -2721,7 +2700,7 @@ impl WorldTask {
             .into_iter()
             .filter_map(|(i, v)| v.map(|v| (i, v)))
             .collect();
-        if let Some(m) = others::own_message(p.version, &own) {
+        if let Some(m) = others::own_message(p.profile, &own) {
             let _ = p.outbox.send(vec![m]);
         }
     }
@@ -2754,7 +2733,7 @@ impl WorldTask {
                     let mut body = Vec::new();
                     let mut spans = Vec::new();
                     for &(id, change) in moved {
-                        if let Some(m) = others::message(r.version, id, change, &[]) {
+                        if let Some(m) = others::message(r.profile, id, change, &[]) {
                             spans.push((id, body.len(), body.len() + m.len()));
                             body.extend(m);
                         }
@@ -2775,7 +2754,7 @@ impl WorldTask {
     fn tell_level(&self, level: &str, id: u16, change: &Change, tail: &[(u8, &[u8])]) {
         for (&other, p) in &self.players {
             if other != id && p.level == level {
-                if let Some(m) = others::message(p.version, id, change, tail) {
+                if let Some(m) = others::message(p.profile, id, change, tail) {
                     let _ = p.outbox.send(vec![m]);
                 }
             }
@@ -2921,14 +2900,7 @@ impl WorldTask {
         let mut p = Vec::new();
         crate::wire::gint3(s.id, &mut p);
         let m = crate::wire::msg(PLO_NPCDEL, &p);
-        self.to_level_npc(&s.level, |o| {
-            o.version
-                .profile()
-                .protocol
-                .plo
-                .contains(PLO_NPCDEL)
-                .then(|| m.clone())
-        });
+        self.to_level_npc(&s.level, |o| o.profile.reads(PLO_NPCDEL).then(|| m.clone()));
     }
 
     /// The link closed: every server NPC goes.
@@ -2980,7 +2952,7 @@ impl WorldTask {
             let (gx, gy) = p.global();
             p.walk = Walk::at(gx, gy, Instant::now());
         }
-        if let Some(m) = others::own_message(p.version, &own) {
+        if let Some(m) = others::own_message(p.profile, &own) {
             let _ = p.outbox.send(vec![m]);
         }
         if change.has(NICKNAME) {
@@ -3010,7 +2982,7 @@ impl WorldTask {
         if !p.weapons.iter().any(|w| w.eq_ignore_ascii_case(&name)) {
             p.weapons.push(name.clone());
         }
-        let plo = &p.version.profile().protocol.plo;
+        let plo = &p.profile.core.protocol.plo;
         let m = match crate::weapons::give(&self.weapons, &name, p.version) {
             Some(m) => m,
             None if crate::weapons::default_id(&name).is_none()
@@ -3171,17 +3143,12 @@ impl WorldTask {
         let Some(p) = self.players.get(&id) else {
             return;
         };
-        let narrow = others::one_byte_id(p.version);
+        let narrow = p.profile.server.one_byte_id;
         let Some((to, text)) = parse_pm(raw, narrow) else {
             return;
         };
         if text.len() > MAX_PM {
-            if p.version
-                .profile()
-                .protocol
-                .plo
-                .contains(crate::rc::PLO_RC_ADMINMESSAGE)
-            {
+            if p.profile.reads(crate::rc::PLO_RC_ADMINMESSAGE) {
                 let mut b = b"Server message:".to_vec();
                 b.push(0xA7);
                 b.extend_from_slice(b"Your message was too long.");
@@ -3199,7 +3166,7 @@ impl WorldTask {
             .unwrap_or_default()
             .to_vec();
         let account = crate::wire::latin1(&p.account);
-        let sender = p.version;
+        let sender = p.profile;
         let mut back = Vec::new();
         let mut done = HashSet::new();
         for t in to {
@@ -3209,13 +3176,8 @@ impl WorldTask {
             let Some(o) = self.players.get(&t) else {
                 continue;
             };
-            if o.version
-                .profile()
-                .protocol
-                .plo
-                .contains(PLO_PRIVATEMESSAGE)
-            {
-                let m = others::private_message(o.version, id, &nick, &account, text);
+            if o.profile.reads(PLO_PRIVATEMESSAGE) {
+                let m = others::private_message(o.profile, id, &nick, &account, text);
                 let _ = o.outbox.send(vec![m]);
             } else if let Some(m) = others::server_message(sender, t, OLD_BUILD_PM) {
                 back.extend(m);
@@ -3272,7 +3234,7 @@ impl WorldTask {
         };
         let m = crate::wire::msg(id, &crate::wire::latin1(&text));
         for p in self.players.values() {
-            if p.version.profile().protocol.plo.contains(id) {
+            if p.profile.reads(id) {
                 let _ = p.outbox.send(vec![m.clone()]);
             }
         }
@@ -3333,7 +3295,7 @@ impl WorldTask {
         let Some(p) = self.players.get(&id) else {
             return;
         };
-        if self.server_flags.is_empty() || !p.version.profile().protocol.plo.contains(PLO_FLAGSET) {
+        if self.server_flags.is_empty() || !p.profile.reads(PLO_FLAGSET) {
             return;
         }
         let msgs: Vec<u8> = self
@@ -3353,14 +3315,14 @@ impl WorldTask {
         let Some(p) = self.players.get(&id) else {
             return;
         };
-        let prof = p.version.profile();
+        let prof = p.profile.core;
         if !prof.protocol.plo.contains(PLO_PRIVATEMESSAGE) {
             return;
         }
         let mut out = Vec::new();
         if prof.protocol.plo.contains(PLO_OTHERPLPROPS) && prof.props.other.contains(0) {
             let mut b = Vec::new();
-            others::put_id(p.version, NPC_SERVER_ID, &mut b);
+            others::put_id(p.profile, NPC_SERVER_ID, &mut b);
             b.push(gchar(0));
             crate::wire::gstring(b"NPC-Server", &mut b);
             out.extend(crate::wire::msg(PLO_OTHERPLPROPS, &b));
@@ -3914,6 +3876,7 @@ mod tests {
                 Online {
                     account: format!("p{id}"),
                     version: ClientVersion::V222,
+                    profile: ClientProfile::of(ClientVersion::V222),
                     gen: EncryptionGen::Gen5,
                     level: String::new(),
                     gmap: None,
@@ -4070,13 +4033,12 @@ fn with_id(props: &[u8], id: u16) -> Vec<u8> {
 /// it, else not at all (`board.rs`).
 fn board_form(p: &Online, level: &str, at: Option<&Place>) -> Option<crate::board::Form> {
     use crate::board::{Form, PLO_BOARDMODIFY, PLO_BOARDMODIFY2};
-    let plo = &p.version.profile().protocol.plo;
     match (&p.gmap, at) {
         (Some(mine), Some(at)) if mine.gmap == at.gmap => {
             let near = mine.cell.0.abs_diff(at.cell.0) <= 1 && mine.cell.1.abs_diff(at.cell.1) <= 1;
-            (near && plo.contains(PLO_BOARDMODIFY2)).then_some(Form::Cell(at.cell.0, at.cell.1))
+            (near && p.profile.reads(PLO_BOARDMODIFY2)).then_some(Form::Cell(at.cell.0, at.cell.1))
         }
-        (None, _) if p.level == level => plo.contains(PLO_BOARDMODIFY).then_some(Form::Level),
+        (None, _) if p.level == level => p.profile.reads(PLO_BOARDMODIFY).then_some(Form::Level),
         _ => None,
     }
 }
