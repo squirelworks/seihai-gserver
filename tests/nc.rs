@@ -11,7 +11,7 @@ use seihai_core::scripting::engine::Era;
 use seihai_gserver::accounts::{Account, Store};
 use seihai_gserver::npclink::serve_link;
 use seihai_gserver::server::{serve, Server};
-use seihai_gserver::wire::{detokenize, gchar, gint3, tokenize};
+use seihai_gserver::wire::{gchar, gint3, tokenize};
 use seihai_npcserver::scripts::Scripts;
 use seihai_npcserver::session::{self, Timing};
 use seihai_rc::nc::{
@@ -80,14 +80,6 @@ fn start(world: &Path) -> (String, String, Arc<Server>) {
     (g.to_string(), l.to_string(), server)
 }
 
-/// A tokenized text's lines.
-fn lines(t: &str) -> Vec<String> {
-    detokenize(t.as_bytes())
-        .iter()
-        .map(|l| String::from_utf8_lossy(l).into_owned())
-        .collect()
-}
-
 /// Events until `want` matches one, which is returned.
 fn wait_for(s: &mut NcSession, what: &str, want: impl Fn(&NcEvent) -> bool) -> NcEvent {
     let deadline = Instant::now() + T;
@@ -154,11 +146,15 @@ fn an_nc_lists_reads_sets_and_deletes_npcs() {
     let got = wait_for(&mut nc, "script", |e| {
         matches!(e, NcEvent::NpcScript { .. })
     });
-    // The script's lines come tokenized, as the real 2001 NC reads them.
+    // The script's lines come tokenized, as the real 2001 NC reads them;
+    // seihai-rc hands them back as text, one line per item.
     let NcEvent::NpcScript { id: 1, script } = got else {
         panic!("{got:?}")
     };
-    assert_eq!(lines(&script), ["if (created) { message ding; }"]);
+    assert_eq!(
+        script.lines().collect::<Vec<_>>(),
+        ["if (created) { message ding; }"]
+    );
 
     // A new script, two lines, sent the way the real 2001 NC sends it:
     // in the file, and read back the same.
@@ -187,7 +183,7 @@ fn an_nc_lists_reads_sets_and_deletes_npcs() {
         panic!("{got:?}")
     };
     assert_eq!(
-        lines(&script),
+        script.lines().collect::<Vec<_>>(),
         ["if (created) {", "  message dong, dong; }"]
     );
     let file = std::fs::read_to_string(w.join("npcs/bell.txt")).unwrap();
