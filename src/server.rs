@@ -114,6 +114,7 @@ impl Server {
         world.set_npc(npc.clone());
         world.set_server_flags_file(cfg.world.join("config").join("serverflags.txt"));
         world.set_weapons_dir(cfg.world.join("weapons"));
+        world.set_board_rules_file(cfg.world.join("config").join("boardrules.txt"));
         let login_rate = crate::ratelimit::LoginRate::new(cfg.login_rate, cfg.login_rate_loopback);
         let password_checks = crate::ratelimit::PasswordChecks::new(cfg.password_check_slots());
         Server {

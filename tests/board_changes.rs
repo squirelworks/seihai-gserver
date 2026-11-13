@@ -123,3 +123,43 @@ fn gmap_players_get_cell_changes_and_an_update_request_is_answered() {
     kai.send(130, &away);
     assert!(!kai.settle().iter().any(|(id, _)| *id == 186));
 }
+
+/// The board check (#107): with `anticheat.board = correct` and the
+/// world's `config/boardrules.txt`, a cut bush that matches a rule is
+/// passed on, and a block that matches none is kept from the others and
+/// put back for the sender.
+#[test]
+fn the_board_check_passes_rules_and_puts_back_the_rest() {
+    use common::raw::RawClient;
+    let w = world("board-check", "*\n");
+    std::fs::write(
+        w.join("config/boardrules.txt"),
+        "# the 2.05 lab's cut bush\nbush 2 2 0 0 0 0 -> 1834 1835 1850 1851\n",
+    )
+    .unwrap();
+    let cfg = w.join("config/server.txt");
+    let mut text = std::fs::read_to_string(&cfg).unwrap();
+    text.push_str("anticheat = on\nanticheat.board = correct\n");
+    std::fs::write(&cfg, text).unwrap();
+    let (addr, server) = start(&w);
+    let log = server.anticheat.log_path().to_path_buf();
+    let in_level = |m: &common::raw::Seen| m.iter().any(|(id, _)| *id == 6);
+    let mut ann = RawClient::join(&addr, ClientVersion::V205, "ann", in_level);
+    let mut ben = RawClient::join(&addr, ClientVersion::V222, "ben", in_level);
+    ann.settle();
+
+    let cut = board_modify_message(39, 14, 2, 2, &[1834, 1835, 1850, 1851]);
+    ann.sess.conn.send_messages(&[cut]).unwrap();
+    ben.until("the cut", |m| m.iter().any(|(id, _)| *id == 7));
+
+    let paint = board_modify_message(10, 10, 2, 2, &[1, 1, 1, 1]);
+    ann.sess.conn.send_messages(&[paint]).unwrap();
+    let back = ann.until("the tiles put back", |m| m.iter().any(|(id, _)| *id == 7));
+    let (_, p) = back.iter().find(|(id, _)| *id == 7).unwrap();
+    let read = seihai_core::protocol::layouts::parse_board_modify(p).unwrap();
+    assert_eq!((read.x, read.y), (10, 10));
+    assert_eq!(read.tiles, [0, 0, 0, 0]);
+    assert!(!ben.settle().iter().any(|(id, _)| *id == 7));
+    let logged = std::fs::read_to_string(&log).unwrap_or_default();
+    assert!(logged.contains("board"), "{logged}");
+}

@@ -403,6 +403,7 @@ impl World {
                 server_flags: BTreeMap::new(),
                 flags_file: None,
                 weapons: crate::weapons::Weapons::default(),
+                board_rules: None,
                 noted: HashSet::new(),
                 board_refused: HashSet::new(),
                 reload_objects: HashSet::new(),
@@ -679,6 +680,21 @@ impl World {
     pub fn set_weapons_dir(&self, dir: PathBuf) {
         if let Some(t) = self.task.lock().unwrap().as_mut() {
             t.weapons = crate::weapons::Weapons::load(&dir);
+        }
+    }
+
+    /// The world's board rules (`config/boardrules.txt`, `board.rs`), for
+    /// the anti-cheat's board check. A line that does not read is logged
+    /// and left out; no file means no check. Call before [`World::start`].
+    pub fn set_board_rules_file(&self, path: PathBuf) {
+        let Some((rules, warnings)) = crate::board::BoardRules::load(&path) else {
+            return;
+        };
+        for w in warnings {
+            eprintln!("{w}");
+        }
+        if let Some(t) = self.task.lock().unwrap().as_mut() {
+            t.board_rules = Some(rules);
         }
     }
 
@@ -993,6 +1009,9 @@ pub struct WorldTask {
     flags_file: Option<PathBuf>,
     /// The world's weapons (`weapons/`).
     weapons: crate::weapons::Weapons,
+    /// The world's board rules (`config/boardrules.txt`), for the board
+    /// check; `None` without the file.
+    board_rules: Option<crate::board::BoardRules>,
     /// Link messages already logged as not passed on.
     noted: HashSet<&'static str>,
     /// Players and levels already logged for a board change past
@@ -2376,6 +2395,9 @@ impl WorldTask {
             .get(&level)
             .map(|l| l.board.clone())
             .unwrap_or_default();
+        if !self.board_check(id, &level, &block, &file) {
+            return;
+        }
         let kept = self.boards.entry(level.clone()).or_default().add(
             block.clone(),
             &file,
@@ -2402,6 +2424,52 @@ impl WorldTask {
                 let _ = o.outbox.send(vec![block.message_as(form)]);
             }
         }
+    }
+
+    /// The board check (`anticheat.board`): `false` when the block
+    /// matches none of the world's board rules and the policy corrects
+    /// it. The player is then sent the level's tiles there again, so its
+    /// own board goes back too.
+    fn board_check(
+        &mut self,
+        id: u16,
+        level: &str,
+        block: &crate::board::Block,
+        file: &[u16],
+    ) -> bool {
+        if self.anticheat.is_none() {
+            return true;
+        }
+        let Some(rules) = &self.board_rules else {
+            return true;
+        };
+        let now = self
+            .boards
+            .get(level)
+            .map(|c| c.board(file))
+            .unwrap_or_else(|| {
+                let mut b = file.to_vec();
+                b.resize(64 * 64, 0);
+                b
+            });
+        if rules.allows(block, &now).is_some() {
+            return true;
+        }
+        let what = format!(
+            "{}x{} block at {} {} in {level} matches no board rule",
+            block.w, block.h, block.x, block.y
+        );
+        if !self.report(id, Kind::Board, what) {
+            return true;
+        }
+        if let Some(p) = self.players.get(&id) {
+            let place = self.gmaps.find(level);
+            if let Some(form) = board_form(p, level, place.as_ref()) {
+                let back = block.read_from(&now);
+                let _ = p.outbox.send(vec![back.message_as(form)]);
+            }
+        }
+        false
     }
 
     /// Changes whose time is up grow back for everyone in the level.

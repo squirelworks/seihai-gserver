@@ -34,6 +34,13 @@
 //!   second on a connection, file checks (`PLI_WANTFILE`, `PLI_UPDATEFILE`)
 //!   left out: a client checks its whole cache at login. One run of
 //!   messages over the limit is one violation.
+//! - **Board** (`world.rs`, `board.rs`): a `PLI_BOARDMODIFY` block that
+//!   matches none of the world's board rules (`config/boardrules.txt`):
+//!   the objects a player can really change there, a bush cut or lifted,
+//!   a pot, a sign, a pushed block, a dug hole, by their tiles before and
+//!   after. A world without the file is not checked. Correcting keeps the
+//!   block out of the level, passes it to nobody, and sends the player
+//!   the level's tiles there again.
 //!
 //! Actions: `off`, `log` (a line in the log file), `correct` (also put it
 //! back: the position is sent back to the player and not passed on, the
@@ -66,6 +73,7 @@
 //! anticheat.rate = correct, kick after 3 in 10
 //! anticheat.hurt = correct
 //! anticheat.items = log, ban 1d after 10 in 600, staff exempt
+//! anticheat.board = correct
 //! ```
 
 use std::collections::VecDeque;
@@ -106,16 +114,20 @@ pub enum Kind {
     Items,
     /// A hit on another player from too far away.
     Hurt,
+    /// A board change that matches none of the world's board rules
+    /// (`config/boardrules.txt`, `board.rs`).
+    Board,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 6] = [
+    pub const ALL: [Kind; 7] = [
         Kind::Speed,
         Kind::Teleport,
         Kind::Warp,
         Kind::Rate,
         Kind::Items,
         Kind::Hurt,
+        Kind::Board,
     ];
 
     /// The name in the settings and the log.
@@ -127,6 +139,7 @@ impl Kind {
             Kind::Rate => "rate",
             Kind::Items => "items",
             Kind::Hurt => "hurt",
+            Kind::Board => "board",
         }
     }
 
@@ -233,7 +246,7 @@ pub struct Policy {
     pub log: PathBuf,
     /// Messages a second a connection may send.
     pub rate: u32,
-    rules: [Rule; 6],
+    rules: [Rule; 7],
 }
 
 impl Default for Policy {
@@ -243,7 +256,7 @@ impl Default for Policy {
             enabled: false,
             log: PathBuf::from("logs/anticheat.log"),
             rate: 200,
-            rules: [Rule::LOG; 6],
+            rules: [Rule::LOG; 7],
         }
     }
 }
@@ -320,7 +333,7 @@ impl Verdict {
 /// One player's recent violations, by kind.
 #[derive(Debug, Default)]
 pub struct Score {
-    recent: [VecDeque<Instant>; 6],
+    recent: [VecDeque<Instant>; 7],
 }
 
 impl Score {
