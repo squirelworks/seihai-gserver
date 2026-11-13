@@ -48,7 +48,7 @@ test) and the lab notes.
 | Items on the ground (`PLI_ITEMADD`, `ITEMDEL`, `ITEMTAKE`) | lab | `floor_items.rs`; `lab/stage2` | |
 | Player flags and server flags (`PLI_FLAGSET`, `FLAGDEL`) | lab | `lab/stage2` | Server flags come from the NPC-server (stage 5) |
 | Level changes on disk reloaded | tests | `npc_messages.rs` (`LEVEL_RELOADED`) | |
-| Board changes (`PLI_BOARDMODIFY`, `PLI_REQUESTUPDATEBOARD`) | partial | `board_changes.rs` | `PLI_BOARDMODIFY` is passed on to the level and sent to later arrivals; 2x2 changes grow back after 15 s. Not on gmaps, and `PLI_REQUESTUPDATEBOARD` is not read yet (#103) |
+| Board changes (`PLI_BOARDMODIFY`, `PLI_REQUESTUPDATEBOARD`) | partial | `board_changes.rs` | `PLI_BOARDMODIFY` is passed on to the level and sent to later arrivals; 2x2 changes grow back after 15 s. Not on gmaps, and `PLI_REQUESTUPDATEBOARD` is not read yet. Blocks are not checked against the level and have no cap per level yet (#103) |
 | Horses (`PLI_HORSEADD`, `HORSEDEL`) | no | | |
 | `PLI_ENTERLEVEL` (newer builds' level entry) | no | | |
 | Level groups (`gr.setlevelgroup`) | no | | |
