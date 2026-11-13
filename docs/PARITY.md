@@ -36,7 +36,7 @@ test) and the lab notes.
 | Ping (`PLO_PING` 108 / `PLI_PONG` 162) | tests | `ping.rs` | The lab capture is open (#56, "Lab") |
 | Word filter | no | | |
 | UPnP port forwarding | no | | Low priority: `seihai-servertools setup` covers going public |
-| Login lobby and server warp (`PLO_SERVERWARP` 178, `PLI_SERVERWARP`) for 5.x/6.x | no | | Stage 6. The five-client run used a lab lobby in front of this server |
+| Login lobby and server warp (`PLO_SERVERWARP` 178, `PLI_SERVERWARP`) for 5.x/6.x | partial | `lobby.rs` | `lobby_port` in `config/server.txt` (off by default) answers a 4.x–6.x lobby build's login with 178 to this server. `PLI_SERVERWARP` is not read yet. No real-client run (#102) |
 
 ## World
 
@@ -48,7 +48,7 @@ test) and the lab notes.
 | Items on the ground (`PLI_ITEMADD`, `ITEMDEL`, `ITEMTAKE`) | lab | `floor_items.rs`; `lab/stage2` | |
 | Player flags and server flags (`PLI_FLAGSET`, `FLAGDEL`) | lab | `lab/stage2` | Server flags come from the NPC-server (stage 5) |
 | Level changes on disk reloaded | tests | `npc_messages.rs` (`LEVEL_RELOADED`) | |
-| Board changes (`PLI_BOARDMODIFY`, `PLI_REQUESTUPDATEBOARD`) | no | | Bushes, rocks and digging go back to normal on the client only |
+| Board changes (`PLI_BOARDMODIFY`, `PLI_REQUESTUPDATEBOARD`) | partial | `board_changes.rs` | `PLI_BOARDMODIFY` is passed on to the level and sent to later arrivals; 2x2 changes grow back after 15 s. Not on gmaps, and `PLI_REQUESTUPDATEBOARD` is not read yet (#103) |
 | Horses (`PLI_HORSEADD`, `HORSEDEL`) | no | | |
 | `PLI_ENTERLEVEL` (newer builds' level entry) | no | | |
 | Level groups (`gr.setlevelgroup`) | no | | |
@@ -77,7 +77,7 @@ test) and the lab notes.
 | Baddies (`PLI_BADDYPROPS`, `BADDYHURT`) | lab | `baddies.rs`; `lab/stage3` | `PLI_BADDYADD` is not handled |
 | NPCs a client puts or deletes (`PLI_PUTNPC`, `PLI_NPCDEL`) | no | | |
 | Trigger actions (`PLI_TRIGGERACTION`, `gr.*` commands) | no | | `PLO_TRIGGERACTION` needs a capture (#53) |
-| Weapons: `PLI_WEAPONADD`, `PLI_TOWEAPON` | partial | `quiet_weapon_ids.rs` | Read and not answered. Default weapons and NPC-server weapons are sent (`npc_messages.rs`) |
+| Weapons: `PLI_WEAPONADD`, `PLI_TOWEAPON` | partial | `weapons.rs`, `npc_messages.rs` | `PLI_WEAPONADD` gives default weapons and level-NPC weapons (`toweapons`), kept in `weapons/` and on the account. GS1 weapons go only to builds that run GS1. `PLI_TOWEAPON` is still read and not answered (#101) |
 | Weapon scripts and the weapon cache (`PLO_NPCWEAPONSCRIPT` 140, `PLO_WEAPONHASH` 193) | no | | Named in `packet-ids.md`, not sent |
 | `PLI_NPCWEAPONDEL` | no | | |
 | Classes and GS2 script updates (`PLI_UPDATECLASS`, `UPDATESCRIPT`, `UPDATEGANI`) | no | | |
@@ -122,11 +122,11 @@ test) and the lab notes.
 
 From the rows above, in the roadmap's order:
 
-1. **Stage 6:** the login lobby and server warp. Without them, 5.x and 6.x
-   clients need a lab lobby in front of this server.
-2. **Weapons:** `PLI_WEAPONADD`, weapon scripts and the weapon cache. Most
-   worlds rely on weapons.
-3. **Board changes:** `PLI_BOARDMODIFY` and `PLI_REQUESTUPDATEBOARD`.
+1. **Lab runs** for the lobby, weapons and board changes, which are built
+   and covered by loopback tests only.
+2. **Weapons:** `PLI_TOWEAPON`, weapon scripts for GS2 builds and the
+   weapon cache.
+3. **Board changes:** `PLI_REQUESTUPDATEBOARD` and gmaps.
 4. **Trigger actions**, once `PLO_TRIGGERACTION` has a capture.
 5. Carry and throw, horses, guilds and the word filter.
 
