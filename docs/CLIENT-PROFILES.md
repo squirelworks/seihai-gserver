@@ -4,8 +4,8 @@ The world keeps one model of players, levels and NPCs. Each connection
 writes that model out in the form its client build reads. This page lays
 out the table those writes read from: what each row decides, where its
 value comes from, who reads it today, and what is still a version check
-somewhere else. It is a design. The only code that exists so far is
-`src/profile.rs` and the `seihai-core` profiles it reads.
+somewhere else. The code is `src/profile.rs`, the `seihai-core` profiles
+it reads, and the per-receiver script in `src/npcs.rs`.
 
 ## Shape
 
@@ -52,7 +52,7 @@ The **Source** column says where the value comes from: `core` is
 | Packet ids | which server-to-client ids the build handles; others are dropped or swapped for a near one | core `protocol.plo` | `world.rs`, `burst.rs`, `files.rs`, `others.rs`, `ping.rs`, `server.rs` | done |
 | Own props | which own-player props, and how many (below 2.1: the first 37) | core `props.own` | `others.rs`, `burst.rs` | done |
 | Other players' props | which props of others, prop 10 as bow or gani | core `props.other`, server `prop10_bow` (2.05 override) | `others.rs` | done |
-| NPC props | ids up to `npc_max`, prop 12 in the build's shape | core `props.npc_max`, `props.bow_prop10` | `npcs.rs` | partial: `npcs.rs` reads `bow_prop10` from core directly, not through `ServerProfile`, so the 2.05 override does not reach NPCs |
+| NPC props | ids up to `npc_max`, prop 12 in the build's shape | core `props.npc_max`, server `prop10_bow` (2.05 override) | `npcs.rs` | done: prop 12 and the own-props burst's prop 10 read `ServerProfile`, so the 2.05 override reaches them |
 | Positions | half-tile X/Y before 2.3, pixel X2/Y2 from 2.3 | core `props.precise_pos` | `others.rs`, `burst.rs` | partial: level NPCs are always written as half tiles (`npcs.rs`, `half_tiles`) |
 | Image names | `.gif` before 2.1, `.png` after; baddy images | core `files.image_ext`, server `baddy_image_ext` (2.05 override) | `baddies.rs`, `files.rs` | partial: NPC and player image props pass the world's name through unchanged |
 | Files | `PLO_FILE` mod time, large files | core `files.*`, server `file_modtime` (2.05 override) | `files.rs` | done |
@@ -60,14 +60,19 @@ The **Source** column says where the value comes from: `core` is
 | Levels | which board form (GR-V1.0x, NW); gmaps as gmaps or as linked single levels | core `levels.*`, `GmapRules` | `levels.rs`, `gmaps.rs` | partial: `gmaps::plays_gmaps` reads `GmapRules`, not the profile row. Single-level gmap output for pre-gmap builds is not written yet |
 | Frames | gen 5 long frames, round-down | core `protocol.gen5_*` | `codec.rs`, `server.rs` | done |
 | Login burst | the burst per era, lobby or not | core `protocol.*`, `burst::shape_version` | `burst.rs`, `login.rs` | done |
-| **Scripts** | GS1 text, GS2 bytecode or a stub, per NPC | core `scripts` through `seihai_core::scripting::delivery` | nothing yet: every build gets the GS1 text in prop 1 | todo (see below) |
+| **Scripts** | GS1 text, GS2 bytecode or a stub, per NPC | core `scripts` through `seihai_core::scripting::delivery` | `npcs.rs` (`Npc::message_on`) | done in code; the lab run is left (see below) |
 
 ## The scripts row
 
-Today `Npc::from_level` (`src/npcs.rs`) puts the level NPC's GS1 source in
-prop 1 for every receiver. A 5.x or 6.x client is sent GS1 text, which it
-does not run. Pre-2.1 builds are also sent 2.1 GS1, which they cannot
-parse.
+Done in code (seihai-core `v0.0.16`). Before it, `Npc::from_level` put the
+level NPC's GS1 source in prop 1 for every receiver: a 5.x or 6.x client
+was sent GS1 text, which it does not run, and pre-2.1 builds were sent
+2.1 GS1 they cannot parse. Now each NPC keeps a `Script` (the source and
+its bytecode, compiled once with the level's era, 2.1), and
+`Npc::message_on` writes it per receiver as below. The unit tests in
+`src/npcs.rs` read the output back with core's client (`SessionState`):
+GS1 builds get prop 1 and no 131; 3.153, 5.24r4 and 6.03r7 get no prop 1
+and the bytecode under the NPC's id; 2.05 gets a 2.1-only script as a stub.
 
 seihai-core#21 adds `seihai_core::scripting::delivery`:
 
@@ -102,10 +107,9 @@ The plan for the server:
    Bytecode is only ever sent by the server.
 5. **Server NPCs stay as they are.** NPCs from the NPC-server keep their
    script on the NPC-server (`Npc::from_link`).
-6. **Bump the core tag.** The gserver pins seihai-core `v0.0.11`. The
-   delivery module ships in the first tag after seihai-core#21. Bumping
-   brings v0.0.12 to v0.0.14, so the bump is its own PR with the test
-   suite run.
+6. **Bump the core tag.** Done: `v0.0.11` to `v0.0.16`, with
+   seihai-npcserver moved to the same tag (its `Scripts` takes core's
+   `Era`, so the two must match). The whole test suite passed unchanged.
 
 This row's acceptance is a lab run, not a unit test. Put one door NPC
 (the script in the `delivery` tests) in a level. Then 1.39, 2.22, 2.31,
@@ -121,12 +125,15 @@ which that run did not manage. Until then, a wire check is the evidence:
 1. **`ClientProfile` at login.** Pass it to writers instead of the
    `ClientVersion`. This is mechanical and changes no bytes; the existing
    tests show that.
-2. **Fix the partial rows.** NPC prop 12 through `ServerProfile`. Level
-   NPC positions per `precise_pos`. Image extensions on NPC and player
-   image props. Move the package list into core. Each is a small change
-   with its own test.
-3. **The scripts row.** First the tag bump, then steps 1 to 5 above, then
-   the lab run.
+2. **Fix the partial rows.** NPC prop 12 through `ServerProfile` is done.
+   Left, each waiting on evidence rather than code:
+   - Level NPC positions per `precise_pos`: needs a capture of what a 2.3+
+     client does with NPC X2/Y2 next to X/Y, since a push moves X/Y.
+   - Image extensions on NPC and player image props: needs a rule for a
+     world that has only the `.png` (no image conversion here yet).
+   - The package list into core `files`, once the 4.20r8 lab result is
+     recorded in seihai-core.
+3. **The scripts row.** Code done; the lab run is left.
 4. **Gmaps as single levels** for pre-gmap builds. This is the largest
    row, and it needs its own design: the cell links, warps at the edges,
    and what an old client sees of players in the next cell.

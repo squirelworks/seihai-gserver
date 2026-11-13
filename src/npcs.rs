@@ -18,11 +18,26 @@
 //!
 //! A client may not set an NPC's script (1), id (17) or level (52): a
 //! script from one client would run on every other client in the level.
+//!
+//! A level NPC's script is written per receiver (issue #45, the scripts
+//! row of `docs/CLIENT-PROFILES.md`). It is compiled once, when the level
+//! is read, with `seihai_core::scripting::delivery`, and each build gets
+//! the form its profile says it runs: the GS1 text in prop 1, the GS2
+//! bytecode as `PLO_NPCBYTECODE` (131) right after the NPC's props, or
+//! no script at all (a stub), which is logged once per NPC and build.
 
-use crate::wire::ids::PLO_NPCPROPS;
-use crate::wire::{gchar, gint3, gshort, latin1, msg};
+use crate::profile::ServerProfile;
+use crate::wire::ids::{PLO_NPCBYTECODE, PLO_NPCPROPS};
+use crate::wire::{gchar, gint3, gshort, latin1, msg, raw_block};
 use seihai_core::protocol::ClientVersion;
-use std::collections::BTreeMap;
+use seihai_core::scripting::delivery::{Delivery, Prepared};
+use seihai_core::scripting::engine::Era;
+use std::collections::{BTreeMap, HashSet};
+use std::sync::{Arc, Mutex};
+
+/// The GS1 era level NPC scripts are written in: the world's levels are
+/// 2.1-era files, as GServer-v2 serves them.
+pub const LEVEL_ERA: Era = Era::V21;
 
 /// Prop ids.
 pub const IMAGE: u8 = 0;
@@ -55,8 +70,56 @@ pub const MAX_SCRIPT: usize = (1 << 14) - 1;
 #[derive(Debug, Clone, PartialEq)]
 pub struct Npc {
     pub id: u32,
-    /// Prop id to its value as on the wire.
+    /// Prop id to its value as on the wire. Prop 1 holds the GS1 text; it
+    /// goes only to the receivers [`Npc::script`] sends text to.
     pub props: BTreeMap<u8, Vec<u8>>,
+    /// A level NPC's script, compiled once. `None` for an NPC without a
+    /// script and for server NPCs, whose script stays on the NPC-server.
+    pub script: Option<Script>,
+}
+
+/// A level NPC's script: its GS1 source and GS2 bytecode, and the builds
+/// already logged as getting no script.
+#[derive(Debug, Clone)]
+pub struct Script(Arc<ScriptInner>);
+
+#[derive(Debug)]
+struct ScriptInner {
+    prepared: Prepared,
+    stub_logged: Mutex<HashSet<ClientVersion>>,
+}
+
+impl PartialEq for Script {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.prepared.source() == other.0.prepared.source()
+    }
+}
+
+impl Script {
+    /// Compile `source` (GS1 of `era`) once.
+    pub fn gs1(source: &str, era: Era) -> Script {
+        Script(Arc::new(ScriptInner {
+            prepared: Prepared::gs1(source, era),
+            stub_logged: Mutex::new(HashSet::new()),
+        }))
+    }
+
+    pub fn prepared(&self) -> &Prepared {
+        &self.0.prepared
+    }
+
+    /// What `to` is sent. A stub is logged the first time each build gets
+    /// it, so a server owner can see which builds go without the script.
+    fn for_client(&self, npc: u32, to: ClientVersion) -> Delivery<'_> {
+        let d = self.0.prepared.for_client(to).delivery;
+        if let Delivery::Stub(why) = d {
+            let mut logged = self.0.stub_logged.lock().unwrap_or_else(|e| e.into_inner());
+            if logged.insert(to) {
+                eprintln!("npc {npc}: no script for {to:?} ({why:?})");
+            }
+        }
+        d
+    }
 }
 
 impl Npc {
@@ -88,7 +151,8 @@ impl Npc {
         props.insert(ID, idv);
         props.insert(SPRITE, vec![gchar(2)]);
         props.insert(UNKNOWN43, vec![0xFF]);
-        Npc { id, props }
+        let script = (!n.script.trim().is_empty()).then(|| Script::gs1(&n.script, LEVEL_ERA));
+        Npc { id, props, script }
     }
 
     /// A server NPC from the NPC-server (`NPC_ADDED`): the record a level
@@ -107,6 +171,7 @@ impl Npc {
                 (SPRITE, vec![gchar(2)]),
                 (UNKNOWN43, vec![0xFF]),
             ]),
+            script: None,
         };
         n.update(props, ClientVersion::V222);
         n
@@ -137,14 +202,29 @@ impl Npc {
     /// one is given. A gmap client keeps the NPCs of every cell under the
     /// gmap's name and places each by its cell (props 41 and 42) and its
     /// X/Y in that cell; without them the NPC is not drawn.
+    ///
+    /// The script goes in the form `to` runs (see [`Script`]): prop 1 for
+    /// GS1 text; for GS2, `PLO_NPCBYTECODE` after the props, in the same
+    /// bytes, since the client drops bytecode for an NPC it does not have.
     pub fn message_on(&self, to: ClientVersion, cell: Option<(u8, u8)>) -> Option<Vec<u8>> {
-        let mut all: Vec<_> = self.props.iter().map(|(k, v)| (*k, v.clone())).collect();
+        let delivery = self.script.as_ref().map(|s| s.for_client(self.id, to));
+        let text = matches!(delivery, None | Some(Delivery::Gs1Text(_)));
+        let mut all: Vec<_> = self
+            .props
+            .iter()
+            .filter(|(k, _)| text || **k != SCRIPT)
+            .map(|(k, v)| (*k, v.clone()))
+            .collect();
         if let Some((cx, cy)) = cell {
             all.push((GMAPLEVELX, vec![gchar(cx)]));
             all.push((GMAPLEVELY, vec![gchar(cy)]));
             all.sort_by_key(|(k, _)| *k);
         }
-        message(self.id, &all, to)
+        let mut out = message(self.id, &all, to)?;
+        if let Some(Delivery::Gs2Bytecode(code)) = delivery {
+            out.extend(bytecode_message(self.id, code));
+        }
+        Some(out)
     }
 }
 
@@ -165,9 +245,22 @@ pub fn message(id: u32, props: &[(u8, Vec<u8>)], to: ClientVersion) -> Option<Ve
     (p.len() > head).then(|| msg(PLO_NPCPROPS, &p))
 }
 
-/// Prop 12 is the bow (pre-2.1 shape) for this build.
+/// `PLO_RAWDATA` and `PLO_NPCBYTECODE`: `GINT3` NPC id, then the
+/// bytecode file as the compiler writes it (ending in its own `\n`). The
+/// raw count covers the id byte and everything after it
+/// (seihai's `documentation/gs2-receive.md`).
+pub fn bytecode_message(id: u32, code: &[u8]) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(code.len() + 3);
+    gint3(id, &mut payload);
+    payload.extend_from_slice(code.strip_suffix(b"\n").unwrap_or(code));
+    raw_block(PLO_NPCBYTECODE, &payload)
+}
+
+/// Prop 12 is the bow (pre-2.1 shape) for this build. It follows prop 10
+/// of players (`ServerProfile::prop10_bow`), so the 2.05 rev 2 override
+/// reaches NPCs too: that build reads both as the gani.
 fn bow12(v: ClientVersion) -> bool {
-    v.profile().props.bow_prop10
+    ServerProfile::of(v).prop10_bow
 }
 
 /// A script as the wire carries it: Latin-1, each line without its
@@ -340,6 +433,7 @@ mod tests {
         let n = Npc {
             id: 1,
             props: [(X, vec![gchar(60)]), (UNKNOWN43, vec![0xFF])].into(),
+            script: None,
         };
         let m = n.message_on(ClientVersion::V222, Some((1, 2))).unwrap();
         assert_eq!(
@@ -381,6 +475,103 @@ mod tests {
         assert_eq!(p.x, Some(30.0));
         assert!(p.script.is_none());
         assert!(n.props.contains_key(&VISFLAGS) && n.props.contains_key(&ID));
+    }
+
+    const DOOR: &str = "if (playerenters) {\n  setimg door.png;\n  this.open = 0;\n}\n\
+if (playertouchsme && this.open == 0) {\n  this.open = 1;\n  setimg dooropen.png;\n  timeout = 1;\n}\n\
+if (timeout) {\n  this.open = 0;\n  setimg door.png;\n}\n";
+
+    fn door() -> Npc {
+        let n = seihai_core::assets::Npc::new("door.png".into(), 30.0, 30.0, DOOR.into());
+        Npc::from_level(9, &n)
+    }
+
+    /// What a client of `v` keeps of `bytes`, read with core's client.
+    fn received(v: ClientVersion, bytes: &[u8]) -> seihai_core::protocol::SessionState {
+        let mut s = seihai_core::protocol::SessionState::for_version(v);
+        s.apply_body(bytes);
+        s
+    }
+
+    #[test]
+    fn gs1_builds_get_the_text_and_no_bytecode() {
+        let n = door();
+        for v in [ClientVersion::V222, ClientVersion::V231] {
+            let m = n.message(v).unwrap();
+            let (_, p) = parse_npc_props(payload(&m), bow12(v)).unwrap();
+            assert!(
+                p.script
+                    .as_deref()
+                    .unwrap()
+                    .starts_with("if (playerenters)"),
+                "{v:?}"
+            );
+            assert_eq!(
+                m.iter().filter(|&&b| b == b'\n').count(),
+                1,
+                "{v:?}: one message"
+            );
+        }
+    }
+
+    #[test]
+    fn gs2_builds_get_bytecode_after_the_props_and_no_text() {
+        let n = door();
+        let code = n
+            .script
+            .as_ref()
+            .unwrap()
+            .prepared()
+            .bytecode()
+            .unwrap()
+            .to_vec();
+        for v in [
+            ClientVersion::V3153,
+            ClientVersion::V524R4,
+            ClientVersion::V603R7,
+        ] {
+            let m = n.message(v).unwrap();
+            let s = received(v, &m);
+            let (_, p) = s.server_npcs.get(&9).expect("props first");
+            assert!(p.script.is_none(), "{v:?}: no GS1 text");
+            assert_eq!(s.npc_bytecode.get(&9), Some(&code), "{v:?}");
+            assert_eq!(s.npc_bytecode_dropped, 0, "{v:?}");
+        }
+    }
+
+    #[test]
+    fn a_script_a_build_cannot_run_goes_without_it() {
+        // `with` is 2.1 GS1: 2.05 cannot read it and runs no GS2.
+        let src = "if (created) { with (getplayer(a)) { hide; } }\n";
+        let n = Npc::from_level(
+            4,
+            &seihai_core::assets::Npc::new("a.png".into(), 1.0, 1.0, src.into()),
+        );
+        let m = n.message(ClientVersion::V205).unwrap();
+        let (_, p) = parse_npc_props(payload(&m), bow12(ClientVersion::V205)).unwrap();
+        assert!(p.script.is_none());
+        assert_eq!(p.image.as_deref(), Some("a.png"));
+        assert!(!m.contains(&gchar(PLO_NPCBYTECODE)));
+        // 2.22 reads it as text.
+        let m = n.message(ClientVersion::V222).unwrap();
+        assert!(parse_npc_props(payload(&m), false)
+            .unwrap()
+            .1
+            .script
+            .is_some());
+    }
+
+    #[test]
+    fn npc_prop_12_follows_the_server_profile() {
+        // 2.05 rev 2 reads prop 12 as the gani, as it reads player prop 10.
+        assert!(!bow12(ClientVersion::V205));
+        assert!(bow12(ClientVersion::V139));
+        assert!(!bow12(ClientVersion::V222));
+        let props = vec![(GANI_OR_BOW, vec![gchar(4), b'w', b'a', b'l', b'k'])];
+        assert!(message(1, &props, ClientVersion::V205)
+            .unwrap()
+            .ends_with(b"walk\n"));
+        assert!(message(1, &props, ClientVersion::V139).is_none());
     }
 
     #[test]
