@@ -107,7 +107,7 @@ test) and the lab notes.
 
 | Area | Status | Shown by | Notes |
 |---|---|---|---|
-| Item, heart and gralat checks, hurt range, warps | lab | `anticheat.rs`; `lab/anticheat-2026-11-12.md` | Off by default. Policy bans and the staff exemption are open in #54 and #96 |
+| Item, heart and gralat checks, hurt range, warps | lab | `anticheat.rs`; `lab/anticheat-2026-11-12.md` | Off by default. Policy bans (which also ban the offender's machine ids) and the staff exemption came in #96 and #99 |
 | `PLI_TAMPERCHECK` | no | | Not required at login, on purpose (`PLAN.md`, "Behaviour to match") |
 
 ## Elsewhere
