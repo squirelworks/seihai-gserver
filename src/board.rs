@@ -11,6 +11,9 @@
 //! and the change is dropped. Larger changes stay while the server runs.
 //! The 2x2 rule and the 15 s default are GServer-v2's behaviour (its
 //! `respawntime` option), read for behaviour only.
+//!
+//! A level keeps at most [`MAX_CHANGES`]. The tiles a client writes are
+//! not checked against what may be cut or lifted there yet.
 
 use crate::wire::{gchar, gshort, msg};
 use std::time::{Duration, Instant};
@@ -21,6 +24,11 @@ pub const PLO_BOARDMODIFY: u8 = 7;
 pub const PLI_BOARDMODIFY: u8 = 1;
 /// How long a 2x2 change lasts.
 pub const RESPAWN: Duration = Duration::from_secs(15);
+/// The most changes kept for one level. A change to a new rectangle past
+/// this is refused: it is neither kept nor passed on, so one client
+/// cannot grow the list without end. A change to a rectangle already kept
+/// still replaces it.
+pub const MAX_CHANGES: usize = 256;
 
 const SIDE: usize = 64;
 
@@ -119,13 +127,17 @@ pub struct Changes {
 impl Changes {
     /// Keep `b` for a level whose file board is `file`. A change to the
     /// same rectangle replaces the one before and keeps its old tiles.
-    pub fn add(&mut self, b: Block, file: &[u16], now: Instant) {
+    /// `false` when the level already has [`MAX_CHANGES`] and `b` is in
+    /// a new place: it is not kept and should not be passed on.
+    pub fn add(&mut self, b: Block, file: &[u16], now: Instant) -> bool {
         let until = (b.w == 2 && b.h == 2).then_some(now + RESPAWN);
         let old = match self.list.iter().position(|c| c.now.same_place(&b)) {
             Some(i) => self.list.remove(i).old,
+            None if self.list.len() >= MAX_CHANGES => return false,
             None => b.read_from(&self.board(file)),
         };
         self.list.push(Change { now: b, old, until });
+        true
     }
 
     /// The board as the players see it now.
@@ -238,5 +250,27 @@ mod tests {
             seihai_core::protocol::layouts::parse_board_modify(&back[0][1..back[0].len() - 1])
                 .unwrap();
         assert_eq!(read.tiles, [5, 5, 5, 5]);
+    }
+
+    #[test]
+    fn a_level_keeps_at_most_max_changes() {
+        let file = vec![5u16; SIDE * SIDE];
+        let t0 = Instant::now();
+        let mut c = Changes::default();
+        let at = |i: usize| Block {
+            x: (i % SIDE) as u8,
+            y: (i / SIDE) as u8,
+            w: 1,
+            h: 1,
+            tiles: vec![9],
+        };
+        for i in 0..MAX_CHANGES {
+            assert!(c.add(at(i), &file, t0));
+        }
+        // A new place is refused; the same place is still taken.
+        assert!(!c.add(at(MAX_CHANGES), &file, t0));
+        assert!(c.add(at(0), &file, t0));
+        assert_eq!(c.messages().len(), MAX_CHANGES);
+        assert_eq!(c.board(&file)[MAX_CHANGES], 5);
     }
 }

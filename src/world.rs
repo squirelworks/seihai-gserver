@@ -381,6 +381,7 @@ impl World {
                 flags_file: None,
                 weapons: crate::weapons::Weapons::default(),
                 noted: HashSet::new(),
+                board_refused: HashSet::new(),
                 reload_objects: HashSet::new(),
             })),
         }
@@ -909,6 +910,9 @@ pub struct WorldTask {
     weapons: crate::weapons::Weapons,
     /// Link messages already logged as not passed on.
     noted: HashSet<&'static str>,
+    /// Players and levels already logged for a board change past
+    /// `board::MAX_CHANGES`.
+    board_refused: HashSet<(u16, String)>,
     /// Levels whose file changed while players were in them: their NPCs
     /// and baddies are read again once the level is empty.
     reload_objects: HashSet<String>,
@@ -1861,6 +1865,7 @@ impl WorldTask {
     }
 
     fn leave(&mut self, id: u16) {
+        self.board_refused.retain(|(p, _)| *p != id);
         if let Some(p) = self.players.remove(&id) {
             if let Some(hub) = &self.npc {
                 hub.left(id);
@@ -2156,10 +2161,22 @@ impl WorldTask {
             .map(|l| l.board.clone())
             .unwrap_or_default();
         let m = block.message();
-        self.boards
+        let kept = self
+            .boards
             .entry(level.clone())
             .or_default()
             .add(block, &file, Instant::now());
+        if !kept {
+            // Once per player and level, so a client that keeps sending
+            // does not fill the log.
+            if self.board_refused.insert((id, level.clone())) {
+                eprintln!(
+                    "player {id}: board change in {level} refused, {} changes kept already",
+                    crate::board::MAX_CHANGES
+                );
+            }
+            return;
+        }
         for (&other, o) in &self.players {
             if other != id && o.level == level && reads_board_modify(o) {
                 let _ = o.outbox.send(vec![m.clone()]);
