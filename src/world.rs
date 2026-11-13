@@ -58,8 +58,9 @@
 //!   resets the anti-cheat's walk, as a warp does.
 //! - `WARP_PLAYER`: a warp the teleport and warp checks do not question,
 //!   with `PLO_PLAYERWARP` (14, or 49 on a gmap) before the level.
-//! - `ADD_WEAPON`: `PLO_DEFAULTWEAPON` (43) for the bow and the bomb, else
-//!   `PLO_NPCWEAPONADD` (33) with the name alone.
+//! - `ADD_WEAPON`: the player keeps the weapon. `PLO_DEFAULTWEAPON` (43)
+//!   for a default weapon, the world's weapon as `PLO_NPCWEAPONADD` (33)
+//!   (`weapons.rs`), else 33 with the name alone.
 //! - `SERVER_FLAG`: kept, and sent to everyone as `PLO_FLAGSET` (28) or
 //!   `PLO_FLAGDEL` (31); a login gets the whole set.
 //! - `PM`: `PLO_PRIVATEMESSAGE` (37) from [`NPC_SERVER_ID`].
@@ -83,8 +84,8 @@ use crate::npcs::Npc;
 use crate::others::{self, Change, Props};
 use crate::wire::gchar;
 use crate::wire::ids::{
-    PLO_BADDYPROPS, PLO_DEFAULTWEAPON, PLO_FLAGDEL, PLO_FLAGSET, PLO_HURTPLAYER, PLO_ISLEADER,
-    PLO_ITEMADD, PLO_ITEMDEL, PLO_NPCDEL, PLO_NPCWEAPONADD, PLO_OTHERPLPROPS, PLO_PLAYERWARP,
+    PLO_BADDYPROPS, PLO_FLAGDEL, PLO_FLAGSET, PLO_HURTPLAYER, PLO_ISLEADER, PLO_ITEMADD,
+    PLO_ITEMDEL, PLO_NPCDEL, PLO_NPCWEAPONADD, PLO_OTHERPLPROPS, PLO_PLAYERWARP,
     PLO_PRIVATEMESSAGE, PLO_SETACTIVELEVEL,
 };
 use seihai_core::protocol::{parse_player_props_with, ClientVersion, EncryptionGen};
@@ -229,6 +230,8 @@ pub enum WorldIn {
     },
     /// A message from the NPC-server (`0x40` to `0x4C`), from the link.
     FromNpc(Message),
+    /// `PLI_WEAPONADD`.
+    WeaponAdd { player: u16, raw: Vec<u8> },
     /// The NPC-server link closed: its NPCs go.
     NpcGone,
 }
@@ -275,6 +278,8 @@ pub struct Joining {
     pub kills: u32,
     /// A staff account, for the anti-cheat's `staff exempt`.
     pub staff: bool,
+    /// The weapons the account holds (`WEAPON` lines).
+    pub weapons: Vec<String>,
     /// The machine ids from the login line, banned with the account when
     /// the anti-cheat bans it.
     pub machines: Vec<String>,
@@ -371,6 +376,7 @@ impl World {
                 server_npcs: HashMap::new(),
                 server_flags: BTreeMap::new(),
                 flags_file: None,
+                weapons: crate::weapons::Weapons::default(),
                 noted: HashSet::new(),
                 reload_objects: HashSet::new(),
             })),
@@ -608,6 +614,23 @@ impl World {
         }
     }
 
+    /// The world's weapon folder (`weapons/`): read now, and new weapons
+    /// a player takes from an NPC are written there. Call before
+    /// [`World::start`]; later calls do nothing.
+    pub fn set_weapons_dir(&self, dir: PathBuf) {
+        if let Some(t) = self.task.lock().unwrap().as_mut() {
+            t.weapons = crate::weapons::Weapons::load(&dir);
+        }
+    }
+
+    /// `PLI_WEAPONADD` (33), as sent.
+    pub fn weapon_add(&self, player: u16, raw: &[u8]) {
+        let _ = self.tx.send(WorldIn::WeaponAdd {
+            player,
+            raw: raw.to_vec(),
+        });
+    }
+
     /// Where the server flags are kept (`config/serverflags.txt`, one
     /// `name=value` a line): read now, written on every change. Call
     /// before [`World::start`]; later calls do nothing.
@@ -680,6 +703,8 @@ struct Online {
     flags: BTreeMap<String, String>,
     /// Players killed, the account's count included.
     kills: u32,
+    /// The weapons the player holds, as the account file names them.
+    weapons: Vec<String>,
     /// A staff account: skips the checks the admin made `staff exempt`.
     staff: bool,
     /// The machine ids from the login line, for an anti-cheat ban.
@@ -706,6 +731,7 @@ impl Online {
             y: self.props.y(),
             props: self.props.values().clone(),
             kills: self.kills,
+            weapons: self.weapons.clone(),
             chests,
             flags: self
                 .flags
@@ -746,6 +772,8 @@ pub struct Leaving {
     pub flags: Vec<String>,
     /// Players killed, the account's count included.
     pub kills: u32,
+    /// The weapons the player holds.
+    pub weapons: Vec<String>,
 }
 
 impl Leaving {
@@ -790,6 +818,7 @@ impl Leaving {
         a.kills = self.kills;
         a.chests = self.chests.clone();
         a.flags = self.flags.clone();
+        a.weapons = self.weapons.clone();
     }
 }
 
@@ -863,6 +892,8 @@ pub struct WorldTask {
     server_flags: BTreeMap<String, String>,
     /// Where the server flags are kept, if anywhere.
     flags_file: Option<PathBuf>,
+    /// The world's weapons (`weapons/`).
+    weapons: crate::weapons::Weapons,
     /// Link messages already logged as not passed on.
     noted: HashSet<&'static str>,
     /// Levels whose file changed while players were in them: their NPCs
@@ -913,6 +944,7 @@ impl WorldTask {
                         }
                         p.opened = who.chests.iter().cloned().collect();
                         p.kills = who.kills;
+                        p.weapons = who.weapons.clone();
                         p.staff = who.staff;
                         p.machines = who.machines.clone();
                         p.flags = who.flags.iter().map(|f| split_flag(f)).collect();
@@ -939,6 +971,7 @@ impl WorldTask {
                             hub.joined(id, &who.name, level, &with_id(&who.props, id));
                         }
                         self.send_server_flags(id);
+                        self.send_weapons(id);
                         self.meet(id);
                     }
                     // The connection closed while it waited: the id goes
@@ -1071,6 +1104,7 @@ impl WorldTask {
                 }
             }
             WorldIn::FromNpc(m) => self.apply_npc(m),
+            WorldIn::WeaponAdd { player, raw } => self.weapon_add(player, &raw),
             WorldIn::NpcGone => self.npc_gone(),
         }
     }
@@ -1798,6 +1832,7 @@ impl WorldTask {
                 opened: HashSet::new(),
                 flags: BTreeMap::new(),
                 kills: 0,
+                weapons: Vec::new(),
                 staff: false,
                 machines: Vec::new(),
                 walk: Walk::at(0.0, 0.0, Instant::now()),
@@ -2574,33 +2609,111 @@ impl WorldTask {
         }
     }
 
-    /// `ADD_WEAPON`: the bow and the bomb are default weapons (43, ids 7
-    /// and 8 as the login burst sends them); any other name goes as a
-    /// weapon with that name and nothing else (33), until weapons are a
-    /// stage.
+    /// `ADD_WEAPON`: the player gets the weapon and keeps it. A default
+    /// weapon goes as `PLO_DEFAULTWEAPON` (43), one of the world's weapons
+    /// as `PLO_NPCWEAPONADD` (33) with its image and script. Any other
+    /// name goes as a weapon with that name and nothing else (33), as
+    /// before the world had weapons.
     fn add_weapon(&mut self, id: u16, weapon: &[u8]) {
-        let Some(p) = self.players.get(&id) else {
+        let name = latin1_text(weapon).trim().to_string();
+        let Some(p) = self.players.get_mut(&id) else {
             return;
         };
+        if name.is_empty() {
+            return;
+        }
+        if !p.weapons.iter().any(|w| w.eq_ignore_ascii_case(&name)) {
+            p.weapons.push(name.clone());
+        }
         let plo = &p.version.profile().protocol.plo;
-        let name = latin1_text(weapon);
-        let default = match name.trim().to_ascii_lowercase().as_str() {
-            "bow" => Some(7),
-            "bomb" | "bombs" => Some(8),
-            _ => None,
-        };
-        let m = match default {
-            Some(d) if plo.contains(PLO_DEFAULTWEAPON) => {
-                crate::wire::msg(PLO_DEFAULTWEAPON, &[gchar(d)])
-            }
-            _ if plo.contains(PLO_NPCWEAPONADD) && !weapon.is_empty() => {
+        let m = match crate::weapons::give(&self.weapons, &name, p.version) {
+            Some(m) => m,
+            None if crate::weapons::default_id(&name).is_none()
+                && self.weapons.get(&name).is_none()
+                && plo.contains(PLO_NPCWEAPONADD) =>
+            {
                 let mut b = Vec::new();
                 crate::wire::gstring(weapon, &mut b);
                 crate::wire::msg(PLO_NPCWEAPONADD, &b)
             }
-            _ => return,
+            None => return,
         };
         let _ = p.outbox.send(vec![m]);
+    }
+
+    /// The weapons a player's account holds, after the login burst. A
+    /// name the world has no weapon for is logged and kept in the account.
+    fn send_weapons(&mut self, id: u16) {
+        let Some(p) = self.players.get(&id) else {
+            return;
+        };
+        let mut out = Vec::new();
+        for name in &p.weapons {
+            match crate::weapons::give(&self.weapons, name, p.version) {
+                Some(m) => out.push(m),
+                None if crate::weapons::default_id(name).is_none()
+                    && self.weapons.get(name).is_none() =>
+                {
+                    eprintln!("player {id}: weapon {name} is not in the world's weapons/");
+                }
+                None => {}
+            }
+        }
+        if !out.is_empty() {
+            let _ = p.outbox.send(vec![out.concat()]);
+        }
+    }
+
+    /// `PLI_WEAPONADD` (33): type 0 and a default weapon's item id, or
+    /// type 1 and the `GINT3` id of the level NPC whose `toweapons` the
+    /// player ran. The NPC must be in the player's level and its script
+    /// must name the weapon; a weapon the world does not have yet is made
+    /// from the NPC's image and script and written to `weapons/`. The
+    /// player keeps it, and is sent the world's copy.
+    fn weapon_add(&mut self, id: u16, raw: &[u8]) {
+        let Some(p) = self.players.get(&id) else {
+            return;
+        };
+        let name = match raw {
+            [t, item, ..] if t.wrapping_sub(0x20) == 0 => {
+                match crate::weapons::default_name(item.wrapping_sub(0x20)) {
+                    Some(n) => n.to_string(),
+                    None => return,
+                }
+            }
+            [_, rest @ ..] => {
+                let Some(npc_id) = seihai_core::protocol::read_gint3(rest) else {
+                    return;
+                };
+                let Some(npc) = self
+                    .npcs
+                    .get(&p.level)
+                    .and_then(|l| l.iter().find(|n| n.id == npc_id as u32))
+                else {
+                    return;
+                };
+                let Some(script) = &npc.script else {
+                    return;
+                };
+                let source = script.prepared().source().to_string();
+                let Some(name) = crate::weapons::toweapons_name(&source).into_iter().next() else {
+                    return;
+                };
+                if self.weapons.get(&name).is_none() {
+                    let image = npc
+                        .props
+                        .get(&crate::npcs::IMAGE)
+                        .and_then(|v| v.get(1..))
+                        .map(latin1_text)
+                        .unwrap_or_default();
+                    self.weapons
+                        .add(crate::weapons::Weapon::new(&name, &image, &source));
+                }
+                name
+            }
+            _ => return,
+        };
+        self.add_weapon(id, &crate::wire::latin1(&name));
     }
 
     /// `SERVER_FLAG`: kept, and set or unset for everyone online.
@@ -2798,6 +2911,7 @@ mod tests {
             flags: Vec::new(),
             kills: 0,
             staff: false,
+            weapons: Vec::new(),
             machines: Vec::new(),
         }
     }
@@ -2877,6 +2991,7 @@ mod tests {
             chests: vec![("house.nw".into(), 1, 2)],
             flags: vec!["quest=2".into()],
             kills: 3,
+            weapons: vec!["Lantern".into()],
         };
         let mut a = was.clone();
         l.apply_to(&mut a);
@@ -3285,6 +3400,7 @@ mod tests {
                     opened: HashSet::new(),
                     flags: BTreeMap::new(),
                     kills: 0,
+                    weapons: Vec::new(),
                     staff: false,
                     machines: Vec::new(),
                     walk: Walk::at(0.0, 0.0, Instant::now()),

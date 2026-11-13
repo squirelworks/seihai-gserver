@@ -108,6 +108,11 @@ impl Script {
         &self.0.prepared
     }
 
+    /// What `to` is sent, without logging.
+    pub fn delivery(&self, to: ClientVersion) -> Delivery<'_> {
+        self.0.prepared.for_client(to).delivery
+    }
+
     /// What `to` is sent. A stub is logged the first time each build gets
     /// it, so a server owner can see which builds go without the script.
     fn for_client(&self, npc: u32, to: ClientVersion) -> Delivery<'_> {
@@ -265,7 +270,7 @@ fn bow12(v: ClientVersion) -> bool {
 
 /// A script as the wire carries it: Latin-1, each line without its
 /// leading blanks (as GServer-v2 sends it), lines joined by `§`.
-fn script_bytes(s: &str) -> Vec<u8> {
+pub(crate) fn script_bytes(s: &str) -> Vec<u8> {
     let s: Vec<&str> = s.lines().map(str::trim_start).collect();
     let s = s.join("\n");
     let s = s.trim_end_matches('\n');

@@ -18,7 +18,7 @@
 //! (so seihai-rc's `players props --set` can rebuild it): ones this server
 //! keeps no value for (26 to 28, 30, 36) go as 0, the world is `main`. The
 //! chest count is always 0, because what follows a non-zero one is not
-//! known; the weapons are none, as accounts keep none yet.
+//! known. The weapons are the account's `WEAPON` lines.
 //!
 //! A set applies the props an account keeps (`apply`) and replaces the
 //! flags, as the fork does; chests are kept. The values are the account
@@ -174,7 +174,11 @@ pub fn reply(id: u16, a: &Account) -> Vec<u8> {
         gstring(&latin1(f), &mut p);
     }
     gshort(0, &mut p);
-    p.push(gchar(0));
+    let weapons: Vec<&String> = a.weapons.iter().take(223).collect();
+    p.push(gchar(weapons.len() as u8));
+    for w in weapons {
+        gstring(&latin1(w), &mut p);
+    }
     msg(PLO_RC_PLAYERPROPSGET, &p)
 }
 
@@ -293,5 +297,20 @@ mod tests {
         same.hp = a.hp;
         same.flags = a.flags.clone();
         assert_eq!(same, a);
+    }
+
+    #[test]
+    fn the_reply_ends_with_the_accounts_weapons() {
+        let mut a = Account::new("test1", "onlinestartlocal.nw", 30.0, 30.5);
+        let r = reply(7, &a);
+        assert!(split_messages(&r)[0]
+            .payload
+            .ends_with(&[gchar(0), gchar(0), gchar(0)]));
+        a.weapons = vec!["bow".into(), "Lantern".into()];
+        let r = reply(7, &a);
+        let mut want = vec![gchar(0), gchar(0), gchar(2)];
+        gstring(b"bow", &mut want);
+        gstring(b"Lantern", &mut want);
+        assert!(split_messages(&r)[0].payload.ends_with(&want));
     }
 }
