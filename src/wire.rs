@@ -268,6 +268,11 @@ pub mod ids {
     /// are unknown. Sent before a `.gpake`. 3.153 to 6.03r7.
     /// Seihai name until 2026-11-11: `PLO_FILEKEY`.
     pub const PLO_FILEDECRYPTKEY: u8 = 104;
+    /// Behind [`PLO_RAWDATA`]: `GINT3` NPC id, then the GS2 bytecode file
+    /// (its four segments and the compiler's `\n`), right after the NPC's
+    /// `PLO_NPCPROPS`. Read by core's client reader; no original client
+    /// has been seen running it. 3.153 and 4.x to 6.x (issue #45).
+    pub const PLO_NPCBYTECODE: u8 = 131;
     // Named for a later stage. Not sent yet.
     /// `{108}{sub}{GSHORT value}`. Confirmed for sub 0: the client answers
     /// [`PLI_PONG`]. Sub 1 is stored and nothing that reads it was traced, so

@@ -1487,7 +1487,20 @@ impl WorldTask {
             .iter()
             .map(|n| {
                 self.last_npc += 1;
-                Npc::from_level(self.last_npc, n)
+                let npc = Npc::from_level(self.last_npc, n);
+                // Builds that run only GS2 get no script for this NPC;
+                // the GS1 builds still get the text.
+                if let Some(e) = npc
+                    .script
+                    .as_ref()
+                    .and_then(|s| s.prepared().compile_errors())
+                {
+                    eprintln!(
+                        "level {}: npc {} at {},{}: no GS2 bytecode: {e}",
+                        l.name, npc.id, n.x, n.y
+                    );
+                }
+                npc
             })
             .collect();
         let server: HashSet<u32> = self.server_npcs.values().map(|s| s.id).collect();
