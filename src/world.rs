@@ -3958,7 +3958,6 @@ mod tests {
     }
 }
 
-/// Player prop 32: alignment points (AP), 0 to 100.
 /// The longest private message text taken, in bytes (GServer 1.3).
 const MAX_PM: usize = 1024;
 /// What a sender is told when a listed player's build reads no private
@@ -3983,6 +3982,7 @@ fn parse_pm(raw: &[u8], narrow: bool) -> Option<(Vec<u16>, &[u8])> {
     Some((to, &raw[w + n * w..]))
 }
 
+/// Player prop 32: alignment points (AP), 0 to 100.
 const ALIGNMENT: u8 = 32;
 
 /// The counted props the items check guards: max hearts, hearts (in
