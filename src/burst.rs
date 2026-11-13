@@ -311,8 +311,9 @@ pub fn own_props(version: ClientVersion, p: &Player) -> Vec<u8> {
     // image the power goes alone.
     put(8, &power_image(a.sword.0, 30, &a.sword.1));
     put(9, &power_image(a.shield.0, 10, &a.shield.1));
-    // Before 2.1 prop 10 is the bow slot; it is left out there.
-    if !prof.props.bow_prop10 {
+    // Before 2.1 prop 10 is the bow slot; it is left out there. 2.05 rev 2
+    // reads it as the gani (`ServerProfile::prop10_bow`).
+    if !crate::profile::ServerProfile::of(version).prop10_bow {
         put(10, &s("idle"));
     }
     // Head: c(len + 100) + image.
@@ -431,8 +432,8 @@ mod tests {
             };
             let bytes = own_props(v, &p);
             let prof = v.profile();
-            let parsed =
-                parse_player_props_in(&bytes, prof.props.bow_prop10, Some(&prof.props.own));
+            let bow = crate::profile::ServerProfile::of(v).prop10_bow;
+            let parsed = parse_player_props_in(&bytes, bow, Some(&prof.props.own));
             let len: usize = parsed.iter().map(|p| 1 + p.raw.len()).sum();
             assert_eq!(len, bytes.len(), "{v:?}: {parsed:?}");
             assert!(parsed.iter().any(|p| p.id == 0), "{v:?} gets its nickname");

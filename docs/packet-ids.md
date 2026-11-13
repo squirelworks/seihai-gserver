@@ -32,6 +32,7 @@ as unhandled.
 | Id | Name | Layout |
 |---|---|---|
 | S→C 104 | `PLO_FILEDECRYPTKEY` | file name, byte 1, two GINT5; the DES key, before a `.gpake` |
+| S→C 131 | `PLO_NPCBYTECODE` | behind `PLO_RAWDATA` (the count covers the id byte to the end): GINT3 NPC id, then the GS2 bytecode file, ending in the compiler's `\n`. Sent right after the NPC's `PLO_NPCPROPS`, in the same frame, to builds whose profile runs GS2; the client drops it for an NPC it has not been sent. Layout from seihai's `documentation/gs2-receive.md`; no capture of a real 131 yet |
 
 ## Named, not sent yet
 

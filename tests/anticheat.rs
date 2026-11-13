@@ -131,6 +131,66 @@ fn cheats_are_caught() {
     let _ = std::fs::remove_dir_all(&w);
 }
 
+/// The two false kicks of the real-client lab run of 2026-11-12
+/// (`docs/lab/anticheat-2026-11-12.md`), with every check on `kick after
+/// 1 in 60`: a 2.05 whose steps arrive together after a server stall (38
+/// tiles in one read, the most seen, after a 5 s stall), and a dead 2.22
+/// warping itself to respawn through no link. Neither is kicked, and
+/// nothing is logged.
+#[test]
+fn a_stall_burst_and_a_respawn_are_not_kicked() {
+    let w = world("anticheat-honest", "*\n");
+    std::fs::create_dir_all(w.join("levels")).unwrap();
+    std::fs::write(w.join("levels/onlinestartlocal.nw"), START).unwrap();
+    std::fs::write(w.join("levels/house.nw"), HOUSE).unwrap();
+    let cfg = w.join("config/server.txt");
+    let mut text = std::fs::read_to_string(&cfg).unwrap();
+    text.push_str("anticheat = on\n");
+    for kind in ["speed", "teleport", "warp", "rate", "items", "hurt"] {
+        text.push_str(&format!("anticheat.{kind} = log, kick after 1 in 60\n"));
+    }
+    std::fs::write(&cfg, text).unwrap();
+    let (addr, server) = start(&w);
+    let log = server.anticheat.log_path().to_path_buf();
+
+    // 2.05: 19 one-tile steps east and 19 back, all in one frame.
+    let v = ClientVersion::V205;
+    let mut a = login_gserver(&addr, v, random_key(), "stalled", PASSWORD, false).unwrap();
+    let ra = a.conn.spawn_reader().unwrap();
+    let mut sa = SessionState::for_version(v);
+    read_until(&ra, &mut sa, Duration::from_secs(10), |s| s.board.is_some()).unwrap();
+    let burst: Vec<Vec<u8>> = (31..=49)
+        .chain((30..=48).rev())
+        .map(|x| walk_message_for(v, x as f32, 30.0, 2))
+        .collect();
+    assert_eq!(burst.len(), 38);
+    a.conn.send_messages(&burst).unwrap();
+
+    // 2.22: dies, and warps to the house through no link.
+    let v = ClientVersion::V222;
+    let mut d = login_gserver(&addr, v, random_key(), "dead", PASSWORD, false).unwrap();
+    let rd = d.conn.spawn_reader().unwrap();
+    let mut sd = SessionState::for_version(v);
+    read_until(&rd, &mut sd, Duration::from_secs(10), |s| s.board.is_some()).unwrap();
+    let dead = vec![2 + 0x20, 2 + 0x20, 0x20, b'\n'];
+    d.conn
+        .send_messages(&[dead, levelwarp_message(30.0, 60.0, "house.nw")])
+        .unwrap();
+    read_until(&rd, &mut sd, Duration::from_secs(10), |s| {
+        s.current_level_name().as_deref() == Some("house.nw")
+    })
+    .unwrap();
+
+    // Both still on: a second's reading ends in a time-out, not a close.
+    for (rx, st) in [(&ra, &mut sa), (&rd, &mut sd)] {
+        let e = read_until(rx, st, Duration::from_secs(1), |_| false).unwrap_err();
+        assert_eq!(e, "timed out");
+    }
+    let text = std::fs::read_to_string(&log).unwrap_or_default();
+    assert!(text.is_empty(), "{text}");
+    let _ = std::fs::remove_dir_all(&w);
+}
+
 /// `ban after N in S` bans the account through the world's ban file, so
 /// the next login is refused, and `staff exempt` leaves staff alone.
 #[test]

@@ -275,6 +275,9 @@ pub struct Joining {
     pub kills: u32,
     /// A staff account, for the anti-cheat's `staff exempt`.
     pub staff: bool,
+    /// The machine ids from the login line, banned with the account when
+    /// the anti-cheat bans it.
+    pub machines: Vec<String>,
 }
 
 /// The world's answer to a login it lets in.
@@ -679,6 +682,8 @@ struct Online {
     kills: u32,
     /// A staff account: skips the checks the admin made `staff exempt`.
     staff: bool,
+    /// The machine ids from the login line, for an anti-cheat ban.
+    machines: Vec<String>,
     /// The anti-cheat's view: the last accepted position in gmap
     /// coordinates, and recent violations.
     walk: Walk,
@@ -909,6 +914,7 @@ impl WorldTask {
                         p.opened = who.chests.iter().cloned().collect();
                         p.kills = who.kills;
                         p.staff = who.staff;
+                        p.machines = who.machines.clone();
                         p.flags = who.flags.iter().map(|f| split_flag(f)).collect();
                         p.walk = Walk::at(p.global().0, p.global().1, Instant::now());
                     }
@@ -1487,7 +1493,20 @@ impl WorldTask {
             .iter()
             .map(|n| {
                 self.last_npc += 1;
-                Npc::from_level(self.last_npc, n)
+                let npc = Npc::from_level(self.last_npc, n);
+                // Builds that run only GS2 get no script for this NPC;
+                // the GS1 builds still get the text.
+                if let Some(e) = npc
+                    .script
+                    .as_ref()
+                    .and_then(|s| s.prepared().compile_errors())
+                {
+                    eprintln!(
+                        "level {}: npc {} at {},{}: no GS2 bytecode: {e}",
+                        l.name, npc.id, n.x, n.y
+                    );
+                }
+                npc
             })
             .collect();
         let server: HashSet<u32> = self.server_npcs.values().map(|s| s.id).collect();
@@ -1723,7 +1742,12 @@ impl WorldTask {
             let what = format!("{what}{}", v.suffix());
             ac.log(&p.account, p.version.label(), &p.level, kind, &what);
         }
-        if ac.enforce(&p.account, kind, &v) {
+        let who = crate::anticheat::Offender {
+            account: &p.account,
+            machines: &p.machines,
+            staff: p.staff,
+        };
+        if ac.enforce(&who, kind, &v) {
             // An empty item: the connection closes.
             let _ = p.outbox.send(Vec::new());
         }
@@ -1775,6 +1799,7 @@ impl WorldTask {
                 flags: BTreeMap::new(),
                 kills: 0,
                 staff: false,
+                machines: Vec::new(),
                 walk: Walk::at(0.0, 0.0, Instant::now()),
                 score: Score::default(),
                 stale: None,
@@ -2773,6 +2798,7 @@ mod tests {
             flags: Vec::new(),
             kills: 0,
             staff: false,
+            machines: Vec::new(),
         }
     }
 
@@ -3260,6 +3286,7 @@ mod tests {
                     flags: BTreeMap::new(),
                     kills: 0,
                     staff: false,
+                    machines: Vec::new(),
                     walk: Walk::at(0.0, 0.0, Instant::now()),
                     score: Score::default(),
                     stale: None,

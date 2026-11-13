@@ -9,11 +9,11 @@ publish = false
 
 [dependencies]
 # Protocol, framing, version profiles and scripting shared with the Seihai client.
-seihai-core = { git = "https://github.com/squirelworks/seihai-core", tag = "v0.0.11", default-features = false }
+seihai-core = { git = "https://github.com/squirelworks/seihai-core", tag = "v0.0.16", default-features = false }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time", "macros", "sync", "signal", "process"] }
 # The NPC-server link's wire format (PROTOCOL.md), shared with the NPC-server
 # so both sides use one codec.
-seihai-npcserver = { git = "https://github.com/squirelworks/seihai-npcserver", rev = "1e275eb68a801e3d3caa92ca16a1fb070a0ee389" }
+seihai-npcserver = { git = "https://github.com/squirelworks/seihai-npcserver", rev = "484b1b206384a406048a787eda0025d1e7199ce6" }
 sha2 = "0.10"
 getrandom = "0.2"
 pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }

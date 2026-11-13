@@ -91,6 +91,10 @@ The two kicks:
   through.
 
 These two fixes were tested with Seihai's own client code in
-`tests/anticheat.rs`. They have not had a second real-client run yet.
+`tests/anticheat.rs`: `a_stall_burst_and_a_respawn_are_not_kicked` runs
+both cases on loopback with every check on `kick after 1 in 60` (a 2.05
+sending 38 one-tile steps in one frame, a dead 2.22 warping through no
+link), and fails with the old 30-tile budget. They have not had a second
+real-client run yet.
 
 The full lab notes, raw logs and scripts are on the lab machine.
