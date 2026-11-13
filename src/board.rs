@@ -26,8 +26,18 @@
 //! this one sends the kept changes that touch the rectangle, in the form
 //! the player reads.
 //!
-//! A level keeps at most [`MAX_CHANGES`]. The tiles a client writes are
-//! not checked against what may be cut or lifted there yet.
+//! A level keeps at most [`MAX_CHANGES`].
+//!
+//! **The board check** (#107, `anticheat.board`, off with the rest of the
+//! anti-cheat). A world lists the objects a player can change in
+//! `config/boardrules.txt` ([`BoardRules`]): for each, the block's size,
+//! the tiles it replaces and the tiles a client writes. A block that
+//! matches no rule is a violation. The rules are the world's own: they
+//! come from its tileset as the world's author knows it, or from what a
+//! real client wrote in a lab run, never from client binaries. A world
+//! without the file is not checked. The 2.05 lab's cut bush is the only
+//! capture so far, so pushed blocks and dug holes need lines of the
+//! world's own before the check is turned on for a world that has them.
 
 use crate::wire::{gchar, gshort, msg};
 use std::time::{Duration, Instant};
@@ -119,7 +129,7 @@ impl Block {
     }
 
     /// The same rectangle's tiles in `board` (64 wide, row by row).
-    fn read_from(&self, board: &[u16]) -> Block {
+    pub fn read_from(&self, board: &[u16]) -> Block {
         let mut tiles = Vec::with_capacity(self.tiles.len());
         for row in 0..usize::from(self.h) {
             for col in 0..usize::from(self.w) {
@@ -187,6 +197,116 @@ impl UpdateRequest {
 
     pub fn rect(&self) -> (u16, u16, u16, u16) {
         (self.x, self.y, self.w, self.h)
+    }
+}
+
+/// One object a player can change: the block's size, the tiles there
+/// before (`None`: any), and the tiles the client writes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoardRule {
+    pub name: String,
+    pub w: u8,
+    pub h: u8,
+    pub before: Option<Vec<u16>>,
+    pub after: Vec<u16>,
+}
+
+/// The world's board rules (`config/boardrules.txt`). One rule a line:
+///
+/// ```text
+/// # name  width height  tiles before  ->  tiles after
+/// bush    2 2   2 3 18 19  ->  1834 1835 1850 1851
+/// sign    2 1   *          ->  1060 1061
+/// ```
+///
+/// Tiles are tile indexes (0 to 4095), row by row; `*` before the arrow
+/// takes any tiles there. `#` starts a comment.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BoardRules {
+    rules: Vec<BoardRule>,
+}
+
+impl BoardRules {
+    /// The rules in `text`, and a warning for each line that does not
+    /// read (the line is left out).
+    pub fn parse(text: &str) -> (BoardRules, Vec<String>) {
+        let mut rules = Vec::new();
+        let mut warnings = Vec::new();
+        for (n, line) in text.lines().enumerate() {
+            let line = line.split('#').next().unwrap_or("").trim();
+            if line.is_empty() {
+                continue;
+            }
+            match BoardRule::parse(line) {
+                Ok(r) => rules.push(r),
+                Err(e) => warnings.push(format!("boardrules.txt line {}: {e}", n + 1)),
+            }
+        }
+        (BoardRules { rules }, warnings)
+    }
+
+    /// Read `path`. `None` when there is no such file.
+    pub fn load(path: &std::path::Path) -> Option<(BoardRules, Vec<String>)> {
+        std::fs::read_to_string(path)
+            .ok()
+            .map(|t| BoardRules::parse(&t))
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.rules.is_empty()
+    }
+
+    /// The rule `block` matches on a board that now reads `board` (64
+    /// wide, the kept changes included), if any.
+    pub fn allows(&self, block: &Block, board: &[u16]) -> Option<&BoardRule> {
+        let here = block.read_from(board).tiles;
+        self.rules.iter().find(|r| {
+            (r.w, r.h) == (block.w, block.h)
+                && r.after == block.tiles
+                && r.before.as_ref().is_none_or(|b| *b == here)
+        })
+    }
+}
+
+impl BoardRule {
+    fn parse(line: &str) -> Result<BoardRule, String> {
+        let (head, after) = line
+            .split_once("->")
+            .ok_or("expected `name width height before -> after`")?;
+        let mut words = head.split_whitespace();
+        let name = words.next().ok_or("no name")?.to_string();
+        let size = |w: Option<&str>| -> Result<u8, String> {
+            match w.map(str::parse::<u8>) {
+                Some(Ok(n)) if (1..=SIDE as u8).contains(&n) => Ok(n),
+                _ => Err("width and height are 1 to 64".into()),
+            }
+        };
+        let (w, h) = (size(words.next())?, size(words.next())?);
+        let n = usize::from(w) * usize::from(h);
+        let tiles = |ws: Vec<&str>| -> Result<Vec<u16>, String> {
+            let t: Vec<u16> = ws
+                .iter()
+                .map(|t| t.parse::<u16>().ok().filter(|&v| v < 4096))
+                .collect::<Option<_>>()
+                .ok_or("tiles are numbers from 0 to 4095")?;
+            if t.len() != n {
+                return Err(format!("{} tiles where {w}x{h} needs {n}", t.len()));
+            }
+            Ok(t)
+        };
+        let before: Vec<&str> = words.collect();
+        let before = match before.as_slice() {
+            ["*"] => None,
+            _ => Some(tiles(before)?),
+        };
+        let after = tiles(after.split_whitespace().collect())?;
+        Ok(BoardRule {
+            name,
+            w,
+            h,
+            before,
+            after,
+        })
     }
 }
 
@@ -392,5 +512,47 @@ mod tests {
         assert!(c.messages_in((0, 0, 39, 14), Form::Level).is_empty());
         assert!(c.messages_in((41, 14, 5, 5), Form::Level).is_empty());
         assert!(UpdateRequest::parse(&raw[..raw.len() - 1]).is_none());
+    }
+
+    #[test]
+    fn board_rules_read_and_match() {
+        let (r, warnings) = BoardRules::parse(
+            "# objects\nbush 2 2 5 5 5 5 -> 1834 1835 1850 1851\nsign 2 1 * -> 7 8\n\
+             bad 2 2 1 2 3 -> 1 2 3 4\nworse 2 2\n",
+        );
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        let file = vec![5u16; SIDE * SIDE];
+        let cut = Block::parse(&bush_cut()).unwrap();
+        assert_eq!(r.allows(&cut, &file).map(|r| r.name.as_str()), Some("bush"));
+        // Not on a bush: the tiles before differ.
+        let mut other = file.clone();
+        other[14 * SIDE + 39] = 9;
+        assert!(r.allows(&cut, &other).is_none());
+        // A sign takes any tiles before; the size must match.
+        let sign = Block {
+            x: 0,
+            y: 0,
+            w: 2,
+            h: 1,
+            tiles: vec![7, 8],
+        };
+        assert!(r.allows(&sign, &other).is_some());
+        let wide = Block {
+            x: 0,
+            y: 0,
+            w: 1,
+            h: 2,
+            tiles: vec![7, 8],
+        };
+        assert!(r.allows(&wide, &file).is_none());
+        // Painting anything else matches nothing.
+        let paint = Block {
+            x: 0,
+            y: 0,
+            w: 2,
+            h: 2,
+            tiles: vec![1, 1, 1, 1],
+        };
+        assert!(r.allows(&paint, &file).is_none());
     }
 }
