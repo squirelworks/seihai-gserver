@@ -279,7 +279,8 @@ pub mod ids {
     /// has been seen running it. 3.153 and 4.x to 6.x (issue #45).
     pub const PLO_NPCBYTECODE: u8 = 131;
     /// Behind [`PLO_RAWDATA`]: `GCHAR` length and a weapon name, then the
-    /// weapon's GS2 bytecode file (ending in the compiler's `\n`). The
+    /// weapon's GS2 bytecode file whole, the compiler's `\n` included, then
+    /// the raw block's own closing `\n`. The
     /// answer to [`PLI_UPDATESCRIPT`]. Confirmed: GServer-v2 sends it to
     /// real 4.20r8 after [`PLO_WEAPONHASH`], and the client caches the
     /// body (lab, 2026-11-13). The lab note gives the message without its

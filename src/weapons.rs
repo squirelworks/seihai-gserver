@@ -195,7 +195,11 @@ impl Weapon {
         let name = self.wire_name();
         let mut b = vec![gchar(name.len() as u8)];
         b.extend_from_slice(&name);
-        b.extend_from_slice(code.strip_suffix(b"\n").unwrap_or(code));
+        // The whole file, its own `\n` too: the client drops the raw
+        // block's closing `\n` and caches the rest, and the CRC in 193 is
+        // of that (GServer-v2's 4.20r8 kept its cache on the second login;
+        // ours, without this byte, was asked again; lab, 2026-11-13).
+        b.extend_from_slice(code);
         Some(raw_block(PLO_UNKNOWN132, &b))
     }
 
@@ -466,9 +470,10 @@ mod tests {
             let b = w.bytecode_message(v).unwrap();
             let mut body = vec![gchar(7)];
             body.extend_from_slice(b"Lantern");
-            body.extend_from_slice(&code[..code.len() - 1]);
+            body.extend_from_slice(code);
             assert_eq!(b, raw_block(PLO_UNKNOWN132, &body), "{v:?}");
-            assert_eq!(&b[b.len() - code.len()..], code);
+            // What the client caches: the block less its closing `\n`.
+            assert_eq!(&b[b.len() - 1 - code.len()..b.len() - 1], code);
         }
         // The GS1 builds get no 132.
         assert!(w.bytecode_message(ClientVersion::V222).is_none());
