@@ -1407,6 +1407,7 @@ impl Session {
                     }
                 }
                 PLI_NPCPROPS => server.world.npc_props(self.id, payload),
+                crate::board::PLI_BOARDMODIFY => server.world.board_modify(self.id, payload),
                 PLI_WEAPONADD => server.world.weapon_add(self.id, payload),
                 PLI_BADDYPROPS => server.world.baddy_props(self.id, payload),
                 PLI_BADDYHURT => server.world.baddy_hurt(self.id, payload),
