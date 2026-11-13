@@ -71,6 +71,14 @@ npcserver_port = 14810
 # npcserver_token =          (external only; 16 to 256 characters)
 # npcserver_path =           (auto only; empty = next to seihai-gserver)
 
+# The Login lobby for 4.x to 6.x clients. Those builds log in first to a
+# server they call "Login", then go where its PLO_SERVERWARP sends them.
+# With lobby_port set, this server listens there too, and after the login
+# burst sends those builds on to `lobby_host` and this server's port.
+# Older builds that log in there just play. 0 (the default) is off.
+lobby_port = 0
+lobby_host = 127.0.0.1
+
 # The listserver link. Empty listserver (the default): register nowhere.
 # Set it to the listserver's gserver port, e.g. 127.0.0.1:14900 for a lab.
 listserver =

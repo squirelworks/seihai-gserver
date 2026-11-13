@@ -78,6 +78,13 @@ pub struct Config {
     /// starts `seihai-npcserver` by hand) or `auto` (the gserver starts it
     /// and hands it a fresh token).
     pub npcserver: NpcMode,
+    /// The Login lobby for 4.x to 6.x clients (stage 6): a second port
+    /// where those builds log in first. After the login burst they are
+    /// sent `PLO_SERVERWARP` (178) to this server's game port. 0: off.
+    pub lobby_port: u16,
+    /// The host the 178 names: the address players reach the game port
+    /// at. Loopback by default, for a lab.
+    pub lobby_host: String,
     /// Address and port the link listens on. Loopback by default: the link
     /// is not encrypted.
     pub npcserver_bind: IpAddr,
@@ -147,6 +154,8 @@ impl Config {
             secure_login_key: PathBuf::from("config/seihai-login.key"),
             require_secure_login: false,
             npcserver: NpcMode::Off,
+            lobby_port: 0,
+            lobby_host: "127.0.0.1".to_string(),
             npcserver_bind: IpAddr::from([127, 0, 0, 1]),
             npcserver_port: 14810,
             npcserver_token: String::new(),
@@ -219,6 +228,8 @@ impl Config {
                     .map_err(|_| format!("`{v}` is not an IP address"))?
             }
             "port" => self.port = num(v)?,
+            "lobby_port" => self.lobby_port = num(v)?,
+            "lobby_host" => self.lobby_host = v.to_string(),
             "start_level" => self.start_level = v.to_string(),
             "start_x" => self.start_x = num(v)?,
             "start_y" => self.start_y = num(v)?,
@@ -341,6 +352,16 @@ mod tests {
         let mut c = c;
         c.apply("secure_login_key =\n");
         assert_eq!(c.secure_login_key_path(), None);
+    }
+
+    #[test]
+    fn lobby_settings() {
+        let mut c = Config::defaults(Path::new("w"));
+        assert_eq!((c.lobby_port, c.lobby_host.as_str()), (0, "127.0.0.1"));
+        assert!(c
+            .apply("lobby_port = 14801\nlobby_host = 192.0.2.7\n")
+            .is_empty());
+        assert_eq!((c.lobby_port, c.lobby_host.as_str()), (14801, "192.0.2.7"));
     }
 
     #[test]
