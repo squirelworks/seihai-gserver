@@ -5,6 +5,9 @@ stands on it. It answers "can this server replace the fork for my world
 yet?" and is the checklist for the differential lab runs against the fork
 (seihai's `tools/difftest`). The roadmap item is #56, "Parity".
 
+Where the original 1999 servers were read, `ORIGINAL-SERVERS.md` says what
+they do and `rules = 1999` follows them.
+
 It is written from behaviour only. The fork
 (`squirelworks/seihai-gserver-v2`) was read to list its feature areas and
 the client messages it acts on. No code, table or comment was taken from
@@ -48,8 +51,8 @@ test) and the lab notes.
 | Items on the ground (`PLI_ITEMADD`, `ITEMDEL`, `ITEMTAKE`) | lab | `floor_items.rs`; `lab/stage2` | |
 | Player flags and server flags (`PLI_FLAGSET`, `FLAGDEL`) | lab | `lab/stage2` | Server flags come from the NPC-server (stage 5) |
 | Level changes on disk reloaded | tests | `npc_messages.rs` (`LEVEL_RELOADED`) | |
-| Board changes (`PLI_BOARDMODIFY`, `PLI_REQUESTUPDATEBOARD`) | partial | `board_changes.rs` | `PLI_BOARDMODIFY` is passed on to the level and sent to later arrivals; 2x2 changes grow back after 15 s. Not on gmaps, and `PLI_REQUESTUPDATEBOARD` is not read yet. A level keeps at most 256 changes (#106). Blocks are not checked against the level yet (#107) |
-| Horses (`PLI_HORSEADD`, `HORSEDEL`) | no | | |
+| Board changes (`PLI_BOARDMODIFY`, `PLI_REQUESTUPDATEBOARD`) | partial | `board_changes.rs` | `PLI_BOARDMODIFY` is passed on to the level and sent to later arrivals; 2x2 changes grow back after 15 s (`rules = 1999`: 7.5 to 12.5 s). Not on gmaps, and `PLI_REQUESTUPDATEBOARD` is not read yet. A level keeps at most 256 changes (#106). Blocks are not checked against the level yet (#107) |
+| Horses (`PLI_HORSEADD`, `HORSEDEL`) | tests | `original_rules.rs`, `horses.rs` | As the 1999 servers keep them (`ORIGINAL-SERVERS.md`): shown to arrivals, gone after `horse_lifetime` |
 | `PLI_ENTERLEVEL` (newer builds' level entry) | no | | |
 | Level groups (`gr.setlevelgroup`) | no | | |
 
@@ -59,8 +62,9 @@ test) and the lab notes.
 |---|---|---|---|
 | Own and other players' props, per receiver's build | lab | `other_players.rs`; `lab/five-clients-2026-11-12.md` | 1.39 draws others with no body (that lab note) |
 | Chat (prop 12) | lab | `lab/five-clients-2026-11-12.md` | |
+| `PLI_TOALL` (to everyone online, `PLO_TOALL` 13) | tests | `original_rules.rs` | |
 | Bombs, arrows, fire spy, explosions | lab | `bombs_arrows.rs`; `lab/stage3-2026-11-05.md` | |
-| Player hits, hurt and death, `PLI_CLAIMPKER` | lab | `hurt_death.rs`; `lab/hurt-2026-11-12.md` | |
+| Player hits, hurt and death, `PLI_CLAIMPKER` | lab | `hurt_death.rs`; `lab/hurt-2026-11-12.md` | The kill cost is GServer-v2's; `rules = 1999` takes the 1999 servers' (`original_rules.rs`). One-byte claims from 1.21 to 1.35, deaths and alignment over time: tests only |
 | Carry and throw (`PLI_THROWCARRIED`) | no | | Its shape needs a capture of a real throw |
 | `PLI_HITOBJECTS`, `PLI_SHOOT`, `PLI_SHOOT2` | no | | |
 | `PLI_SHOWIMGPLAYER` | no | | |
@@ -128,7 +132,7 @@ From the rows above, in the roadmap's order:
    weapon cache.
 3. **Board changes:** `PLI_REQUESTUPDATEBOARD` and gmaps.
 4. **Trigger actions**, once `PLO_TRIGGERACTION` has a capture.
-5. Carry and throw, horses, guilds and the word filter.
+5. Carry and throw, guilds and the word filter.
 
 Each row moves to **lab** only with a recorded run. A differential run
 against the fork is the stronger evidence: same world, same client, same

@@ -19,6 +19,10 @@
 //! everyone in the level, and a minute later it is back at its spawn
 //! point as the level file has it. These are the times GServer-v2 beta4
 //! keeps in the lab (2026-11-05, its default `baddyrespawntime = 60`).
+//! The leader's client may say mode 9 itself; that starts the minute too.
+//! The 1999 servers have no two-second step: they count the minute from
+//! the leader's mode 9 (`docs/ORIGINAL-SERVERS.md`). The minute is the
+//! `baddy_respawn_time` setting.
 //!
 //! The wire (Seihai `documentation/baddies.md`; every value +32, a text is
 //! a length byte and the text):
@@ -96,9 +100,13 @@ pub struct Baddy {
 }
 
 impl Baddy {
-    /// A baddy of the level file, numbered `id`. `None` for a type that is
-    /// not 0 to 9.
-    pub fn from_level(id: u8, b: &seihai_core::assets::Baddy) -> Option<Self> {
+    /// A baddy of the level file, numbered `id`, starting in `start_mode`
+    /// (`Rules::baddy_start_mode`). `None` for a type that is not 0 to 9.
+    pub fn from_level(
+        id: u8,
+        b: &seihai_core::assets::Baddy,
+        start_mode: impl Fn(u8) -> u8,
+    ) -> Option<Self> {
         let kind: u8 = b.kind.trim().parse().ok()?;
         let (power, image) = *KINDS.get(usize::from(kind))?;
         let mut props = BTreeMap::new();
@@ -106,7 +114,7 @@ impl Baddy {
         props.insert(Y, vec![gchar(half_tiles(b.y))]);
         props.insert(TYPE, vec![gchar(kind)]);
         props.insert(POWER_IMAGE, power_image(power, image.as_bytes()));
-        props.insert(MODE, vec![gchar(MODE_WALK)]);
+        props.insert(MODE, vec![gchar(start_mode(kind))]);
         props.insert(ANI, vec![gchar(0)]);
         props.insert(DIR, vec![gchar(START_DIR)]);
         let mut verses = b.verses.split('\n');
@@ -135,8 +143,10 @@ impl Baddy {
     /// A client's change: kept, and returned as the props that changed, to
     /// pass on. Prop 0 (the id) is not the client's to change. A hurt
     /// carries the new power with an empty image: the power is kept and the
-    /// image stays, so a later arrival still gets it.
-    pub fn update(&mut self, raw: &[u8], now: Instant) -> Vec<(u8, Vec<u8>)> {
+    /// image stays, so a later arrival still gets it. A mode 9 (dead) from
+    /// the client brings the baddy back after `respawn`, unless it is
+    /// already dead and counting.
+    pub fn update(&mut self, raw: &[u8], now: Instant, respawn: Duration) -> Vec<(u8, Vec<u8>)> {
         let mut changed = Vec::new();
         for (id, v) in split(raw) {
             if id == ID {
@@ -155,7 +165,11 @@ impl Baddy {
             if id == MODE {
                 let mode = v[0].wrapping_sub(0x20);
                 self.dead_at = (mode == MODE_DIE).then(|| now + DYING);
-                self.back_at = None;
+                self.back_at = match (mode, self.back_at) {
+                    (MODE_DEAD, Some(t)) => Some(t),
+                    (MODE_DEAD, None) => Some(now + respawn),
+                    _ => None,
+                };
             }
             if self.props.get(&id) != Some(&keep) || id == POWER_IMAGE {
                 self.props.insert(id, keep);
@@ -165,10 +179,11 @@ impl Baddy {
         changed
     }
 
-    /// Dead now: mode 9, and back after [`RESPAWN`].
-    pub fn die(&mut self, now: Instant) -> Vec<(u8, Vec<u8>)> {
+    /// Dead now: mode 9, and back after `respawn` ([`RESPAWN`] by
+    /// default).
+    pub fn die(&mut self, now: Instant, respawn: Duration) -> Vec<(u8, Vec<u8>)> {
         self.dead_at = None;
-        self.back_at = Some(now + RESPAWN);
+        self.back_at = Some(now + respawn);
         self.props.insert(MODE, vec![gchar(MODE_DEAD)]);
         vec![(MODE, vec![gchar(MODE_DEAD)])]
     }
@@ -279,6 +294,10 @@ fn half_tiles(t: f32) -> u8 {
 mod tests {
     use super::*;
 
+    fn walk(_: u8) -> u8 {
+        MODE_WALK
+    }
+
     fn level_baddy(kind: &str, verses: &str) -> seihai_core::assets::Baddy {
         seihai_core::assets::Baddy {
             x: 40.0,
@@ -293,7 +312,7 @@ mod tests {
     /// and 1.39 the same with `.gif`.
     #[test]
     fn a_level_baddy_matches_the_capture() {
-        let b = Baddy::from_level(1, &level_baddy("0", "Halt!\nOuch!\nTake that!")).unwrap();
+        let b = Baddy::from_level(1, &level_baddy("0", "Halt!\nOuch!\nTake that!"), walk).unwrap();
         let mut want = vec![
             0x22, 0x21, 0x21, 0x70, 0x22, 0x5c, 0x23, 0x20, 0x24, 0x22, 0x2d,
         ];
@@ -312,22 +331,25 @@ mod tests {
 
     #[test]
     fn a_gold_soldier_without_verses() {
-        let b = Baddy::from_level(2, &level_baddy("7", "\n\n")).unwrap();
+        let b = Baddy::from_level(2, &level_baddy("7", "\n\n"), walk).unwrap();
         let m = b.message(ClientVersion::V222);
         assert!(m.ends_with(&[0x28, 0x20, 0x29, 0x20, 0x2a, 0x20, b'\n']));
         assert!(m.windows(2).any(|w| w == [0x24, 0x26]), "power 6");
-        assert!(Baddy::from_level(3, &level_baddy("11", "")).is_none());
-        assert!(Baddy::from_level(3, &level_baddy("soldier", "")).is_none());
+        assert!(Baddy::from_level(3, &level_baddy("11", ""), walk).is_none());
+        assert!(Baddy::from_level(3, &level_baddy("soldier", ""), walk).is_none());
     }
 
     #[test]
     fn a_leader_update_is_kept_and_a_hurt_keeps_the_image() {
         let now = Instant::now();
-        let mut b = Baddy::from_level(1, &level_baddy("0", "")).unwrap();
+        let mut b = Baddy::from_level(1, &level_baddy("0", ""), walk).unwrap();
         // x 41, and the id, which is not the client's to change.
-        assert_eq!(b.update(&[0x21, 0x72, 0x20, 0x29], now), [(X, vec![0x72])]);
+        assert_eq!(
+            b.update(&[0x21, 0x72, 0x20, 0x29], now, RESPAWN),
+            [(X, vec![0x72])]
+        );
         // A follower's hurt: power 1, empty image, mode 3.
-        let changed = b.update(&[0x24, 0x21, 0x20, 0x25, 0x23], now);
+        let changed = b.update(&[0x24, 0x21, 0x20, 0x25, 0x23], now, RESPAWN);
         assert_eq!(changed[0], (POWER_IMAGE, vec![0x21, 0x20]));
         let m = b.message(ClientVersion::V222);
         assert!(m.windows(16).any(|w| w == b"\x24\x21\x2dbaddygray.png"));
@@ -337,10 +359,10 @@ mod tests {
     #[test]
     fn dying_then_dead_then_back() {
         let now = Instant::now();
-        let mut b = Baddy::from_level(1, &level_baddy("0", "")).unwrap();
-        b.update(&[0x21, 0x72, 0x25, 0x25], now);
+        let mut b = Baddy::from_level(1, &level_baddy("0", ""), walk).unwrap();
+        b.update(&[0x21, 0x72, 0x25, 0x25], now, RESPAWN);
         assert_eq!(b.dead_at, Some(now + DYING));
-        assert_eq!(b.die(now + DYING), [(MODE, vec![0x29])]);
+        assert_eq!(b.die(now + DYING, RESPAWN), [(MODE, vec![0x29])]);
         assert_eq!(b.back_at, Some(now + DYING + RESPAWN));
         b.respawn();
         assert_eq!(b.mode(), Some(MODE_WALK));
@@ -348,9 +370,45 @@ mod tests {
             .message(ClientVersion::V222)
             .starts_with(&[0x22, 0x21, 0x21, 0x70]));
         // A new mode before the death ends calls it off.
-        b.update(&[0x25, 0x25], now);
-        b.update(&[0x25, 0x23], now);
+        b.update(&[0x25, 0x25], now, RESPAWN);
+        b.update(&[0x25, 0x23], now, RESPAWN);
         assert_eq!(b.dead_at, None);
+    }
+
+    /// A leader that says mode 9 itself: the baddy still comes back, from
+    /// its own 9 (as on the 1999 servers) or from the server's.
+    #[test]
+    fn a_clients_own_mode_9_brings_it_back() {
+        let now = Instant::now();
+        let mut b = Baddy::from_level(1, &level_baddy("0", ""), walk).unwrap();
+        b.update(&[0x25, 0x25], now, RESPAWN);
+        b.update(&[0x25, 0x29], now + Duration::from_secs(1), RESPAWN);
+        assert_eq!(b.dead_at, None);
+        assert_eq!(b.back_at, Some(now + Duration::from_secs(1) + RESPAWN));
+        // After the server's 9, the client's own 9 keeps the time.
+        let mut b = Baddy::from_level(1, &level_baddy("0", ""), walk).unwrap();
+        b.update(&[0x25, 0x25], now, RESPAWN);
+        b.die(now + DYING, RESPAWN);
+        b.update(&[0x25, 0x29], now + Duration::from_secs(5), RESPAWN);
+        assert_eq!(b.back_at, Some(now + DYING + RESPAWN));
+    }
+
+    /// The 1999 servers start swamp soldiers (4) in mode 6 and hares (5)
+    /// in mode 7, and bring them back so.
+    #[test]
+    fn start_modes_come_from_the_rules() {
+        let rules = crate::rules::Rules {
+            era: crate::rules::Era::Y1999,
+            ..Default::default()
+        };
+        let mode = |k| rules.baddy_start_mode(k);
+        let mut b = Baddy::from_level(1, &level_baddy("4", ""), mode).unwrap();
+        assert_eq!(b.mode(), Some(6));
+        b.update(&[0x25, 0x29], Instant::now(), RESPAWN);
+        b.respawn();
+        assert_eq!(b.mode(), Some(6));
+        let b = Baddy::from_level(1, &level_baddy("5", ""), mode).unwrap();
+        assert_eq!(b.mode(), Some(7));
     }
 
     #[test]

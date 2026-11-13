@@ -116,6 +116,10 @@ pub struct Config {
     /// Packages to push at login, from `gpaks = a.gpake,b.gpak`. Empty
     /// sends none. Each name is served like a file request.
     pub gpaks: Vec<String>,
+    /// The game rules and their times (`rules`, `respawn_time`,
+    /// `horse_lifetime`, `baddy_respawn_time`, `alignment_time`;
+    /// `rules.rs`).
+    pub rules: crate::rules::Rules,
 }
 
 /// How the NPC-server link runs.
@@ -167,6 +171,7 @@ impl Config {
             listserver_accounts: false,
             anticheat: crate::anticheat::Policy::default(),
             gpaks: Vec::new(),
+            rules: crate::rules::Rules::default(),
         }
     }
 
@@ -245,6 +250,17 @@ impl Config {
             "login_rate" => self.login_rate = num(v)?,
             "login_rate_loopback" => self.login_rate_loopback = flag(v)?,
             "revive_dead" => self.revive_dead = flag(v)?,
+            "rules" => {
+                self.rules.era = match v.to_ascii_lowercase().as_str() {
+                    "v2" => crate::rules::Era::V2,
+                    "1999" => crate::rules::Era::Y1999,
+                    _ => return Err(format!("`{v}` is not v2 or 1999")),
+                }
+            }
+            "respawn_time" => self.rules.respawn = Some(secs(v)?),
+            "horse_lifetime" => self.rules.horse_life = secs(v)?,
+            "baddy_respawn_time" => self.rules.baddy_respawn = secs(v)?,
+            "alignment_time" => self.rules.alignment_time = secs(v)?,
             "board_tile" => self.board_tile = num::<u16>(v)? & 0x0FFF,
             "max_players" => self.max_players = num(v)?,
             "secure_login_key" => self.secure_login_key = PathBuf::from(v),

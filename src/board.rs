@@ -7,10 +7,11 @@
 //! `board_modify_message`, from a 2.05 lab capture). The server keeps the
 //! change for the level, sends it to the others there in the same shape
 //! as 7, and to players who arrive later. A 2x2 change (a bush, a pot, a
-//! sign) grows back after [`RESPAWN`]: the old tiles go out to the level
-//! and the change is dropped. Larger changes stay while the server runs.
-//! The 2x2 rule and the 15 s default are GServer-v2's behaviour (its
-//! `respawntime` option), read for behaviour only.
+//! sign) grows back after the world's regrowth time (`rules.rs`): the old
+//! tiles go out to the level and the change is dropped. Larger changes
+//! stay while the server runs. Only a 2x2 grows back on GServer-v2 and on
+//! both 1999 servers alike; the time is 15 s on GServer-v2 ([`RESPAWN`])
+//! and a random 7.5 to 12.5 s on the 1999 servers.
 //!
 //! A level keeps at most [`MAX_CHANGES`]. The tiles a client writes are
 //! not checked against what may be cut or lifted there yet.
@@ -22,7 +23,7 @@ use std::time::{Duration, Instant};
 pub const PLO_BOARDMODIFY: u8 = 7;
 /// `PLI_BOARDMODIFY`.
 pub const PLI_BOARDMODIFY: u8 = 1;
-/// How long a 2x2 change lasts.
+/// How long a 2x2 change lasts under the `v2` rules.
 pub const RESPAWN: Duration = Duration::from_secs(15);
 /// The most changes kept for one level. A change to a new rectangle past
 /// this is refused: it is neither kept nor passed on, so one client
@@ -125,12 +126,13 @@ pub struct Changes {
 }
 
 impl Changes {
-    /// Keep `b` for a level whose file board is `file`. A change to the
-    /// same rectangle replaces the one before and keeps its old tiles.
-    /// `false` when the level already has [`MAX_CHANGES`] and `b` is in
-    /// a new place: it is not kept and should not be passed on.
-    pub fn add(&mut self, b: Block, file: &[u16], now: Instant) -> bool {
-        let until = (b.w == 2 && b.h == 2).then_some(now + RESPAWN);
+    /// Keep `b` for a level whose file board is `file`. A 2x2 grows back
+    /// after `grow`. A change to the same rectangle replaces the one
+    /// before and keeps its old tiles. `false` when the level already has
+    /// [`MAX_CHANGES`] and `b` is in a new place: it is not kept and should
+    /// not be passed on.
+    pub fn add(&mut self, b: Block, file: &[u16], now: Instant, grow: Duration) -> bool {
+        let until = (b.w == 2 && b.h == 2).then_some(now + grow);
         let old = match self.list.iter().position(|c| c.now.same_place(&b)) {
             Some(i) => self.list.remove(i).old,
             None if self.list.len() >= MAX_CHANGES => return false,
@@ -212,7 +214,7 @@ mod tests {
         let file = vec![5u16; SIDE * SIDE];
         let t0 = Instant::now();
         let mut c = Changes::default();
-        c.add(Block::parse(&bush_cut()).unwrap(), &file, t0);
+        c.add(Block::parse(&bush_cut()).unwrap(), &file, t0, RESPAWN);
         let push = Block {
             x: 10,
             y: 10,
@@ -220,7 +222,7 @@ mod tests {
             h: 4,
             tiles: vec![9; 16],
         };
-        c.add(push, &file, t0);
+        c.add(push, &file, t0, RESPAWN);
         assert_eq!(c.board(&file)[14 * SIDE + 39], 1834);
         assert_eq!(c.board(&file)[10 * SIDE + 10], 9);
         assert_eq!(c.messages().len(), 2);
@@ -241,9 +243,9 @@ mod tests {
         let t0 = Instant::now();
         let mut c = Changes::default();
         let mut b = Block::parse(&bush_cut()).unwrap();
-        c.add(b.clone(), &file, t0);
+        c.add(b.clone(), &file, t0, RESPAWN);
         b.tiles = vec![7; 4];
-        c.add(b, &file, t0);
+        c.add(b, &file, t0, RESPAWN);
         assert_eq!(c.messages().len(), 1);
         let back = c.expire(t0 + RESPAWN);
         let read =
@@ -265,11 +267,11 @@ mod tests {
             tiles: vec![9],
         };
         for i in 0..MAX_CHANGES {
-            assert!(c.add(at(i), &file, t0));
+            assert!(c.add(at(i), &file, t0, RESPAWN));
         }
         // A new place is refused; the same place is still taken.
-        assert!(!c.add(at(MAX_CHANGES), &file, t0));
-        assert!(c.add(at(0), &file, t0));
+        assert!(!c.add(at(MAX_CHANGES), &file, t0, RESPAWN));
+        assert!(c.add(at(0), &file, t0, RESPAWN));
         assert_eq!(c.messages().len(), MAX_CHANGES);
         assert_eq!(c.board(&file)[MAX_CHANGES], 5);
     }

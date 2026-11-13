@@ -99,10 +99,8 @@ fn a_gserver_v2_folder_becomes_a_world() {
         left.contains("not carried over: flaghack_movement, onlystaff"),
         "{left}"
     );
-    assert!(
-        left.contains("account keys not carried over: DEATHS"),
-        "{left}"
-    );
+    // Deaths are kept now (`DEATHS`), so no account key is left over.
+    assert!(!left.contains("account keys not carried over"), "{left}");
     assert!(
         left.contains("1 file(s) under world/ no foldersconfig rule lets a client have, not copied: private/notes.txt"),
         "{left}"
@@ -134,6 +132,7 @@ fn a_gserver_v2_folder_becomes_a_world() {
     assert_eq!(mara.sword, (2, "sword2.png".to_string()));
     assert_eq!(mara.folder_rights, ["rw levels/*"]);
     assert_eq!(mara.rc_rights, 513);
+    assert_eq!(mara.deaths, 1);
     let ned = store.load("Ned").unwrap().unwrap();
     assert!(!ned.staff);
 

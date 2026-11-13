@@ -188,6 +188,16 @@ pub enum WorldIn {
     ClaimPker { player: u16, raw: Vec<u8> },
     /// `PLI_BOARDMODIFY`, as sent.
     BoardModify { player: u16, raw: Vec<u8> },
+    /// `PLI_HORSEADD` (7) or, with `add` false, `PLI_HORSEDEL` (8), as sent.
+    Horse {
+        player: u16,
+        add: bool,
+        raw: Vec<u8>,
+    },
+    /// `PLI_TOALL` (6), as sent: a message to everyone online.
+    ToAll { player: u16, raw: Vec<u8> },
+    /// The game rules (`rules.rs`).
+    SetRules(crate::rules::Rules),
     /// A message passed on to the others in the player's level as `out`,
     /// with the player's id first when `named` (bombs, shots, blasts).
     Relay {
@@ -278,6 +288,8 @@ pub struct Joining {
     pub flags: Vec<String>,
     /// Players the account killed so far.
     pub kills: u32,
+    /// The account's deaths so far.
+    pub deaths: u32,
     /// A staff account, for the anti-cheat's `staff exempt`.
     pub staff: bool,
     /// The weapons the account holds (`WEAPON` lines).
@@ -369,6 +381,8 @@ impl World {
                 anticheat: None,
                 floor: HashMap::new(),
                 boards: HashMap::new(),
+                horses: HashMap::new(),
+                rules: crate::rules::Rules::default(),
                 npcs: HashMap::new(),
                 last_npc: 0,
                 baddies: HashMap::new(),
@@ -487,6 +501,30 @@ impl World {
             player,
             raw: raw.to_vec(),
         });
+    }
+
+    /// `PLI_HORSEADD` (`add`) or `PLI_HORSEDEL`, as sent (`horses.rs`).
+    pub fn horse(&self, player: u16, add: bool, raw: &[u8]) {
+        let _ = self.tx.send(WorldIn::Horse {
+            player,
+            add,
+            raw: raw.to_vec(),
+        });
+    }
+
+    /// `PLI_TOALL`, as sent: passed to everyone else online as
+    /// `PLO_TOALL` (13), the sender's id first. Both 1999 servers do so.
+    pub fn toall(&self, player: u16, raw: &[u8]) {
+        let _ = self.tx.send(WorldIn::ToAll {
+            player,
+            raw: raw.to_vec(),
+        });
+    }
+
+    /// The game rules and their times (`rules.rs`). The world starts with
+    /// the defaults.
+    pub fn set_rules(&self, rules: crate::rules::Rules) {
+        let _ = self.tx.send(WorldIn::SetRules(rules));
     }
 
     /// `PLI_HURTPLAYER`, as sent.
@@ -715,6 +753,10 @@ struct Online {
     flags: BTreeMap<String, String>,
     /// Players killed, the account's count included.
     kills: u32,
+    /// Deaths, the account's count included.
+    deaths: u32,
+    /// When the player's alignment next rises (`alignment_time`).
+    ap_at: Option<Instant>,
     /// The weapons the player holds, as the account file names them.
     weapons: Vec<String>,
     /// A staff account: skips the checks the admin made `staff exempt`.
@@ -743,6 +785,7 @@ impl Online {
             y: self.props.y(),
             props: self.props.values().clone(),
             kills: self.kills,
+            deaths: self.deaths,
             weapons: self.weapons.clone(),
             chests,
             flags: self
@@ -784,6 +827,8 @@ pub struct Leaving {
     pub flags: Vec<String>,
     /// Players killed, the account's count included.
     pub kills: u32,
+    /// Deaths, the account's count included.
+    pub deaths: u32,
     /// The weapons the player holds.
     pub weapons: Vec<String>,
 }
@@ -828,6 +873,7 @@ impl Leaving {
             a.alignment = v.min(100);
         }
         a.kills = self.kills;
+        a.deaths = self.deaths;
         a.chests = self.chests.clone();
         a.flags = self.flags.clone();
         a.weapons = self.weapons.clone();
@@ -888,6 +934,10 @@ pub struct WorldTask {
     floor: HashMap<String, Vec<FloorItem>>,
     /// Tile changes to each level's board (lower-case name), `board.rs`.
     boards: HashMap<String, crate::board::Changes>,
+    /// Horses left in each level (lower-case name), `horses.rs`.
+    horses: HashMap<String, crate::horses::Horses>,
+    /// The game rules and their times.
+    rules: crate::rules::Rules,
     /// The NPCs of each level read so far (lower-case name).
     npcs: HashMap<String, Vec<Npc>>,
     last_npc: u32,
@@ -933,8 +983,11 @@ impl WorldTask {
                 },
                 _ = tick.tick() => {
                     self.flush();
-                    self.baddy_timers(Instant::now());
-                    self.board_timers(Instant::now());
+                    let now = Instant::now();
+                    self.baddy_timers(now);
+                    self.board_timers(now);
+                    self.horse_timers(now);
+                    self.alignment_timers(now);
                 }
                 _ = check.tick() => self.check_levels(),
             }
@@ -962,6 +1015,9 @@ impl WorldTask {
                         }
                         p.opened = who.chests.iter().cloned().collect();
                         p.kills = who.kills;
+                        p.deaths = who.deaths;
+                        p.ap_at = (!self.rules.alignment_time.is_zero())
+                            .then(|| Instant::now() + self.rules.alignment_time);
                         p.weapons = who.weapons.clone();
                         p.staff = who.staff;
                         p.machines = who.machines.clone();
@@ -1058,6 +1114,9 @@ impl WorldTask {
             } => self.relay(player, out, named, &raw),
             WorldIn::LevelWarp(w) => self.warp(w),
             WorldIn::BoardModify { player, raw } => self.board_modify(player, &raw),
+            WorldIn::Horse { player, add, raw } => self.horse(player, add, &raw),
+            WorldIn::ToAll { player, raw } => self.toall(player, &raw),
+            WorldIn::SetRules(r) => self.rules = r,
             WorldIn::OpenChest { player, x, y } => self.open_chest(player, x, y),
             WorldIn::Item {
                 player,
@@ -1567,6 +1626,7 @@ impl WorldTask {
             npcs.extend(old.into_iter().filter(|n| server.contains(&n.id)));
         }
         self.npcs.insert(key.clone(), npcs);
+        let rules = self.rules.clone();
         let baddies = l
             .baddies
             .iter()
@@ -1574,7 +1634,7 @@ impl WorldTask {
                 let mut n = 0u8;
                 move |b| {
                     n = n.checked_add(1)?;
-                    Baddy::from_level(n, b)
+                    Baddy::from_level(n, b, |k| rules.baddy_start_mode(k))
                 }
             })
             .collect();
@@ -1851,6 +1911,8 @@ impl WorldTask {
                 opened: HashSet::new(),
                 flags: BTreeMap::new(),
                 kills: 0,
+                deaths: 0,
+                ap_at: None,
                 weapons: Vec::new(),
                 staff: false,
                 machines: Vec::new(),
@@ -1927,6 +1989,26 @@ impl WorldTask {
                 .flatten()
                 .map(|b| b.message(me.version))
                 .collect();
+            if !msgs.is_empty() {
+                let name = self.loaded.get(&me.level).map_or(&me.level, |l| &l.name);
+                for m in under_gmap(me.gmap.as_ref(), name, msgs) {
+                    let _ = me.outbox.send(vec![m]);
+                }
+            }
+        }
+        // The horses left there (`horses.rs`).
+        if me
+            .version
+            .profile()
+            .protocol
+            .plo
+            .contains(crate::horses::PLO_HORSEADD)
+        {
+            let msgs = self
+                .horses
+                .get(&me.level)
+                .map(|h| h.messages())
+                .unwrap_or_default();
             if !msgs.is_empty() {
                 let name = self.loaded.get(&me.level).map_or(&me.level, |l| &l.name);
                 for m in under_gmap(me.gmap.as_ref(), name, msgs) {
@@ -2011,6 +2093,12 @@ impl WorldTask {
         let Some(p) = self.players.get(&id) else {
             return;
         };
+        // The 1999 servers take a baddy change only from the level's
+        // leader, whose client runs them.
+        if self.rules.era == crate::rules::Era::Y1999 && self.leader_of(&p.level) != Some(id) {
+            return;
+        }
+        let respawn = self.rules.baddy_respawn;
         let Some((bid, rest)) = crate::baddies::id_of(raw) else {
             return;
         };
@@ -2021,7 +2109,7 @@ impl WorldTask {
         else {
             return;
         };
-        let changed = b.update(rest, Instant::now());
+        let changed = b.update(rest, Instant::now(), respawn);
         if changed.is_empty() {
             return;
         }
@@ -2113,36 +2201,139 @@ impl WorldTask {
         let _ = v.outbox.send(vec![crate::wire::msg(PLO_HURTPLAYER, &m)]);
     }
 
-    /// A player died and names their killer. The killer's count goes up
-    /// and their alignment down by [`ap_cost`]; they and the others in
-    /// their level are told the new alignment (prop 32).
+    /// A player died and names their killer: `GCHAR` id from a build up
+    /// to 1.35, else `GSHORT`. What it costs the killer is the rules'
+    /// ([`crate::rules::Rules::kill`]); a kill that counts goes on the
+    /// killer's count, and they and the others in their level are told
+    /// their new alignment (prop 32).
     fn claim_pker(&mut self, id: u16, raw: &[u8]) {
-        let Some(head) = raw.get(..2) else {
+        let Some(victim) = self.players.get(&id) else {
             return;
         };
-        let Some(killer) = seihai_core::protocol::read_gshort(head) else {
+        let killer = if others::one_byte_id(victim.version) {
+            raw.first().map(|b| u16::from(b.wrapping_sub(0x20)))
+        } else {
+            raw.get(..2).and_then(seihai_core::protocol::read_gshort)
+        };
+        let Some(killer) = killer else {
             return;
         };
-        if killer == id || !self.players.contains_key(&id) {
+        let victim_ap = ap_of(&victim.props);
+        if killer == id {
             return;
         }
         let Some(k) = self.players.get_mut(&killer) else {
             return;
         };
-        k.kills = k.kills.saturating_add(1);
-        let ap = match k.props.values().get(&ALIGNMENT).map(Vec::as_slice) {
-            Some([v, ..]) => v.wrapping_sub(0x20).min(100),
-            _ => 0,
+        let Some(kill) = self.rules.kill(ap_of(&k.props), victim_ap) else {
+            return;
         };
-        let new = ap.saturating_sub(ap_cost(ap));
-        let change = k
+        k.kills = k.kills.saturating_add(1);
+        self.set_alignment(killer, kill.ap);
+    }
+
+    /// Set a player's alignment (prop 32): they and the others in their
+    /// level are told.
+    fn set_alignment(&mut self, id: u16, ap: u8) {
+        let Some(p) = self.players.get_mut(&id) else {
+            return;
+        };
+        let change = p
             .props
-            .apply(&[gchar(ALIGNMENT), gchar(new)], ClientVersion::V222);
-        if let Some(m) = others::own_message(k.version, &[(ALIGNMENT, vec![gchar(new)])]) {
-            let _ = k.outbox.send(vec![m]);
+            .apply(&[gchar(ALIGNMENT), gchar(ap.min(100))], ClientVersion::V222);
+        if let Some(m) = others::own_message(p.version, &[(ALIGNMENT, vec![gchar(ap.min(100))])]) {
+            let _ = p.outbox.send(vec![m]);
         }
-        let level = k.level.clone();
-        self.tell_level(&level, killer, &change, &[]);
+        let level = p.level.clone();
+        self.tell_level(&level, id, &change, &[]);
+    }
+
+    /// Alignment rises by one for each `alignment_time` online, up to
+    /// 100, as on both 1999 servers (20 minutes there).
+    fn alignment_timers(&mut self, now: Instant) {
+        let every = self.rules.alignment_time;
+        if every.is_zero() {
+            return;
+        }
+        let due: Vec<u16> = self
+            .players
+            .iter_mut()
+            .filter(|(_, p)| p.ap_at.is_some_and(|t| t <= now))
+            .map(|(&id, p)| {
+                p.ap_at = Some(now + every);
+                id
+            })
+            .collect();
+        for id in due {
+            let Some(p) = self.players.get(&id) else {
+                continue;
+            };
+            let ap = ap_of(&p.props);
+            if ap < 100 {
+                self.set_alignment(id, ap + 1);
+            }
+        }
+    }
+
+    /// A horse left in, or taken from, the player's level (`horses.rs`).
+    fn horse(&mut self, id: u16, add: bool, raw: &[u8]) {
+        let Some(p) = self.players.get(&id) else {
+            return;
+        };
+        let level = p.level.clone();
+        if add {
+            let until = Instant::now() + self.rules.horse_life;
+            if let Some(h) = crate::horses::Horse::parse(raw, until) {
+                self.horses.entry(level).or_default().add(h);
+            }
+        } else if let Some((x2, y2)) = crate::horses::spot(raw) {
+            if let Some(hs) = self.horses.get_mut(&level) {
+                hs.remove(x2, y2);
+            }
+        }
+        self.horses.retain(|_, h| !h.is_empty());
+    }
+
+    /// Horses whose time is up leave, and the level is told.
+    fn horse_timers(&mut self, now: Instant) {
+        let mut gone = Vec::new();
+        for (level, hs) in &mut self.horses {
+            let msgs = hs.expire(now);
+            if !msgs.is_empty() {
+                gone.push((level.clone(), msgs));
+            }
+        }
+        self.horses.retain(|_, h| !h.is_empty());
+        for (level, msgs) in gone {
+            for o in self.players.values() {
+                if o.level == level
+                    && o.version
+                        .profile()
+                        .protocol
+                        .plo
+                        .contains(crate::horses::PLO_HORSEDEL)
+                {
+                    let _ = o.outbox.send(msgs.clone());
+                }
+            }
+        }
+    }
+
+    /// `PLI_TOALL`: everyone else online gets `PLO_TOALL` (13), the
+    /// sender's id first, then the text as sent.
+    fn toall(&mut self, id: u16, raw: &[u8]) {
+        if !self.players.contains_key(&id) {
+            return;
+        }
+        for (&other, o) in &self.players {
+            if other == id || !o.version.profile().protocol.plo.contains(PLO_TOALL) {
+                continue;
+            }
+            let mut p = Vec::with_capacity(raw.len() + 2);
+            others::put_id(o.version, id, &mut p);
+            p.extend_from_slice(raw);
+            let _ = o.outbox.send(vec![crate::wire::msg(PLO_TOALL, &p)]);
+        }
     }
 
     /// A block of tiles a player changed in their level: kept, and sent
@@ -2161,11 +2352,12 @@ impl WorldTask {
             .map(|l| l.board.clone())
             .unwrap_or_default();
         let m = block.message();
-        let kept = self
-            .boards
-            .entry(level.clone())
-            .or_default()
-            .add(block, &file, Instant::now());
+        let kept = self.boards.entry(level.clone()).or_default().add(
+            block,
+            &file,
+            Instant::now(),
+            self.rules.bush_regrowth(crate::rules::roll()),
+        );
         if !kept {
             // Once per player and level, so a client that keeps sending
             // does not fill the log.
@@ -2208,10 +2400,11 @@ impl WorldTask {
         // (level, baddy, the props that changed, or none for the whole baddy)
         type Due = (String, u8, Option<Vec<(u8, Vec<u8>)>>);
         let mut out: Vec<Due> = Vec::new();
+        let respawn = self.rules.baddy_respawn;
         for (level, list) in self.baddies.iter_mut() {
             for b in list.iter_mut() {
                 if b.dead_at.is_some_and(|t| t <= now) {
-                    out.push((level.clone(), b.id, Some(b.die(now))));
+                    out.push((level.clone(), b.id, Some(b.die(now, respawn))));
                 } else if b.back_at.is_some_and(|t| t <= now) {
                     b.respawn();
                     out.push((level.clone(), b.id, None));
@@ -2293,7 +2486,12 @@ impl WorldTask {
             p.gmap.as_ref().map(|g| g.cell),
             (p.props.x().unwrap_or(0.0), p.props.y().unwrap_or(0.0)),
         );
+        let was_dead = status_of(&p.props) & DEAD != 0;
         let mut change = p.props.apply(raw, p.version);
+        let died = !was_dead && change.byte(STATUS).is_some_and(|s| s & DEAD != 0);
+        if died {
+            p.deaths = p.deaths.saturating_add(1);
+        }
         let stale = std::mem::take(&mut p.stale).filter(|&(sx, sy)| {
             let (x, y) = (p.props.x().unwrap_or(0.0), p.props.y().unwrap_or(0.0));
             Props::moves(&change) && (x - sx).abs() <= 0.5 && (y - sy).abs() <= 0.5
@@ -2368,6 +2566,30 @@ impl WorldTask {
         }
         if !change.is_empty() {
             self.pending.entry(id).or_default().merge(change);
+        }
+        if died && self.rules.dead_leader_hands_off() {
+            self.dead_leader(id);
+        }
+    }
+
+    /// A leader who died stops running the level's baddies: the next
+    /// player there leads, and the dead one comes last (1999 rules).
+    fn dead_leader(&mut self, id: u16) {
+        let Some(level) = self.players.get(&id).map(|p| p.level.clone()) else {
+            return;
+        };
+        if self.leader_of(&level) != Some(id) {
+            return;
+        }
+        let next = self
+            .players
+            .iter()
+            .filter(|(&o, p)| o != id && p.level == level)
+            .min_by_key(|(&o, p)| (p.gmap.is_some(), o))
+            .map(|(&o, p)| (o, p.outbox.clone()));
+        if let Some((o, outbox)) = next {
+            self.leaders.insert(level, o);
+            let _ = outbox.send(vec![crate::wire::msg(PLO_ISLEADER, b"")]);
         }
     }
 
@@ -2999,6 +3221,7 @@ mod tests {
             chests: Vec::new(),
             flags: Vec::new(),
             kills: 0,
+            deaths: 0,
             staff: false,
             weapons: Vec::new(),
             machines: Vec::new(),
@@ -3032,25 +3255,6 @@ mod tests {
         st
     }
 
-    /// The AP cost of a kill at each AP the lab measured.
-    #[test]
-    fn a_kill_costs_ap_as_beta4_takes_it() {
-        for (ap, cost) in [
-            (100, 12),
-            (88, 10),
-            (78, 8),
-            (62, 8),
-            (54, 6),
-            (42, 6),
-            (37, 4),
-            (21, 4),
-            (17, 2),
-            (3, 2),
-        ] {
-            assert_eq!(ap_cost(ap), cost, "{ap}");
-        }
-    }
-
     #[test]
     fn leaving_goes_into_the_account() {
         let mut was = crate::accounts::Account::new("cora", "start.nw", 30.0, 30.0);
@@ -3080,13 +3284,14 @@ mod tests {
             chests: vec![("house.nw".into(), 1, 2)],
             flags: vec!["quest=2".into()],
             kills: 3,
+            deaths: 2,
             weapons: vec!["Lantern".into()],
         };
         let mut a = was.clone();
         l.apply_to(&mut a);
         assert_eq!((a.level.as_str(), a.x, a.y), ("house.nw", 12.5, 40.0));
         assert_eq!(a.rupees, 37);
-        assert_eq!(a.kills, 3);
+        assert_eq!((a.kills, a.deaths), (3, 2));
         assert_eq!(
             (a.max_hp, a.hp),
             (was.max_hp + 1, f32::from(was.max_hp + 1))
@@ -3489,6 +3694,8 @@ mod tests {
                     opened: HashSet::new(),
                     flags: BTreeMap::new(),
                     kills: 0,
+                    deaths: 0,
+                    ap_at: None,
                     weapons: Vec::new(),
                     staff: false,
                     machines: Vec::new(),
@@ -3553,9 +3760,28 @@ fn counted_name(id: u8) -> &'static str {
 /// have. GServer-v2 beta4 in the lab (2026-11-05) took 12 at 100, 10 at
 /// 88, 8 from 62 to 78, 6 from 42 to 54, 4 from 21 to 37 and 2 from 3 to
 /// 17, with the victim's AP left as it was.
-fn ap_cost(ap: u8) -> u8 {
-    2 * (1 + ap / 20)
+/// A player's status (prop 18).
+fn status_of(props: &Props) -> u8 {
+    match props.values().get(&STATUS).map(Vec::as_slice) {
+        Some([v, ..]) => v.wrapping_sub(0x20),
+        _ => 0,
+    }
 }
+
+/// A player's alignment (prop 32), 0 to 100.
+fn ap_of(props: &Props) -> u8 {
+    match props.values().get(&ALIGNMENT).map(Vec::as_slice) {
+        Some([v, ..]) => v.wrapping_sub(0x20).min(100),
+        _ => 0,
+    }
+}
+
+/// `PLO_TOALL`.
+const PLO_TOALL: u8 = 13;
+
+/// Player prop 18, the status; bit 8 is dead.
+const STATUS: u8 = 18;
+const DEAD: u8 = 0x08;
 
 /// Link text (Latin-1 bytes) as a string, one char per byte.
 fn latin1_text(b: &[u8]) -> String {
