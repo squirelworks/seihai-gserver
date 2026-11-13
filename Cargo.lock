@@ -418,22 +418,6 @@ dependencies = [
 
 [[package]]
 name = "seihai-core"
-version = "0.0.9"
-source = "git+https://github.com/squirelworks/seihai-core?tag=v0.0.9#cf62c87781af979b2e17af0c4e0a8e2898b55f55"
-dependencies = [
- "base64",
- "bzip2",
- "chacha20poly1305",
- "ed25519-dalek",
- "flate2",
- "hkdf",
- "rand_core",
- "sha2",
- "x25519-dalek",
-]
-
-[[package]]
-name = "seihai-core"
 version = "0.0.16"
 source = "git+https://github.com/squirelworks/seihai-core?tag=v0.0.16#4e3fec11df9fa14e2e601870a84099d216a19d86"
 dependencies = [
@@ -455,7 +439,7 @@ dependencies = [
  "flate2",
  "getrandom",
  "pbkdf2",
- "seihai-core 0.0.16",
+ "seihai-core",
  "seihai-npcserver",
  "seihai-rc",
  "sha2",
@@ -467,15 +451,15 @@ name = "seihai-npcserver"
 version = "0.1.2"
 source = "git+https://github.com/squirelworks/seihai-npcserver?rev=484b1b206384a406048a787eda0025d1e7199ce6#484b1b206384a406048a787eda0025d1e7199ce6"
 dependencies = [
- "seihai-core 0.0.16",
+ "seihai-core",
 ]
 
 [[package]]
 name = "seihai-rc"
 version = "0.1.0"
-source = "git+https://github.com/squirelworks/seihai-rc?rev=2430ee31cc4cb1f691fd9413deef1d6183012a8b#2430ee31cc4cb1f691fd9413deef1d6183012a8b"
+source = "git+https://github.com/squirelworks/seihai-rc?rev=98ae0314bc31b167ae4f7163fb813c99935c9d5a#98ae0314bc31b167ae4f7163fb813c99935c9d5a"
 dependencies = [
- "seihai-core 0.0.9",
+ "seihai-core",
 ]
 
 [[package]]

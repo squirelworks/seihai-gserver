@@ -23,8 +23,9 @@ flate2 = { version = "1", features = ["zlib-rs"] }
 [dev-dependencies]
 # Paused time for the world-tick tests.
 tokio = { version = "1", features = ["test-util"] }
-# The RC tests log in with Seihai's own RC client.
-seihai-rc = { git = "https://github.com/squirelworks/seihai-rc", rev = "2430ee31cc4cb1f691fd9413deef1d6183012a8b" }
+# The RC tests log in with Seihai's own RC client. rc 98ae031 (rc#43) is on
+# seihai-core v0.0.16 like the server, so the lock has one core.
+seihai-rc = { git = "https://github.com/squirelworks/seihai-rc", rev = "98ae0314bc31b167ae4f7163fb813c99935c9d5a" }
 
 # PBKDF2 and the codecs are slow unoptimised; the tests log in dozens of times.
 [profile.dev.package."*"]
