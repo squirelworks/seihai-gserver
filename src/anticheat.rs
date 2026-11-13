@@ -41,7 +41,11 @@
 //! `kick after N in S` (N violations of that kind within S seconds) and
 //! `ban after N in S` or `ban SPAN after N in S` (`SPAN` as `30m`, `12h`,
 //! `3d`, `2w`): the account goes in `config/bans.txt` with `anti-cheat` as
-//! the admin and the kind as the reason, and is kicked. `staff exempt`
+//! the admin and the kind as the reason, and is kicked. The machine ids
+//! its client sent at login (5.00 and later) are banned with it, so a new
+//! account on the same machine stays out too; lifting the account's ban
+//! lifts them. The address is not banned, since players share addresses
+//! and get new ones; an admin bans one by hand. `staff exempt`
 //! leaves staff accounts (`STAFF 1`) out of that check.
 //!
 //! **Off by default.** A check can only guess, and a wrong guess hurts an
@@ -450,6 +454,15 @@ impl Rate {
     }
 }
 
+/// The player a verdict is about, for [`AntiCheat::enforce`].
+#[derive(Debug, Clone, Copy)]
+pub struct Offender<'a> {
+    pub account: &'a str,
+    /// The machine ids from the login line (`login::machine_ids`).
+    pub machines: &'a [String],
+    pub staff: bool,
+}
+
 /// The policy and the log file, shared by the world and the connections.
 #[derive(Debug)]
 pub struct AntiCheat {
@@ -500,16 +513,29 @@ impl AntiCheat {
 
     /// What a verdict says beyond the log: a ban goes in the world's
     /// `config/bans.txt`, with `anti-cheat` as the admin and the kind as
-    /// the reason. Returns whether to close the connection.
-    pub fn enforce(&self, account: &str, kind: Kind, v: &Verdict) -> bool {
+    /// the reason, on the account and on each of its `machines` (none for
+    /// a staff account, whom machine bans do not hold). Returns whether to
+    /// close the connection.
+    pub fn enforce(&self, who: &Offender, kind: Kind, v: &Verdict) -> bool {
         if let Some(len) = v.ban {
-            let ban = crate::bans::Ban {
-                account: account.to_string(),
-                until: len.map(|s| crate::bans::now().saturating_add(s)),
+            let account = who.account;
+            let until = len.map(|s| crate::bans::now().saturating_add(s));
+            let ban = |key: String, with: &str| crate::bans::Ban {
+                account: key,
+                until,
                 admin: "anti-cheat".into(),
                 reason: format!("anti-cheat: {}", kind.name()),
+                with: with.to_string(),
             };
-            if let Err(e) = crate::bans::Bans::new(&self.world).add(ban) {
+            let mut all = vec![ban(account.to_string(), "")];
+            if !who.staff {
+                all.extend(
+                    who.machines
+                        .iter()
+                        .map(|m| ban(crate::bans::machine_key(m), account)),
+                );
+            }
+            if let Err(e) = crate::bans::Bans::new(&self.world).add_all(all) {
                 eprintln!("anti-cheat ban of {account}: {e}");
             }
         }
@@ -642,11 +668,57 @@ mod tests {
         // The ban goes in the world's ban file.
         let w = std::env::temp_dir().join(format!("seihai-ac-ban-{}", std::process::id()));
         let ac = AntiCheat::new(p.clone(), &w);
-        assert!(ac.enforce("Dee", Kind::Warp, &v));
-        let ban = crate::bans::Bans::new(&w).find("dee").unwrap().unwrap();
+        let machines = vec!["aaaa1111".to_string(), "bbbb2222".to_string()];
+        let dee = Offender {
+            account: "Dee",
+            machines: &machines,
+            staff: false,
+        };
+        assert!(ac.enforce(&dee, Kind::Warp, &v));
+        let bans = crate::bans::Bans::new(&w);
+        let ban = bans.find("dee").unwrap().unwrap();
         assert_eq!(ban.admin, "anti-cheat");
         assert_eq!(ban.reason, "anti-cheat: warp");
         assert!(ban.until.is_some_and(|u| u > crate::bans::now() + 3500));
+        // Her machines went in with her: a new account on one is kept out.
+        fn fresh(machines: &[String], staff: bool) -> crate::bans::Who<'_> {
+            crate::bans::Who {
+                account: "NewAlt",
+                ip: None,
+                machines,
+                staff,
+            }
+        }
+        let other = ["bbbb2222".to_string()];
+        let b = bans.find_login(&fresh(&other, false)).unwrap().unwrap();
+        assert_eq!(
+            (b.account.as_str(), b.with.as_str()),
+            ("machine:bbbb2222", "Dee")
+        );
+        assert_eq!(b.until, ban.until);
+        // Not a staff account, nor another machine.
+        assert!(bans.find_login(&fresh(&other, true)).unwrap().is_none());
+        assert!(bans
+            .find_login(&fresh(&["cccc3333".into()], false))
+            .unwrap()
+            .is_none());
+        // Lifting her ban lifts the machines.
+        assert!(bans.remove("DEE").unwrap());
+        assert!(bans.read().unwrap().is_empty());
+        // A staff account that a non-exempt check bans: the account only.
+        let boss = Offender {
+            account: "Boss",
+            machines: &machines,
+            staff: true,
+        };
+        assert!(ac.enforce(&boss, Kind::Warp, &v));
+        let keys: Vec<String> = bans
+            .read()
+            .unwrap()
+            .into_iter()
+            .map(|b| b.account)
+            .collect();
+        assert_eq!(keys, ["Boss"]);
         let _ = std::fs::remove_dir_all(&w);
     }
 

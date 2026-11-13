@@ -215,6 +215,55 @@ pub fn parse(line: &[u8], extra_tokens: &[String]) -> Result<Login, LoginError> 
     })
 }
 
+/// The machine ids on a 5.00 or later login line, from its tail: the
+/// fields after the platform, as in
+///
+/// ```text
+/// win,"<id>","<id>","<id>","6.2 9200 "
+/// mac,"","<id>",""
+/// linux,<id>,<id>,<id>,<kernel>
+/// ```
+///
+/// The ids are hashes of the machine (the network card, the system
+/// folder; `seihai-core`'s `protocol/chain.rs` says which per build).
+/// Only the three after the platform count: the field after them is the
+/// OS version or the kernel, which many machines share. Empty fields
+/// (Seihai's own client sends `""`, and a MAC field is empty under Wine
+/// or qemu) and fields that do not look like an id are left out. Lower
+/// case. Builds before 5.00 send no tail and have none.
+pub fn machine_ids(tail: &[u8]) -> Vec<String> {
+    let text = String::from_utf8_lossy(tail);
+    let mut fields = Vec::new();
+    let (mut field, mut quoted) = (String::new(), false);
+    for c in text.trim_end_matches(['\r', '\n']).chars() {
+        match c {
+            '"' => quoted = !quoted,
+            ',' if !quoted => fields.push(std::mem::take(&mut field)),
+            c => field.push(c),
+        }
+    }
+    fields.push(field);
+    let mut ids: Vec<String> = fields
+        .iter()
+        .skip(1)
+        .take(3)
+        .map(|f| f.trim())
+        .filter(|f| valid_machine_id(f))
+        .map(str::to_ascii_lowercase)
+        .collect();
+    ids.dedup();
+    ids
+}
+
+/// A machine id this server keeps: 4 to 64 letters, digits, `-`, `_`,
+/// `.` or `:` (an MD5 in hex is 32).
+pub fn valid_machine_id(id: &str) -> bool {
+    (4..=64).contains(&id.len())
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_.:".contains(&b))
+}
+
 /// Account names this server takes: 1 to 32 of letters, digits, `_`, `-`,
 /// `.` and `@`, not starting with `.`. They name files, so nothing that
 /// can leave the accounts folder gets through.
@@ -273,6 +322,27 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn machine_ids_from_the_tail() {
+        let md5 = "0123456789ABCDEF0123456789abcdef";
+        let win = format!("win,\"{md5}\",\"\",\"feedfacefeedface\",\"6.2 9200 \"");
+        assert_eq!(
+            machine_ids(win.as_bytes()),
+            vec![md5.to_ascii_lowercase(), "feedfacefeedface".into()]
+        );
+        // Seihai's own client: nothing to ban on.
+        assert!(machine_ids(b"win,\"\",\"\",\"\",\"6.2 9200 \"").is_empty());
+        // The Mac build, and Linux with the kernel string that is not an id.
+        assert_eq!(machine_ids(b"mac,\"\",abcd1234,\"\""), vec!["abcd1234"]);
+        assert_eq!(
+            machine_ids(b"linux,aaaa1111,bbbb2222,,Linux 5.10.0 x86_64"),
+            vec!["aaaa1111", "bbbb2222"]
+        );
+        // Pre-5.00: no tail. Junk is not an id.
+        assert!(machine_ids(b"").is_empty());
+        assert!(machine_ids(b"win,\"a b\tc\",\"../x\",xy").is_empty());
     }
 
     #[test]
