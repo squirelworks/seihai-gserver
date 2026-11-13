@@ -2140,7 +2140,6 @@ impl WorldTask {
         self.tell_level(&level, killer, &change, &[]);
     }
 
-    /// Deaths that are over, and dead baddies that are back.
     /// A block of tiles a player changed in their level: kept, and sent
     /// to the others there (`board.rs`).
     fn board_modify(&mut self, id: u16, raw: &[u8]) {
@@ -2187,6 +2186,7 @@ impl WorldTask {
         }
     }
 
+    /// Deaths that are over, and dead baddies that are back.
     fn baddy_timers(&mut self, now: Instant) {
         // (level, baddy, the props that changed, or none for the whole baddy)
         type Due = (String, u8, Option<Vec<(u8, Vec<u8>)>>);
@@ -3569,12 +3569,6 @@ fn with_id(props: &[u8], id: u16) -> Vec<u8> {
     out
 }
 
-/// NPC messages for a player in `level`. A gmap client keeps NPCs under
-/// the gmap's name, so for one the messages go between a
-/// `PLO_SETACTIVELEVEL` naming the gmap and one naming the level again (the
-/// level is what the login burst made active). Real 2.22 neither draws nor
-/// moves a gmap level's NPC sent under the level's own name (Wine lab,
-/// 2026-11-05).
 /// The player is sent `PLO_BOARDMODIFY` (7): a build that reads it, off a
 /// gmap. On a gmap the change belongs to a cell, which 7 cannot name
 /// (that is `PLO_BOARDMODIFY2`, 186, not sent yet).
@@ -3587,6 +3581,12 @@ fn reads_board_modify(p: &Online) -> bool {
             .contains(crate::board::PLO_BOARDMODIFY)
 }
 
+/// NPC messages for a player in `level`. A gmap client keeps NPCs under
+/// the gmap's name, so for one the messages go between a
+/// `PLO_SETACTIVELEVEL` naming the gmap and one naming the level again (the
+/// level is what the login burst made active). Real 2.22 neither draws nor
+/// moves a gmap level's NPC sent under the level's own name (Wine lab,
+/// 2026-11-05).
 fn under_gmap(gmap: Option<&Place>, level: &str, msgs: Vec<Vec<u8>>) -> Vec<Vec<u8>> {
     let Some(g) = gmap else {
         return msgs;
