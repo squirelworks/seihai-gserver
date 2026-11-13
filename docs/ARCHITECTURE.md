@@ -12,7 +12,7 @@ How the server is put together, and where each later stage plugs in. Read
 | `src/lib.rs` | `load_world` (settings + allow-list), `run` (bind and serve) | 1 |
 | `src/config.rs` | `config/server.txt`, every setting with its default | 1 |
 | `src/allow.rs` | `config/allowedversions.txt` | 1 |
-| `src/bans.rs` | `config/bans.txt`: bans by account with an end time, the admin and a reason; read at each login | 7 |
+| `src/bans.rs` | `config/bans.txt`: bans by account, address or machine id with an end time, the admin and a reason; read at each login | 7 |
 | `src/accounts.rs` | `accounts/<name>.txt`, PBKDF2 passwords, opened chests and player flags | 1 |
 | `src/login.rs` | the login line: type, key, token, account, password, tail | 1 |
 | `src/secure.rs` | the Seihai secure login (`SEI00001`): spots C1, answers S1, opens C2 and rebuilds the classic login frame | 1 |

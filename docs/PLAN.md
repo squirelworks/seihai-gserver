@@ -187,8 +187,8 @@ layer, not the check, decides what happens:
   or `ban`, with a threshold (for example 3 speed flags in 30 s before `kick`);
 - violation scores decay over time, so one lag spike never kicks anyone;
 - staff accounts can be exempt per kind;
-- bans by account (and later by machine field, where 5.00+ builds send one)
-  are stored in the world folder with a reason, the admin and an end time;
+- bans by account, by address, and by machine field (where 5.00+ builds
+  send one; staff are not kept out by the last two) are stored in the world folder with a reason, the admin and an end time;
 - a log file in the world folder, one line per violation (time, account,
   build, level, kind, values), and a summary for `seihai-rc` once stage 4
   lands.
@@ -237,8 +237,12 @@ to check a weapon against. Everything is off by default since then. Then
 the rest of the policy: `ban after N in S` or `ban SPAN after N in S`
 writes the account into `config/bans.txt` (admin `anti-cheat`, the kind
 as the reason) and kicks, and `staff exempt` leaves `STAFF` accounts out
-of a check. Still
-open, and only worth it if an admin asks: bans by machine field. A player saved dead logs in at 0 hearts, as beta4 does (issue
+of a check. Then bans by machine field and by address: `config/bans.txt`
+also takes `machine:ID` and `ip:ADDR` keys. A policy ban writes the
+machine ids the 5.00+ client sent at login (`login::machine_ids`: the
+three fields after the platform, empty ones left out) with the account,
+and lifting the account's ban lifts them; addresses are only banned by
+hand. Machine and address bans do not keep out staff accounts. A player saved dead logs in at 0 hearts, as beta4 does (issue
 #51, lab run 2026-11-12); `revive_dead = true` gives full hearts instead.
 
 ### Where it lives

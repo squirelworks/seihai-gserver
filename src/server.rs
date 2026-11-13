@@ -452,9 +452,27 @@ impl Conn {
                 return self.refuse(&mut codec, why).await;
             }
         };
-        if let Some(text) = self.banned(&account.name) {
-            self.server.log(&self.peer, &format!("{who}: banned"));
-            return self.refuse(&mut codec, &text).await;
+        // Banned by account, or (not for staff) by address or machine.
+        let machines = crate::login::machine_ids(&login.tail);
+        let banned = crate::bans::Bans::new(&cfg.world).find_login(&crate::bans::Who {
+            account: &account.name,
+            ip: Some(self.peer.ip()),
+            machines: &machines,
+            staff: account.staff,
+        });
+        let banned = banned.unwrap_or_else(|e| {
+            self.server
+                .log(&self.peer, &format!("bans.txt not read: {e}"));
+            None
+        });
+        if let Some(b) = banned {
+            let on = if b.account.eq_ignore_ascii_case(&account.name) {
+                String::new()
+            } else {
+                format!(" ({})", b.account)
+            };
+            self.server.log(&self.peer, &format!("{who}: banned{on}"));
+            return self.refuse(&mut codec, &b.client_text()).await;
         }
         // A player who logged out dead logs in at 0 hearts, as GServer-v2
         // beta4 does (issue #51), unless the world turns `revive_dead` on.
@@ -490,6 +508,7 @@ impl Conn {
             kills: account.kills,
             flags: account.flags.clone(),
             staff: account.staff,
+            machines: machines.clone(),
         };
         let (id, level, gmap, leader) = match self.server.world.join(joining, outbox).await {
             Some(Ok(j)) => (j.id, j.level, j.gmap, j.leader),
@@ -565,6 +584,7 @@ impl Conn {
             rate: Default::default(),
             score: Default::default(),
             staff: account.staff,
+            machines,
             flooding: None,
             kicked: false,
             ping: (!cfg.ping.is_zero() && crate::profile::ServerProfile::of(version).ping)
@@ -1196,6 +1216,8 @@ struct Session {
     score: crate::anticheat::Score,
     /// A staff account, for the anti-cheat's `staff exempt`.
     staff: bool,
+    /// The machine ids from the login line, for an anti-cheat ban.
+    machines: Vec<String>,
     /// Over the rate now: whether to drop (one violation per run of
     /// messages over the limit, not one per message).
     flooding: Option<bool>,
@@ -1224,7 +1246,12 @@ impl Session {
             let what = format!("over {} a second{}", ac.policy.rate, v.suffix());
             ac.log(&self.account, self.version.label(), "", kind, &what);
         }
-        self.kicked |= ac.enforce(&self.account, kind, &v);
+        let who = crate::anticheat::Offender {
+            account: &self.account,
+            machines: &self.machines,
+            staff: self.staff,
+        };
+        self.kicked |= ac.enforce(&who, kind, &v);
         self.flooding = Some(v.correct);
         v.correct || v.kick
     }

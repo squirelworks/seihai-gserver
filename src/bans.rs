@@ -1,30 +1,85 @@
-//! Account bans (`docs/PLAN.md`, "Milestone: server-side anti-cheat").
+//! Bans (`docs/PLAN.md`, "Milestone: server-side anti-cheat").
 //!
 //! `config/bans.txt` in the world folder, one ban per line, tab-separated:
 //!
 //! ```text
-//! account <TAB> until <TAB> admin <TAB> reason
+//! key <TAB> until <TAB> admin <TAB> reason [<TAB> with]
 //! ```
 //!
-//! `until` is a Unix time in seconds, or `-` for a ban with no end. Lines
-//! starting with `#` and blank lines are skipped. The account name is
-//! compared without case. The file is read at each login, so an admin can
-//! edit it while the server runs; `seihai-gserver ban` and `unban` write
-//! it. A ban that has run out is ignored (and dropped the next time the
-//! file is written). Bans by machine field (5.00 and later) come later.
+//! The key is what is banned:
+//!
+//! - an account name (`Cheater`);
+//! - `ip:` and an address (`ip:10.0.0.7`, `ip:2001:db8::7`);
+//! - `machine:` and one of the machine ids a 5.00 or later client sends
+//!   at login (`machine:3f2a...`, see [`crate::login::machine_ids`]).
+//!
+//! Account names cannot hold a `:`, so the three never mix. `until` is a
+//! Unix time in seconds, or `-` for a ban with no end. `with` names the
+//! account an address or machine ban came with (the anti-cheat writes
+//! one), so lifting that account's ban lifts them too. Lines starting with
+//! `#` and blank lines are skipped. Keys are compared without case. The
+//! file is read at each login, so an admin can edit it while the server
+//! runs; `seihai-gserver ban` and `unban` write it. A ban that has run out
+//! is ignored (and dropped the next time the file is written).
+//!
+//! Address and machine bans do not keep out a staff account (`STAFF 1`),
+//! so an admin who shares a machine or an address with a banned player,
+//! or bans `ip:127.0.0.1` in a lab, can still log in. An account ban
+//! holds for staff too.
 
 use std::io;
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// One ban.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ban {
+    /// What is banned: an account name, or an [`ip_key`] or
+    /// [`machine_key`].
     pub account: String,
     /// Unix seconds; `None` for no end.
     pub until: Option<u64>,
     pub admin: String,
     pub reason: String,
+    /// For an address or machine ban, the account it came with; empty
+    /// otherwise.
+    pub with: String,
+}
+
+/// The ban key for an address. An IPv4 address seen through an IPv6
+/// socket (`::ffff:10.0.0.7`) is keyed as the IPv4 address.
+pub fn ip_key(ip: IpAddr) -> String {
+    format!("ip:{}", ip.to_canonical())
+}
+
+/// The ban key for one machine id.
+pub fn machine_key(id: &str) -> String {
+    format!("machine:{}", id.to_ascii_lowercase())
+}
+
+/// A key as an admin typed it (`seihai-gserver ban`): an account name,
+/// `ip:ADDR` or `machine:ID`, put in the form the file keeps. `None` when
+/// it is none of these.
+pub fn parse_key(key: &str) -> Option<String> {
+    if let Some(ip) = key.strip_prefix("ip:") {
+        return ip.parse::<IpAddr>().ok().map(ip_key);
+    }
+    if let Some(id) = key.strip_prefix("machine:") {
+        return crate::login::valid_machine_id(id).then(|| machine_key(id));
+    }
+    crate::login::valid_account_name(key).then(|| key.to_string())
+}
+
+/// Who is logging in, for [`Bans::find_login`].
+#[derive(Debug, Clone, Default)]
+pub struct Who<'a> {
+    pub account: &'a str,
+    pub ip: Option<IpAddr>,
+    /// The machine ids from the login line ([`crate::login::machine_ids`]).
+    pub machines: &'a [String],
+    /// A staff account: address and machine bans do not hold for it.
+    pub staff: bool,
 }
 
 impl Ban {
@@ -49,13 +104,18 @@ impl Ban {
 
     fn line(&self) -> String {
         let clean = |s: &str| s.replace(['\t', '\n', '\r'], " ");
-        format!(
+        let mut l = format!(
             "{}\t{}\t{}\t{}",
             self.account,
             self.until.map_or("-".to_string(), |u| u.to_string()),
             clean(&self.admin),
             clean(&self.reason)
-        )
+        );
+        if !self.with.is_empty() {
+            l.push('\t');
+            l.push_str(&clean(&self.with));
+        }
+        l
     }
 }
 
@@ -125,19 +185,48 @@ impl Bans {
             .find(|b| b.account.eq_ignore_ascii_case(account) && b.holds(now)))
     }
 
-    /// Add a ban, replacing one on the same account.
+    /// The ban that keeps this login out now, if any: one on the account,
+    /// or, for an account that is not staff, one on its address or on any
+    /// of its machine ids.
+    pub fn find_login(&self, who: &Who) -> io::Result<Option<Ban>> {
+        let now = now();
+        let mut keys = vec![who.account.to_string()];
+        if !who.staff {
+            keys.extend(who.ip.map(ip_key));
+            keys.extend(who.machines.iter().map(|m| machine_key(m)));
+        }
+        let live: Vec<Ban> = self.read()?.into_iter().filter(|b| b.holds(now)).collect();
+        // The account's own ban first, so its reason is the one shown.
+        Ok(keys.iter().find_map(|k| {
+            live.iter()
+                .find(|b| b.account.eq_ignore_ascii_case(k))
+                .cloned()
+        }))
+    }
+
+    /// Add a ban, replacing one on the same key.
     pub fn add(&self, ban: Ban) -> io::Result<()> {
+        self.add_all(vec![ban])
+    }
+
+    /// Add several bans in one write, each replacing one on the same key.
+    pub fn add_all(&self, bans: Vec<Ban>) -> io::Result<()> {
         let mut all = self.live()?;
-        all.retain(|b| !b.account.eq_ignore_ascii_case(&ban.account));
-        all.push(ban);
+        all.retain(|b| {
+            !bans
+                .iter()
+                .any(|n| n.account.eq_ignore_ascii_case(&b.account))
+        });
+        all.extend(bans);
         self.write(&all)
     }
 
-    /// Lift the ban on `account`; whether there was one.
-    pub fn remove(&self, account: &str) -> io::Result<bool> {
+    /// Lift the ban on `key`, and the address and machine bans that came
+    /// with it when it is an account; whether there was any.
+    pub fn remove(&self, key: &str) -> io::Result<bool> {
         let mut all = self.live()?;
         let before = all.len();
-        all.retain(|b| !b.account.eq_ignore_ascii_case(account));
+        all.retain(|b| !b.account.eq_ignore_ascii_case(key) && !b.with.eq_ignore_ascii_case(key));
         let found = all.len() != before;
         if found {
             self.write(&all)?;
@@ -155,7 +244,7 @@ impl Bans {
             std::fs::create_dir_all(dir)?;
         }
         let mut text =
-            String::from("# account\tuntil (unix seconds, - for no end)\tadmin\treason\n");
+            String::from("# account, ip:ADDR or machine:ID\tuntil (unix seconds, - for no end)\tadmin\treason\t[account it came with]\n");
         for b in bans {
             text.push_str(&b.line());
             text.push('\n');
@@ -171,7 +260,7 @@ fn parse_line(line: &str) -> Option<Ban> {
     if line.trim().is_empty() || line.starts_with('#') {
         return None;
     }
-    let mut f = line.splitn(4, '\t');
+    let mut f = line.splitn(5, '\t');
     let account = f.next()?.trim().to_string();
     if account.is_empty() {
         return None;
@@ -185,6 +274,7 @@ fn parse_line(line: &str) -> Option<Ban> {
         until,
         admin: f.next().unwrap_or("").trim().to_string(),
         reason: f.next().unwrap_or("").trim().to_string(),
+        with: f.next().unwrap_or("").trim().to_string(),
     })
 }
 
@@ -209,6 +299,7 @@ mod tests {
             until: None,
             admin: "boss".into(),
             reason: "speed\thack".into(),
+            with: String::new(),
         })
         .unwrap();
         bans.add(Ban {
@@ -216,6 +307,7 @@ mod tests {
             until: Some(1),
             admin: "boss".into(),
             reason: String::new(),
+            with: String::new(),
         })
         .unwrap();
         let b = bans.find("cheater").unwrap().unwrap();
@@ -244,6 +336,42 @@ mod tests {
         assert_eq!(bans.find("cheater").unwrap(), None);
         // The run-out one went when the file was written.
         assert!(bans.read().unwrap().iter().all(|b| b.account != "old"));
+        let _ = std::fs::remove_dir_all(&w);
+    }
+
+    #[test]
+    fn keys() {
+        assert_eq!(parse_key("Cheater").as_deref(), Some("Cheater"));
+        assert_eq!(parse_key("ip:10.0.0.7").as_deref(), Some("ip:10.0.0.7"));
+        assert_eq!(
+            parse_key("ip:::ffff:10.0.0.7").as_deref(),
+            Some("ip:10.0.0.7")
+        );
+        assert_eq!(
+            parse_key("ip:2001:DB8::7").as_deref(),
+            Some("ip:2001:db8::7")
+        );
+        assert_eq!(
+            parse_key("machine:ABCD1234").as_deref(),
+            Some("machine:abcd1234")
+        );
+        for bad in ["ip:nope", "machine:", "machine:a b", "../x", "x:y"] {
+            assert_eq!(parse_key(bad), None, "{bad}");
+        }
+        // The account a machine ban came with goes in the fifth column.
+        let w = dir("keys");
+        let bans = Bans::new(&w);
+        bans.add(Ban {
+            account: machine_key("ABCD1234"),
+            until: None,
+            admin: "anti-cheat".into(),
+            reason: "anti-cheat: speed".into(),
+            with: "Cheater".into(),
+        })
+        .unwrap();
+        let text = std::fs::read_to_string(bans.path()).unwrap();
+        assert!(text.ends_with("machine:abcd1234\t-\tanti-cheat\tanti-cheat: speed\tCheater\n"));
+        assert_eq!(bans.read().unwrap()[0].with, "Cheater");
         let _ = std::fs::remove_dir_all(&w);
     }
 

@@ -130,6 +130,7 @@ fn bans_and_dead_players() {
         until: None,
         admin: "boss".into(),
         reason: "duping".into(),
+        with: String::new(),
     })
     .unwrap();
     let m = refused(&addr, ClientVersion::V222, "ghost", PASSWORD);
