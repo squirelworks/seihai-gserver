@@ -1,6 +1,6 @@
 # What the original 1999 servers do
 
-The archive holds two original Graal servers: **GServer 1.28 beta 2**
+We hold two original Graal servers: **GServer 1.28 beta 2**
 (`GServerv.exe`, 23 November 1999, shipped with the 1.28 beta 2 client) and
 **GServer 1.3** (`GServer13.exe`, 29 November 1999, shipped with the 1.3
 test client). Until now they had only been run in the lab (a login, the
@@ -143,7 +143,7 @@ brought alignment points. The servers before 1.3 kept a flag for it:
 
 ## The earlier servers
 
-Three more servers from 1999 are in the archive, read only from their
+We hold three more servers from 1999, read only from their
 strings and message switches, not run:
 
 | Server | Builds it lets in | What differs |
