@@ -30,6 +30,7 @@ read (`weapons.rs`); 25's script is never used.
 
 | Id | Name | Layout |
 |---|---|---|
+| S→C 48 | `PLO_TRIGGERACTION` | `GSHORT` sender id, then the client's `PLI_TRIGGERACTION` body. Only to builds whose profile lists 48 |
 | S→C 104 | `PLO_FILEDECRYPTKEY` | file name, byte 1, two GINT5; the DES key, before a `.gpake` |
 | S→C 131 | `PLO_NPCBYTECODE` | behind `PLO_RAWDATA` (the count covers the id byte to the end): GINT3 NPC id, then the GS2 bytecode file, ending in the compiler's `\n`. Sent right after the NPC's `PLO_NPCPROPS`, in the same frame, to builds whose profile runs GS2; the client drops it for an NPC it has not been sent. Layout from seihai's `documentation/gs2-receive.md`; no capture of a real 131 yet |
 | S→C 132 | `PLO_UNKNOWN132` | behind `PLO_RAWDATA`: `GCHAR` length and a weapon name, then the weapon's GS2 bytecode file whole, its own `\n` included, then the block's closing `\n`. The answer to 158 (`weapons.rs`). GServer-v2 sends it to real 4.20r8, and real 4.20r8 takes this server's copy and keeps its cache on the next login; with the file's `\n` cut it asked again every login (lab, 2026-11-13, #120). Core calls it `UNKNOWN132` |
@@ -41,6 +42,7 @@ read (`weapons.rs`); 25's script is never used.
 
 | Id | Name | Layout |
 |---|---|---|
+| C→S 38 | `PLI_TRIGGERACTION` | GINT3 npc id (0 when the player did it), `GCHAR` x×2, `GCHAR` y×2, then the action, and `,` plus a parameter when there is one. A push is `pushed` and the direction (door lab, 2026-11-14). Passed on as 48, and to the NPC-server as `TRIGGER_ACTION` with the text before the comma |
 | C→S 158 | `PLI_UPDATESCRIPT` | the weapon name, as the rest of the message; answered with 132 for a weapon the player holds |
 
 ## Named, not sent yet

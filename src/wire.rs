@@ -242,6 +242,9 @@ pub mod ids {
     pub const PLO_DEFAULTWEAPON: u8 = 43;
     /// The client's copy of a file is current. Confirmed. Not sent before 2.1.
     pub const PLO_FILEUPTODATE: u8 = 45;
+    /// A trigger action for the rest of the level: the sender's id as a
+    /// `GSHORT`, then the [`PLI_TRIGGERACTION`] body. Builds from 2.03 read it.
+    pub const PLO_TRIGGERACTION: u8 = 48;
     /// Pixel warp: GCHAR x*2, y*2, z, gmap x, gmap y, then the level. Confirmed.
     pub const PLO_PLAYERWARP2: u8 = 49;
     /// Start of a large file. Confirmed.
@@ -386,6 +389,11 @@ pub mod ids {
     pub const PLI_ADJACENTLEVEL: u8 = 35;
     /// The client's language. Confirmed: read and not answered.
     pub const PLI_LANGUAGE: u8 = 37;
+    /// GINT3 npc (0 when the player did it), `GCHAR` x×2, `GCHAR` y×2, then
+    /// the action and, when there is one, `,` and a parameter. A push sends
+    /// `pushed` and the direction (door lab, 2026-11-14). Passed on as
+    /// [`PLO_TRIGGERACTION`].
+    pub const PLI_TRIGGERACTION: u8 = 38;
     /// Two hashes. Confirmed: read and not answered. Never required.
     pub const PLI_TAMPERCHECK: u8 = 39;
     /// The name of a server to warp to. Confirmed (2.31 lab, request

@@ -97,10 +97,13 @@ behaviour against, never a code source (see `00-rules.md`).
    check of the loaded level files, the server flags for a new link) and
    applies `0x40` to `0x4C` (`world.rs` module notes say what each becomes).
    Dropped with a log line: the sound messages (no build reads a server
-   sound) and `NPC_TRIGGER_ACTION` (`PLO_TRIGGERACTION` 48 needs a capture).
+   sound) and a script's own `NPC_TRIGGER_ACTION` (not passed back to
+   clients). A client's `PLI_TRIGGERACTION` (38) is passed to the others
+   who read 48, with the sender's id first, and to the NPC-server as
+   `TRIGGER_ACTION` (the action name, the level, half-tile x and y). A
+   new non-empty chat line is `PM_TO_NPC`.
    Left: the lab run (`npcserver = auto` with seihai-npcserver's
-   `examples/world`, real 2.05 rev 2 and 2.22), and `PM_TO_NPC` /
-   `TRIGGER_ACTION`, which wait for the client messages they come from.
+   `examples/world`, real 2.05 rev 2 and 2.22).
 6. 3.x to 6.x: the Login lobby and server warp, GS2 bytecode delivery, and later our
    own GS2 compiler (gs2-parser is GPL, so it cannot be used). **The lobby is
    built** (`lobby_port`, `lobby_host` in `config/server.txt`;

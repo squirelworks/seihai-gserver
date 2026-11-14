@@ -115,6 +115,10 @@ impl FakeNpc {
             self.heard.lock().unwrap()
         );
     }
+
+    fn count(&self, f: impl Fn(&Message) -> bool) -> usize {
+        self.heard.lock().unwrap().iter().filter(|m| f(m)).count()
+    }
 }
 
 /// A logged-in client whose frames a thread applies to its state; every
@@ -125,7 +129,7 @@ struct Client {
     id: u16,
     st: Arc<Mutex<SessionState>>,
     ids: Seen,
-    _sess: seihai_core::net::GserverSession,
+    sess: seihai_core::net::GserverSession,
 }
 
 impl Client {
@@ -157,7 +161,7 @@ impl Client {
             id: player_id,
             st,
             ids,
-            _sess: sess,
+            sess,
         };
         c.until("the level", |s| s.current_level_name().is_some());
         c
@@ -175,6 +179,17 @@ impl Client {
             .filter(|(i, _)| *i == id)
             .map(|(_, p)| p.clone())
             .collect()
+    }
+
+    fn chat(&mut self, text: &str) {
+        self.sess.conn.send_chat(text).unwrap();
+    }
+
+    fn trigger(&mut self, x: f32, y: f32, action: &str, param: &str) {
+        self.sess
+            .conn
+            .send_trigger_action(x, y, action, param)
+            .unwrap();
     }
 }
 
@@ -433,5 +448,86 @@ fn an_npc_server_nickname_reaches_rcs() {
         }
         seen.push(ev);
     }
+    let _ = std::fs::remove_dir_all(&w);
+}
+
+#[test]
+fn chat_and_trigger_actions_reach_the_npc_server_and_the_level() {
+    use seihai_gserver::profile::ClientProfile;
+
+    assert!(
+        !ClientProfile::of(ClientVersion::V139).reads(48),
+        "1.39 does not read PLO_TRIGGERACTION"
+    );
+    assert!(ClientProfile::of(ClientVersion::V222).reads(48));
+
+    let w = world("trigger");
+    let (game, link, _server) = start(&w);
+    let npc = FakeNpc::connect(&link);
+    let mut a = Client::login(&game, ClientVersion::V222, "pusha", &npc);
+    let b = Client::login(&game, ClientVersion::V222, "pushb", &npc);
+    let aid = a.id;
+
+    // Five header bytes and no action text: nothing is passed on.
+    a.sess
+        .conn
+        .send_messages(&[vec![38 + 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, b'\n']])
+        .unwrap();
+    a.trigger(10.0, 12.0, "pushed", "1");
+
+    let heard = npc.wait_for("TRIGGER_ACTION", move |m| {
+        matches!(
+            m,
+            Message::TriggerAction { player_id, action, .. }
+                if *player_id == aid && action == b"pushed"
+        )
+    });
+    let Message::TriggerAction {
+        level,
+        x,
+        y,
+        action,
+        ..
+    } = heard
+    else {
+        unreachable!()
+    };
+    assert_eq!(level, START.as_bytes());
+    assert_eq!((x, y), (20, 24), "half tiles of 10,12");
+    assert_eq!(action, b"pushed");
+    assert_eq!(
+        npc.count(|m| matches!(m, Message::TriggerAction { .. })),
+        1,
+        "the empty action was not sent"
+    );
+
+    let mut expect = Vec::new();
+    seihai_gserver::wire::gshort(aid, &mut expect);
+    let sent = seihai_core::net::trigger_action_message(10.0, 12.0, "pushed", "1");
+    expect.extend_from_slice(&sent[1..sent.len() - 1]);
+    wait("PLO_TRIGGERACTION", || {
+        b.got(48).iter().any(|p| p == &expect)
+    });
+    assert!(
+        a.got(48).is_empty(),
+        "the sender does not get its own trigger"
+    );
+
+    a.chat("hello npc");
+    npc.wait_for("PM_TO_NPC", move |m| {
+        matches!(
+            m,
+            Message::PmToNpc { player_id, text }
+                if *player_id == aid && text == b"hello npc"
+        )
+    });
+    a.chat("hello npc");
+    a.chat("");
+    std::thread::sleep(Duration::from_millis(400));
+    assert_eq!(
+        npc.count(|m| matches!(m, Message::PmToNpc { .. })),
+        1,
+        "a repeat and an empty chat line are not new lines"
+    );
     let _ = std::fs::remove_dir_all(&w);
 }

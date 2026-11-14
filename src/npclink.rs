@@ -18,8 +18,9 @@
 //! - [`serve_link`] accepts NPC-server connections.
 //! - [`supervise`] starts and restarts the NPC-server for `npcserver = auto`.
 //!
-//! Not sent yet: `PM_TO_NPC`, `TRIGGER_ACTION` (`0x24`, `0x26`), which wait
-//! for the client messages they come from.
+//! `PM_TO_NPC` (`0x24`) goes out for a new non-empty chat line (player prop
+//! 12). `TRIGGER_ACTION` (`0x26`) goes out for `PLI_TRIGGERACTION` (38): the
+//! action name is the text before the first comma, and x and y are half tiles.
 
 use std::collections::BTreeMap;
 use std::io;
@@ -228,6 +229,42 @@ impl Hub {
     /// next NPC-server to connect; the one connected set them itself.
     pub fn server_flags(&self, entries: Vec<Vec<u8>>) {
         self.state.lock().unwrap().server_flags = entries;
+    }
+
+    /// A player said something in the level (a new non-empty chat line).
+    /// The NPC-server runs it as `playerchats` on that player's level.
+    pub fn pm_to_npc(&self, id: u16, text: &[u8]) {
+        let mut st = self.state.lock().unwrap();
+        if !st.players.contains_key(&id) {
+            return;
+        }
+        send(
+            &mut st,
+            Message::PmToNpc {
+                player_id: id,
+                text: text.to_vec(),
+            },
+        );
+    }
+
+    /// `PLI_TRIGGERACTION` from `id`. `x` and `y` are half tiles. `action`
+    /// is the name only; a parameter after a comma is not part of this
+    /// message.
+    pub fn trigger_action(&self, id: u16, level: &str, x: u16, y: u16, action: &[u8]) {
+        let mut st = self.state.lock().unwrap();
+        if !st.players.contains_key(&id) {
+            return;
+        }
+        send(
+            &mut st,
+            Message::TriggerAction {
+                player_id: id,
+                level: level.as_bytes().to_vec(),
+                x,
+                y,
+                action: action.to_vec(),
+            },
+        );
     }
 
     /// A player's connection closed.

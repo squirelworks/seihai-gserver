@@ -147,8 +147,9 @@ other rows when a script effect maps onto them (`docs/ARCHITECTURE.md`).
 image `#c#` and gani `idle`. `play`, `playlooped` and `play2` are
 `PLAY_SOUND`; `stopsound` is `STOP_SOUND` and `stopmidi` is `STOP_MIDI`.
 `setshape` is `NPC_SHAPE`, and a script's own `triggeraction` is
-`NPC_TRIGGER_ACTION`. A script command with no message in this table is
-logged once and not sent. `0x4D` to `0x7F` stay reserved.
+`NPC_TRIGGER_ACTION`. `sendtonc` is `SEND_TO_NC` and `sendtorc` is
+`SEND_TO_RC`. A script command with no message in this table is
+logged once and not sent. `0x4F` to `0x7F` stay reserved.
 
 | Id | Name | Fields |
 |---|---|---|
@@ -165,6 +166,8 @@ logged once and not sent. `0x4D` to `0x7F` stay reserved.
 | `0x4A` | `STOP_MIDI` | `level: str` |
 | `0x4B` | `NPC_SHAPE` | `npc_id: u32`, `kind: u8`, `w: u16`, `h: u16` (pixels) |
 | `0x4C` | `NPC_TRIGGER_ACTION` | `level: str`, `x: u16`, `y: u16` (half tiles), `action: str`, `params: str` |
+| `0x4D` | `SEND_TO_NC` | `text: str` |
+| `0x4E` | `SEND_TO_RC` | `text: str` |
 
 `npc_id` is the NPC-server's id for a server-side NPC, unique while the link is
 up. NPC prop streams use the same encoding the gserver sends a 2.22 client in
@@ -202,6 +205,19 @@ script engine does that itself), so the gserver should not send it back as
 `TRIGGER_ACTION`. Delivering it to what else listens in that level is the
 gserver's side of the link.
 
+`SEND_TO_NC` (`0x4D`) is `sendtonc` and `SEND_TO_RC` (`0x4E`) is
+`sendtorc`. The NPC-server produces both. Each carries that command's one
+text argument. The script engine has already expanded `#a`, bare `#n` and
+the other message codes; the NPC-server also expands `#n(id)` from the
+players the gserver has listed, as it does for other text it sends. An
+empty text is still sent. The line is not tied to a level, so a level-less
+NPC sends it too (a Control-NPC's `playerlogin` line is the usual case).
+The intended recipient category is logged-in NPC Control for `sendtonc`
+and Remote Control for `sendtorc`. Consumer delivery is pending: the
+gserver logs and skips `0x4D` and `0x4E`. The exact policy (every NPC
+Control connection versus Remote Control rights, and who is eligible) is
+unresolved; that decision is still open.
+
 ### 0x80 to 0x8F: NPC Control
 
 NPC Control (NC) clients log in to the gserver, which serves them from what
@@ -228,13 +244,17 @@ logs and skips them, as for any unknown id.
 - `NC_SCRIPT_SET` writes the script into the NPC's file and starts the
   NPCs of that level again: they go (`NPC_DELETED`), come back
   (`NPC_ADDED`, `NC_NPC`) and run `created` with the new script.
-- `NC_NPC_DELETE` from the gserver renames the NPC's file to
+- `NC_NPC_DELETE` from the gserver keeps the NPC's file as
   `.txt.deleted`, which is not read on the next start, sends
   `NPC_DELETED`, and restarts the other NPCs of that level the same way.
   Then the NPC-server sends `NC_NPC_DELETE` back with the same id: the NPC
   is out of the database, and NPC Control drops it from its list.
   `NPC_DELETED` does not mean that, since a restart sends it for NPCs that
   come back.
+  An existing recovery path refuses the delete without changing the live NPC.
+  Recovery uses a hard link before removing the original name, so the world
+  filesystem must support hard links. If removing the original fails, both
+  names remain and the NPC stays loaded; the refusal log names the recovery.
 - A set has no reply; a delete has only the one above. A refusal (no such
   NPC, a file that cannot be written) is logged by the NPC-server.
 
@@ -287,3 +307,5 @@ messages; the NPC-server already sends them) turns the link off, and
 | 1 | 2026-11-04 | `NPC_TRIGGER_ACTION` (`0x4C`) specified. No version bump: the id was reserved. This copy only, as above. |
 | 1 | 2026-11-11 | No protocol change. The two copies are the same file again; the "this copy only" notes above no longer hold. `seihai-gserver` reads milestone 1 only and does not yet act on the milestone 2 messages. |
 | 1 | 2026-11-12 | NPC Control messages `0x80` to `0x84` specified and built on both sides (seihai-gserver issue #52). No version bump: the ids were reserved. |
+| 1 | 2026-11-14 | `SEND_TO_NC` (`0x4D`) and `SEND_TO_RC` (`0x4E`) specified. No version bump: the ids were reserved. The NPC-server produces them. Intended recipient categories are logged-in NPC Control for `sendtonc` and Remote Control for `sendtorc`. Consumer delivery is pending: the gserver logs and skips `0x4D` and `0x4E`. The exact policy (every NPC Control connection versus Remote Control rights, and who is eligible) is unresolved; that decision is still open. |
+| 1 | 2026-11-14 | No protocol change. The gserver sends `PM_TO_NPC` for a new non-empty chat line and `TRIGGER_ACTION` for `PLI_TRIGGERACTION` (38). |
