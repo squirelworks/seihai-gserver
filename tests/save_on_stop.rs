@@ -127,7 +127,9 @@ fn sigterm_saves_a_still_connected_player_before_exit() {
     let account = w.join("accounts/stan.txt");
     let before = std::fs::read_to_string(&account).unwrap();
     assert!(!before.lines().any(|l| l == "RUPEES 30"));
-    assert!(!before.lines().any(|l| l == "CHEST onlinestartlocal.nw 10 12"));
+    assert!(!before
+        .lines()
+        .any(|l| l == "CHEST onlinestartlocal.nw 10 12"));
     assert!(child.try_wait().unwrap().is_none());
     assert!(Command::new("kill")
         .args(["-TERM", &child.id().to_string()])
