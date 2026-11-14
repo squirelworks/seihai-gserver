@@ -36,6 +36,7 @@
 
 use crate::profile::ClientProfile;
 use crate::wire::{gint3, gint5, ids::*, latin1, msg};
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -267,6 +268,27 @@ pub fn send_file(version: impl Into<ClientProfile>, f: &Found) -> Option<Vec<Vec
     Some(frames_of(m))
 }
 
+/// The name a `PLI_WANTFILE` stands for. A build whose art is `.gif`
+/// (before 2.1) asks for an NPC's `setimg` image with no extension when
+/// the script gave none, and draws the `.gif`: a real 1.39 asked for
+/// `door` and drew nothing until the server answered with `door.gif`, as
+/// GServer-v2 does (door lab, 2026-11-14, #45). Any other name, and any
+/// name from a later build, is unchanged; the answer carries the name used
+/// here.
+pub fn wanted_name<'a>(version: impl Into<ClientProfile>, raw: &'a [u8]) -> Cow<'a, [u8]> {
+    let ext = version.into().core.files.image_ext;
+    let base = raw
+        .rsplit(|&b| b == b'/' || b == b'\\')
+        .next()
+        .unwrap_or(raw);
+    if ext != ".gif" || raw.is_empty() || base.contains(&b'.') {
+        return Cow::Borrowed(raw);
+    }
+    let mut n = raw.to_vec();
+    n.extend_from_slice(ext.as_bytes());
+    Cow::Owned(n)
+}
+
 /// The frames that answer one file request.
 ///
 /// `asked` is the name bytes the client sent (used on "failed" and "up to
@@ -356,6 +378,25 @@ pub fn up_to_date(version: impl Into<ClientProfile>, name: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gif_builds_get_gif_for_a_name_with_no_extension() {
+        use ClientVersion::*;
+        for v in [V139, V141, V205] {
+            assert_eq!(&*wanted_name(v, b"door"), b"door.gif", "{v:?}");
+            assert_eq!(
+                &*wanted_name(v, b"images/door"),
+                b"images/door.gif",
+                "{v:?}"
+            );
+            assert_eq!(&*wanted_name(v, b"door.png"), b"door.png", "{v:?}");
+            assert_eq!(&*wanted_name(v, b"a.b/door.gif"), b"a.b/door.gif", "{v:?}");
+            assert_eq!(&*wanted_name(v, b""), b"", "{v:?}");
+        }
+        for v in [V222, V231, V524R4, V603R7] {
+            assert_eq!(&*wanted_name(v, b"door"), b"door", "{v:?}");
+        }
+    }
     use seihai_core::protocol::{ClientVersion, SessionState};
 
     fn store(tag: &str) -> (PathBuf, FileStore) {

@@ -1397,6 +1397,12 @@ impl Session {
                     } else {
                         (None, payload)
                     };
+                    let asked = if id == PLI_WANTFILE {
+                        crate::files::wanted_name(self.profile, raw)
+                    } else {
+                        std::borrow::Cow::Borrowed(raw)
+                    };
+                    let raw: &[u8] = &asked;
                     let name = seihai_core::protocol::latin1(raw);
                     let found = server.files.find(&name);
                     let key = server.files.package_key(&name);
