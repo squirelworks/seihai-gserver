@@ -34,7 +34,10 @@
 //!    the account file (the [`Saver`]); a stop (Ctrl-C, SIGTERM) saves
 //!    everyone online the same way ([`World::save_all`]). `PLI_OPENCHEST` (20) gives the
 //!    chest's item and every level then shows it opened for that account;
-//!    `PLI_FLAGSET`/`PLI_FLAGDEL` (18/19) keep the flags. `PLI_ITEMADD`
+//!    `PLI_FLAGSET`/`PLI_FLAGDEL` (18/19) keep the flags; a
+//!    `client.gs1_<flag>` (a GS1 flag write compiled to GS2,
+//!    [`GS1_FLAG_PREFIX`]) is kept as `<flag>` and sent straight back as
+//!    `PLO_FLAGSET`/`PLO_FLAGDEL` (28/31). `PLI_ITEMADD`
 //!    (12) items lie in the level for the others and late arrivals,
 //!    `PLI_ITEMTAKE` (32) gives one to the first taker only and
 //!    `PLI_ITEMDEL` (13) clears it.
@@ -103,6 +106,18 @@ fn split_flag(text: &str) -> (String, String) {
         Some((n, v)) => (n.trim().to_string(), v.to_string()),
         None => (text.trim().to_string(), String::new()),
     }
+}
+
+/// The prefix Seihai's GS1-to-GS2 compiler puts on a player flag a GS1
+/// script writes by its plain name (`set gotkey;`). A GS2 client sends only
+/// `client.` flags to the server (seihai-core#30), so the compiled script
+/// writes `client.gs1_gotkey` and the server keeps it as `gotkey`.
+pub const GS1_FLAG_PREFIX: &str = "client.gs1_";
+
+/// The plain flag name a lowered GS1 flag stands for, if `name` is one.
+fn gs1_flag(name: &str) -> Option<&str> {
+    let plain = name.strip_prefix(GS1_FLAG_PREFIX)?;
+    (!plain.is_empty()).then_some(plain)
 }
 
 /// The world tick. Real 2.x clients send walk props every 100 ms and expect
@@ -1192,11 +1207,27 @@ impl WorldTask {
             WorldIn::Flag { player, text, set } => {
                 if let Some(p) = self.players.get_mut(&player) {
                     let (name, value) = split_flag(&text);
+                    let lowered = gs1_flag(&name).map(str::to_string);
+                    let name = lowered.clone().unwrap_or(name);
                     if !name.is_empty() {
                         if set {
-                            p.flags.insert(name, value);
+                            p.flags.insert(name.clone(), value.clone());
                         } else {
                             p.flags.remove(&name);
+                        }
+                        // A lowered GS1 flag is the plain flag for every
+                        // script that reads it, so the client is told the
+                        // plain name at once, as after a relogin.
+                        if lowered.is_some() {
+                            let (id, text) = if set {
+                                (PLO_FLAGSET, flag_text(&name, &value))
+                            } else {
+                                (PLO_FLAGDEL, name)
+                            };
+                            if p.profile.reads(id) {
+                                let m = crate::wire::msg(id, &crate::wire::latin1(&text));
+                                let _ = p.outbox.send(vec![m]);
+                            }
                         }
                     }
                 }
