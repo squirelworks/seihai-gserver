@@ -571,7 +571,7 @@ async fn handle(hub: &Hub, mut stream: TcpStream, peer: SocketAddr) -> io::Resul
         }
     }
     drop(tx);
-    let _ = writer.await;
+    stop_writer(writer).await;
     match result {
         Ok(why) => {
             hub.log(&peer, &format!("NPC-server gone: {why}"));
@@ -579,6 +579,14 @@ async fn handle(hub: &Hub, mut stream: TcpStream, peer: SocketAddr) -> io::Resul
         }
         Err(e) => Err(e),
     }
+}
+
+/// The reader has ended the session. Closing the queue alone cannot wake a
+/// writer blocked on a peer that no longer reads. Cancel it and await the
+/// cancellation so its socket half is released before this handler returns.
+async fn stop_writer(writer: tokio::task::JoinHandle<io::Result<()>>) {
+    writer.abort();
+    let _ = writer.await;
 }
 
 async fn reject(stream: &mut TcpStream, reason: &str) -> io::Result<()> {
@@ -683,6 +691,32 @@ pub async fn supervise(binary: PathBuf, link_addr: SocketAddr, world: PathBuf, t
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn session_end_releases_a_backpressured_writer() {
+        // Fill a one-byte transport while its peer holds the read end open
+        // without consuming anything. No TCP timing or real client is needed.
+        let (mut writer, mut peer) = tokio::io::duplex(1);
+        writer.write_all(&[1]).await.unwrap();
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            started.send(()).unwrap();
+            writer.write_all(&[2]).await
+        });
+        ready.await.unwrap();
+        tokio::task::yield_now().await;
+        assert!(!task.is_finished(), "the peer must apply backpressure");
+
+        tokio::time::timeout(Duration::from_secs(1), stop_writer(task))
+            .await
+            .expect("session cleanup must not wait for the peer to read");
+        let mut bytes = Vec::new();
+        tokio::time::timeout(Duration::from_secs(1), peer.read_to_end(&mut bytes))
+            .await
+            .expect("the writer's transport must be released")
+            .unwrap();
+        assert_eq!(bytes, [1], "the blocked write was cancelled");
+    }
 
     #[test]
     fn merge_drops_the_old_bow_slot() {
