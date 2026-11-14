@@ -106,6 +106,10 @@ What the original servers do (`ORIGINAL-SERVERS.md`) and where this server stand
 | Swamp soldier and hare start modes | 0 | 6 and 7 | tests | `baddies.rs` | |
 | A new nickname or head | to the level | to everyone online | tests | `original_rules.rs` | |
 | Prop limits (max hearts 20, gralats 9,999,999, arrows and bombs 99, alignment 0 to 100) | the anti-cheat's counted props | the 1999 limits | tests | `original_rules.rs` | |
+| The player-killer flag: prop 25 from a build before 1.3 sets status bit 0x20 for that many seconds; hearts not taken while it is on | prop 25 kept | flag and hearts rule | tests | `original_rules.rs` | Read from 1.28 beta 2. No 1.2x client has been run against it |
+| A new account's AP | 0 | 50 | tests | `original_rules.rs` | The 1.3 readme |
+| A second player claiming a carried NPC | kept | refused | tests | `original_rules.rs` | |
+| A baddy hit with one player in the level | to the leader | dropped | tests | `rules.rs` | |
 
 ## Files and packages
 

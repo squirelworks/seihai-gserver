@@ -818,7 +818,9 @@ impl Conn {
                         Some(a) => Ok(Ok(a)),
                         None if !create => Ok(Err(crate::rc::NOT_STAFF)),
                         None => {
-                            let a = Account::new(&name, &cfg.start_level, cfg.start_x, cfg.start_y);
+                            let mut a =
+                                Account::new(&name, &cfg.start_level, cfg.start_x, cfg.start_y);
+                            a.alignment = cfg.rules.start_alignment();
                             store.save(&a)?;
                             Ok(Ok(a))
                         }
@@ -836,6 +838,7 @@ impl Conn {
                 Some(_) => Ok(Err("Account name or password is wrong.")),
                 None if create && cfg.create_accounts && !password.is_empty() => {
                     let mut a = Account::new(&name, &cfg.start_level, cfg.start_x, cfg.start_y);
+                    a.alignment = cfg.rules.start_alignment();
                     a.set_password(&password);
                     store.save(&a)?;
                     Ok(Ok(a))

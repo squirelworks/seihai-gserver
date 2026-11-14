@@ -818,6 +818,9 @@ struct Online {
     deaths: u32,
     /// When the player's alignment next rises (`alignment_time`).
     ap_at: Option<Instant>,
+    /// When the player-killer flag (status bit 0x20) a build before 1.3
+    /// set with prop 25 runs out (`rules = 1999`).
+    pk_until: Option<Instant>,
     /// The weapons the player holds, as the account file names them.
     weapons: Vec<String>,
     /// A staff account: skips the checks the admin made `staff exempt`.
@@ -1052,6 +1055,7 @@ impl WorldTask {
                     self.board_timers(now);
                     self.horse_timers(now);
                     self.alignment_timers(now);
+                    self.pk_timers(now);
                 }
                 _ = check.tick() => self.check_levels(),
             }
@@ -1983,6 +1987,7 @@ impl WorldTask {
                 kills: 0,
                 deaths: 0,
                 ap_at: None,
+                pk_until: None,
                 weapons: Vec::new(),
                 staff: false,
                 machines: Vec::new(),
@@ -2198,6 +2203,13 @@ impl WorldTask {
             .baddies
             .get(&p.level)
             .is_some_and(|l| l.iter().any(|b| b.id == bid));
+        // The 1999 servers pass a hit on only when the level has two
+        // players or more.
+        if self.rules.hurt_needs_two()
+            && self.players.values().filter(|o| o.level == p.level).count() < 2
+        {
+            return;
+        }
         let leader = self.leader_of(&p.level).and_then(|l| self.players.get(&l));
         if let (true, Some(l), Some(m)) = (known, leader, crate::baddies::hurt_message(raw)) {
             let _ = l.outbox.send(vec![m]);
@@ -2596,7 +2608,29 @@ impl WorldTask {
             (p.props.x().unwrap_or(0.0), p.props.y().unwrap_or(0.0)),
         );
         let was_dead = status_of(&p.props) & DEAD != 0;
+        let (hearts_before, carry_before) = (
+            p.props.values().get(&HEARTS).cloned(),
+            p.props.values().get(&CARRY).cloned(),
+        );
+        let pk_on = self.rules.pk_flag(p.version) && status_of(&p.props) & PK_FLAG != 0;
         let mut change = p.props.apply(raw, p.version);
+        // Under the flag a living player's own hearts are not taken
+        // (GServer 1.28 beta 2 and 1.3; `rules = 1999`, builds before 1.3).
+        if pk_on && change.has(HEARTS) && hearts_of(hearts_before.as_ref()) > 0 {
+            p.props.restore(&mut change, &[(HEARTS, hearts_before)]);
+        }
+        // Read from the message itself: the same time sent again starts
+        // the flag again.
+        let pk_time = self
+            .rules
+            .pk_flag(p.version)
+            .then(|| {
+                parse_player_props_with(raw, others::bow_prop10(p.version))
+                    .into_iter()
+                    .rfind(|q| q.id == PK_TIME)
+                    .and_then(|q| seihai_core::protocol::read_gshort(&q.raw))
+            })
+            .flatten();
         let died = !was_dead && change.byte(STATUS).is_some_and(|s| s & DEAD != 0);
         if died {
             p.deaths = p.deaths.saturating_add(1);
@@ -2701,6 +2735,108 @@ impl WorldTask {
         }
         if died && self.rules.dead_leader_hands_off() {
             self.dead_leader(id);
+        }
+        if let Some(t) = pk_time {
+            self.pk_flag(id, t);
+        }
+        if self.rules.one_carrier() {
+            self.one_carrier(id, carry_before);
+        }
+    }
+
+    /// Prop 25 from a build before 1.3 under `rules = 1999`: the
+    /// player-killer time, in seconds. Any time but 0 sets status bit 0x20
+    /// for that long; the player and the level are told.
+    fn pk_flag(&mut self, id: u16, secs: u16) {
+        if secs == 0 {
+            return;
+        }
+        let Some(p) = self.players.get_mut(&id) else {
+            return;
+        };
+        p.pk_until = Some(Instant::now() + Duration::from_secs(u64::from(secs)));
+        let status = status_of(&p.props) | PK_FLAG;
+        self.set_status(id, status);
+    }
+
+    /// Player-killer flags whose time ran out are taken off.
+    fn pk_timers(&mut self, now: Instant) {
+        let due: Vec<u16> = self
+            .players
+            .iter_mut()
+            .filter(|(_, p)| p.pk_until.is_some_and(|t| t <= now))
+            .map(|(&id, p)| {
+                p.pk_until = None;
+                id
+            })
+            .collect();
+        for id in due {
+            if let Some(p) = self.players.get(&id) {
+                let status = status_of(&p.props) & !PK_FLAG;
+                self.set_status(id, status);
+            }
+        }
+    }
+
+    /// Set a player's status (prop 18): they and the others in their level
+    /// are told.
+    fn set_status(&mut self, id: u16, status: u8) {
+        let Some(p) = self.players.get_mut(&id) else {
+            return;
+        };
+        let change = p
+            .props
+            .apply(&[gchar(STATUS), gchar(status)], ClientVersion::V222);
+        if let Some(m) = others::own_message(p.profile, &[(STATUS, vec![gchar(status)])]) {
+            let _ = p.outbox.send(vec![m]);
+        }
+        let level = p.level.clone();
+        self.tell_level(&level, id, &change, &[]);
+    }
+
+    /// A player claiming an NPC (prop 24) that another player in the level
+    /// already carries is refused, as on the 1999 servers: the claim is
+    /// undone, the sprite keeps only its direction, and the player is told
+    /// both.
+    fn one_carrier(&mut self, id: u16, before: Option<Vec<u8>>) {
+        let Some(p) = self.players.get(&id) else {
+            return;
+        };
+        let Some(npc) = p.props.values().get(&CARRY).cloned() else {
+            return;
+        };
+        if Some(&npc) == before.as_ref()
+            || seihai_core::protocol::read_gint3(&npc).unwrap_or(0) == 0
+        {
+            return;
+        }
+        let taken = self.players.iter().any(|(&o, op)| {
+            o != id && op.level == p.level && op.props.values().get(&CARRY) == Some(&npc)
+        });
+        if !taken {
+            return;
+        }
+        let Some(p) = self.players.get_mut(&id) else {
+            return;
+        };
+        let sprite = p
+            .props
+            .values()
+            .get(&SPRITE)
+            .and_then(|v| v.first())
+            .map_or(2, |b| b.wrapping_sub(0x20))
+            & 3;
+        let carry = before.unwrap_or_else(|| vec![0x20; 3]);
+        let mut raw = vec![gchar(SPRITE), gchar(sprite), gchar(CARRY)];
+        raw.extend_from_slice(&carry);
+        let change = p.props.apply(&raw, ClientVersion::V222);
+        if let Some(m) =
+            others::own_message(p.profile, &[(SPRITE, vec![gchar(sprite)]), (CARRY, carry)])
+        {
+            let _ = p.outbox.send(vec![m]);
+        }
+        if !change.is_empty() {
+            self.pending.entry(id).or_default().merge(change);
         }
     }
 
@@ -3987,6 +4123,7 @@ mod tests {
                     kills: 0,
                     deaths: 0,
                     ap_at: None,
+                    pk_until: None,
                     weapons: Vec::new(),
                     staff: false,
                     machines: Vec::new(),
@@ -4097,6 +4234,20 @@ const PLO_TOALL: u8 = 13;
 /// Player prop 18, the status; bit 8 is dead.
 const STATUS: u8 = 18;
 const DEAD: u8 = 0x08;
+/// Status bit 0x20: the player-killer flag of the servers before 1.3.
+const PK_FLAG: u8 = 0x20;
+const HEARTS: u8 = 2;
+const SPRITE: u8 = 17;
+/// The NPC the player carries (a three-byte id).
+const CARRY: u8 = 24;
+/// Before 1.3 the player-killer time; from 1.3 the alignment clock.
+const PK_TIME: u8 = 25;
+
+/// Hearts in half hearts, from a kept prop 2.
+fn hearts_of(v: Option<&Vec<u8>>) -> u8 {
+    v.and_then(|v| v.first())
+        .map_or(0, |b| b.wrapping_sub(0x20))
+}
 
 /// Link text (Latin-1 bytes) as a string, one char per byte.
 fn latin1_text(b: &[u8]) -> String {
