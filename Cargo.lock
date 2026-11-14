@@ -200,6 +200,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "des"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ffdd80ce8ce993de27e9f063a444a4d53ce8e8db4c1f00cc03af5ad5a9867a1e"
+dependencies = [
+ "cipher",
+]
+
+[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -477,12 +486,13 @@ dependencies = [
 
 [[package]]
 name = "seihai-core"
-version = "0.1.0"
-source = "git+https://github.com/squirelworks/seihai-core?tag=v0.1.0#708e9e4c19e45bc3db85528e37013921fedb1f10"
+version = "0.2.16"
+source = "git+https://www.github.com/squirelworks/seihai-core?tag=v0.2.16#8fb62fbfa2bc770412de8cc470e2f1269676667c"
 dependencies = [
  "base64",
  "bzip2",
  "chacha20poly1305",
+ "des",
  "ed25519-dalek",
  "flate2",
  "hkdf",
