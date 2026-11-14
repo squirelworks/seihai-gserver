@@ -132,21 +132,31 @@ impl Script {
 impl Npc {
     /// An NPC from the level file: image, script and position.
     pub fn from_level(id: u32, n: &seihai_core::assets::Npc) -> Self {
+        Npc::new(id, &n.image, &n.script, half_tiles(n.x), half_tiles(n.y))
+    }
+
+    /// An NPC a client put (`PLI_PUTNPC`, 21): the same record as a level
+    /// NPC, at `x2`, `y2` half tiles.
+    pub fn put(id: u32, image: &str, script: &str, x2: u8, y2: u8) -> Self {
+        Npc::new(id, image, script, x2, y2)
+    }
+
+    fn new(id: u32, image: &str, source: &str, x2: u8, y2: u8) -> Self {
         let mut props = BTreeMap::new();
-        let mut image = latin1(&n.image);
+        let mut image = latin1(image);
         image.truncate(223);
         let mut v = vec![gchar(image.len() as u8)];
         v.extend(image);
         props.insert(IMAGE, v);
-        let script = script_bytes(&n.script);
+        let script = script_bytes(source);
         if !script.is_empty() && script.len() <= MAX_SCRIPT {
             let mut v = Vec::new();
             gshort(script.len() as u16, &mut v);
             v.extend(script);
             props.insert(SCRIPT, v);
         }
-        props.insert(X, vec![gchar(half_tiles(n.x))]);
-        props.insert(Y, vec![gchar(half_tiles(n.y))]);
+        props.insert(X, vec![gchar(x2)]);
+        props.insert(Y, vec![gchar(y2)]);
         // The rest of the record a level NPC gets from GServer-v2 beta4
         // (lab capture, 2026-11-04): shown, no message, its own id, sprite
         // 2, and 43 as `ff`. (X2/Y2/Z2 are left out: client updates move
@@ -158,7 +168,7 @@ impl Npc {
         props.insert(ID, idv);
         props.insert(SPRITE, vec![gchar(2)]);
         props.insert(UNKNOWN43, vec![0xFF]);
-        let script = (!n.script.trim().is_empty()).then(|| Script::gs1(&n.script, LEVEL_ERA));
+        let script = (!source.trim().is_empty()).then(|| Script::gs1(source, LEVEL_ERA));
         Npc { id, props, script }
     }
 

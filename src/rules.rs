@@ -15,6 +15,9 @@
 //!   killer `(victim's AP + 10) / 20`, rounded half to even. A dead player
 //!   stops running the level's baddies, only the leader's baddy changes
 //!   are taken, and swamp soldiers and hares start in their own modes.
+//!   Builds before 1.3 get the player-killer flag from prop 25, a new
+//!   account starts at 50 AP, an NPC has one carrier, and a baddy hit is
+//!   passed on only in a level with two players or more.
 //!
 //! The times are settings in both sets: `respawn_time`, `horse_lifetime`,
 //! `baddy_respawn_time` and `alignment_time`.
@@ -46,6 +49,9 @@ pub struct Rules {
     /// Time online for each AP point gained, up to 100. Zero turns it off.
     /// 1200 s on both 1999 servers.
     pub alignment_time: Duration,
+    /// Whether clients may put NPCs (`putnpc.rs`). `None` takes the
+    /// era's: yes in 1999, no under `v2`.
+    pub put_npcs: Option<bool>,
 }
 
 impl Default for Rules {
@@ -56,6 +62,7 @@ impl Default for Rules {
             horse_life: Duration::from_secs(10),
             baddy_respawn: Duration::from_secs(60),
             alignment_time: Duration::from_secs(1200),
+            put_npcs: None,
         }
     }
 }
@@ -112,6 +119,43 @@ impl Rules {
         self.era == Era::Y1999
     }
 
+    /// The AP a new account starts with: 50 in 1999 (the 1.3 readme: "you
+    /// start at 50"), 0 under `v2`.
+    pub fn start_alignment(&self) -> u8 {
+        match self.era {
+            Era::Y1999 => 50,
+            Era::V2 => 0,
+        }
+    }
+
+    /// Whether a player's prop 25 is the player-killer time of the servers
+    /// before 1.3 (GServer 1.25 to 1.28 beta 2): it sets status bit 0x20
+    /// until the time runs out, and while that bit is on and the player is
+    /// alive the player's own hearts are not taken. Only the builds before
+    /// 1.3 send it so; from 1.3 prop 25 is the alignment clock.
+    pub fn pk_flag(&self, v: seihai_core::protocol::ClientVersion) -> bool {
+        use seihai_core::protocol::ClientVersion as V;
+        self.era == Era::Y1999 && matches!(v, V::V121 | V::V128B2)
+    }
+
+    /// Whether a client may put an NPC in its level and take it away
+    /// again (`PLI_PUTNPC`, `PLI_NPCDEL`).
+    pub fn put_npcs(&self) -> bool {
+        self.put_npcs.unwrap_or(self.era == Era::Y1999)
+    }
+
+    /// Whether a second player claiming an NPC another player in the level
+    /// already carries (prop 24) is refused (1999).
+    pub fn one_carrier(&self) -> bool {
+        self.era == Era::Y1999
+    }
+
+    /// Whether a follower's hit on a baddy reaches the leader only when
+    /// the level has two players or more (1999).
+    pub fn hurt_needs_two(&self) -> bool {
+        self.era == Era::Y1999
+    }
+
     /// The mode a baddy of `kind` starts (and comes back) in. In 1999 a
     /// swamp soldier (4) starts in mode 6 and a hare (5) in mode 7; `v2`
     /// starts every type walking, as GServer-v2 beta4 sends them.
@@ -152,6 +196,18 @@ mod tests {
             era: Era::Y1999,
             ..Rules::default()
         }
+    }
+
+    #[test]
+    fn the_1999_extras_by_era_and_build() {
+        use seihai_core::protocol::ClientVersion as V;
+        let (v2, old) = (Rules::default(), y1999());
+        assert_eq!((v2.start_alignment(), old.start_alignment()), (0, 50));
+        assert!(old.pk_flag(V::V121) && old.pk_flag(V::V128B2));
+        assert!(!old.pk_flag(V::V13T) && !old.pk_flag(V::V139));
+        assert!(!v2.pk_flag(V::V121));
+        assert!(old.one_carrier() && !v2.one_carrier());
+        assert!(old.hurt_needs_two() && !v2.hurt_needs_two());
     }
 
     #[test]

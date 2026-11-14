@@ -255,3 +255,164 @@ fn prop_limits_and_nicknames_everywhere_under_1999_rules() {
             .any(|(id, p)| *id == OTHERPLPROPS && p.windows(4).any(|w| w == b"Amy2"))
     });
 }
+
+/// Whether a message `id` holds `part` anywhere in its payload.
+fn holds(m: &Seen, id: u8, part: &[u8]) -> bool {
+    m.iter()
+        .any(|(i, p)| *i == id && p.windows(part.len()).any(|w| w == part))
+}
+
+/// `rules = 1999`, a build before 1.3: prop 25 is the player-killer time.
+/// It sets status bit 0x20 for that many seconds, the player and the level
+/// are told, and while the flag is on the player's own hearts are not
+/// taken (GServer 1.28 beta 2). Under `v2` prop 25 does nothing.
+#[test]
+fn the_player_killer_flag_before_1_3() {
+    let w = setup("pk-flag", "rules = 1999\nalignment_time = 0\n", &[]);
+    let (addr, _server) = start(&w);
+    let mut amy = RawClient::join(&addr, ClientVersion::V121, "amy", in_level);
+    let mut bob = RawClient::join(&addr, ClientVersion::V139, "bob", in_level);
+    knows(&mut amy, &["bob"]);
+    knows(&mut bob, &["amy"]);
+    // Status prop 18 with or without bit 0x20, whatever else it holds.
+    let status = |m: &Seen, id: u8, on: bool| {
+        m.iter().any(|(i, p)| {
+            *i == id
+                && p.windows(2)
+                    .any(|w| w[0] == 18 + 32 && (w[1].wrapping_sub(32) & 0x20 != 0) == on)
+        })
+    };
+    // Two seconds.
+    amy.send(2, &[25 + 32, 32, 34]);
+    amy.until("the flag", |m| status(m, PLAYERPROPS, true));
+    bob.until("the flag", |m| status(m, OTHERPLPROPS, true));
+    // Hearts while flagged and alive: not taken, nobody hears them.
+    amy.send(2, &[2 + 32, 1 + 32]);
+    let quiet = bob.settle();
+    assert!(!holds(&quiet, OTHERPLPROPS, &[2 + 32, 1 + 32]), "{quiet:?}");
+    // Two seconds on, the flag is gone, and hearts are taken again.
+    amy.until("the flag off", |m| status(m, PLAYERPROPS, false));
+    bob.until("the flag off", |m| status(m, OTHERPLPROPS, false));
+    amy.send(2, &[2 + 32, 1 + 32]);
+    bob.until("the hearts", |m| holds(m, OTHERPLPROPS, &[2 + 32, 1 + 32]));
+    drop((amy, bob));
+    let _ = std::fs::remove_dir_all(&w);
+
+    // `v2`: no flag.
+    let w = setup("pk-flag-v2", "alignment_time = 0\n", &[]);
+    let (addr, _server) = start(&w);
+    let mut amy = RawClient::join(&addr, ClientVersion::V121, "amy", in_level);
+    amy.settle();
+    amy.send(2, &[25 + 32, 32, 34]);
+    let quiet = amy.settle();
+    assert!(
+        !quiet
+            .iter()
+            .any(|(i, p)| *i == PLAYERPROPS && p.first() == Some(&(18 + 32))),
+        "{quiet:?}"
+    );
+    let _ = std::fs::remove_dir_all(&w);
+}
+
+/// `rules = 1999`: a player claiming an NPC another player in the level
+/// already carries is refused and told; under `v2` both keep it.
+#[test]
+fn one_carrier_per_npc_under_1999_rules() {
+    let npc = [24 + 32, 0x20, 0x21, 0x25];
+    for (tag, extra, refused) in [
+        ("carry-1999", "rules = 1999\n", true),
+        ("carry-v2", "", false),
+    ] {
+        let w = setup(tag, extra, &[]);
+        let (addr, _server) = start(&w);
+        let mut amy = RawClient::join(&addr, ClientVersion::V222, "amy", in_level);
+        let mut bob = RawClient::join(&addr, ClientVersion::V222, "bob", in_level);
+        knows(&mut amy, &["bob"]);
+        knows(&mut bob, &["amy"]);
+        amy.send(2, &npc);
+        bob.until("amy's carry", |m| holds(m, OTHERPLPROPS, &npc));
+        // Facing right (3) while lifting: sprite 3 + 4 * 6.
+        let mut claim = vec![17 + 32, 27 + 32];
+        claim.extend_from_slice(&npc);
+        bob.send(2, &claim);
+        let back = bob.settle();
+        let told = holds(
+            &back,
+            PLAYERPROPS,
+            &[17 + 32, 3 + 32, 24 + 32, 0x20, 0x20, 0x20],
+        );
+        assert_eq!(told, refused, "{back:?}");
+        let _ = std::fs::remove_dir_all(&w);
+    }
+}
+
+/// `rules = 1999`: a new account starts at 50 AP ("you start at 50", the
+/// 1.3 readme); under `v2` at 0.
+#[test]
+fn new_accounts_start_at_50_ap_under_1999_rules() {
+    for (tag, extra, ap) in [
+        ("ap50-1999", "rules = 1999\n", "ALIGN 50"),
+        ("ap50-v2", "", "ALIGN 0"),
+    ] {
+        let w = setup(tag, extra, &[]);
+        let (addr, _server) = start(&w);
+        let amy = RawClient::join(&addr, ClientVersion::V135, "newcomer", in_level);
+        drop(amy);
+        saved(&w, "newcomer", &[ap]);
+        let _ = std::fs::remove_dir_all(&w);
+    }
+}
+
+/// `putnpc` (`PLI_PUTNPC` 21) and `PLI_NPCDEL` (22), allowed under
+/// `rules = 1999`: the NPC goes to everyone in the level with the script
+/// file read from the world, a later arrival gets it, and 22 takes it
+/// away. Under `v2` neither does anything.
+#[test]
+fn putnpc_and_npcdel_under_1999_rules() {
+    const NPCPROPS: u8 = 3;
+    const NPCDEL: u8 = 29;
+    let mut put = vec![0x20 + 8];
+    put.extend(b"door.png");
+    put.push(0x20 + 8);
+    put.extend(b"door.txt");
+    put.extend([0x20 + 61, 0x20 + 40]);
+    for (tag, extra, on) in [
+        ("putnpc-1999", "rules = 1999\n", true),
+        ("putnpc-v2", "", false),
+    ] {
+        let w = setup(tag, extra, &[]);
+        std::fs::create_dir_all(w.join("files")).unwrap();
+        std::fs::write(
+            w.join("files/door.txt"),
+            "if (playerenters) { message Welcome; }\n",
+        )
+        .unwrap();
+        let (addr, _server) = start(&w);
+        let mut amy = RawClient::join(&addr, ClientVersion::V139, "amy", in_level);
+        let mut bob = RawClient::join(&addr, ClientVersion::V222, "bob", in_level);
+        knows(&mut amy, &["bob"]);
+        knows(&mut bob, &["amy"]);
+        amy.send(21, &put);
+        if !on {
+            let quiet = bob.settle();
+            assert!(!holds(&quiet, NPCPROPS, b"door.png"), "{quiet:?}");
+            let _ = std::fs::remove_dir_all(&w);
+            continue;
+        }
+        let got = bob.until("the NPC", |m| holds(m, NPCPROPS, b"door.png"));
+        let id = got
+            .iter()
+            .find(|(i, p)| *i == NPCPROPS && p.windows(8).any(|w| w == b"door.png"))
+            .map(|(_, p)| p[..3].to_vec())
+            .unwrap();
+        // The sender gets it too; 1.39 runs GS1, so it gets the script.
+        amy.until("the NPC's script", |m| holds(m, NPCPROPS, b"Welcome"));
+        let cal = RawClient::join(&addr, ClientVersion::V222, "cal", |m| {
+            holds(m, NPCPROPS, b"door.png")
+        });
+        drop(cal);
+        amy.send(22, &id);
+        bob.until("the NPC going", |m| has(m, NPCDEL, &id));
+        let _ = std::fs::remove_dir_all(&w);
+    }
+}

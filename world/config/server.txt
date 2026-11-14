@@ -53,6 +53,9 @@ horse_lifetime = 10
 baddy_respawn_time = 60
 # Seconds online for each alignment point gained, up to 100 (0 = off).
 alignment_time = 1200
+# Whether a client's putnpc (and taking its NPC away) works (unset: yes for
+# 1999, no for v2). The script file comes from files/.
+#put_npcs = no
 max_players = 256
 
 # The tile of the generated board, used only when the start level's file
