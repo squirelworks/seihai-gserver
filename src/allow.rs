@@ -25,12 +25,20 @@ pub struct AllowList {
 }
 
 impl AllowList {
-    /// Every build seihai-core knows.
+    /// Every build seihai-core knows, and the builds served as a near one.
     pub fn all_known() -> Self {
         AllowList {
             tokens: ClientVersion::all_versions()
                 .iter()
                 .map(|v| v.token().to_string())
+                // The builds served as a near build (`login::STAND_INS`):
+                // 1.25, 1.27, 1.40 rev 1, 2.19 to 2.21. Without them `*`
+                // turned a real 1.27 away (lab round 3, 2026-11-14).
+                .chain(
+                    crate::login::STAND_INS
+                        .iter()
+                        .map(|(t, _, _)| t.to_string()),
+                )
                 .collect(),
         }
     }
@@ -155,6 +163,12 @@ mod tests {
         let (l, _) = AllowList::parse("*\n");
         for v in ClientVersion::all_versions() {
             assert!(l.allows(v.token()), "{v:?}");
+        }
+        // And the stand-ins: 1.25, 1.27, 1.40 rev 1, 2.19 to 2.21.
+        for t in [
+            "GSERV009", "GSERV011", "GNW23090", "GNW15053", "GNW28063", "GNW01113",
+        ] {
+            assert!(l.allows(t), "{t}");
         }
     }
 }

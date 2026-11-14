@@ -1931,6 +1931,9 @@ impl WorldTask {
         }
         if old == key {
             self.tell_level(&key, w.player, &moved, &[]);
+            if !same {
+                self.enter_again(w.player);
+            }
         } else {
             self.tell_level(&old, w.player, &Change::default(), &others::LEFT_LEVEL);
             self.hand_off(&old);
@@ -2082,6 +2085,19 @@ impl WorldTask {
 
     /// A player is in: they and the others in their level see each other.
     fn meet(&mut self, id: u16) {
+        self.enter(id, false);
+    }
+
+    /// A player in a level warped into it again and was sent the level
+    /// once more (a respawn): the client starts the level afresh, so it is
+    /// sent what a new arrival gets, its lead included. Without the lead a
+    /// real 1.39 stopped running the level's baddies and NPCs for good
+    /// (lab round 3, 2026-11-14). The others already know the player.
+    fn enter_again(&mut self, id: u16) {
+        self.enter(id, true);
+    }
+
+    fn enter(&mut self, id: u16, again: bool) {
         let Some(me) = self.players.get(&id) else {
             return;
         };
@@ -2114,9 +2130,15 @@ impl WorldTask {
             }
         }
         // The level's leader, if it has none, and its baddies.
-        if self.leader_of(&me.level).is_none() {
-            self.leaders.insert(me.level.clone(), id);
-            let _ = me.outbox.send(vec![crate::wire::msg(PLO_ISLEADER, b"")]);
+        match self.leader_of(&me.level) {
+            None => {
+                self.leaders.insert(me.level.clone(), id);
+                let _ = me.outbox.send(vec![crate::wire::msg(PLO_ISLEADER, b"")]);
+            }
+            Some(l) if again && l == id => {
+                let _ = me.outbox.send(vec![crate::wire::msg(PLO_ISLEADER, b"")]);
+            }
+            Some(_) => {}
         }
         if me.profile.reads(PLO_BADDYPROPS) {
             let msgs: Vec<_> = self
@@ -2165,9 +2187,15 @@ impl WorldTask {
             if let Some(m) = others::message(me.profile, other, &p.props.all(), &others::JOINED) {
                 let _ = me.outbox.send(vec![m]);
             }
+            if again {
+                continue;
+            }
             if let Some(m) = others::message(p.profile, id, &mine, &others::JOINED) {
                 let _ = p.outbox.send(vec![m]);
             }
+        }
+        if again {
+            return;
         }
         // The RCs online, in the player's list (again at each level:
         // an entry with no level is not dropped by a level change).
