@@ -9,7 +9,7 @@ publish = false
 
 [dependencies]
 # Protocol, framing, version profiles and scripting shared with the Seihai client.
-seihai-core = { git = "https://github.com/squirelworks/seihai-core", tag = "v0.1.0", default-features = false }
+seihai-core = { git = "https://github.com/squirelworks/seihai-core", tag = "v0.2.16", default-features = false }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time", "macros", "sync", "signal", "process"] }
 # The NPC-server link's wire format (PROTOCOL.md), shared with the NPC-server
 # so both sides use one codec.
@@ -23,9 +23,14 @@ flate2 = { version = "1", features = ["zlib-rs"] }
 [dev-dependencies]
 # Paused time for the world-tick tests.
 tokio = { version = "1", features = ["test-util"] }
-# The RC tests log in with Seihai's own RC client. rc c0cee74 (its core v0.1.0 bump) is on
-# seihai-core v0.1.0 like the server, so the lock has one core.
+# The RC tests log in with Seihai's own RC client (dd10322). That crate and
+# seihai-npcserver 21de1ca still declare seihai-core v0.1.0. Cargo refuses to
+# patch a git repo onto another tag of the same URL, so the patch below is
+# the same repository on the www host. The lock then has one core, this tag.
 seihai-rc = { git = "https://github.com/squirelworks/seihai-rc", rev = "dd103226dca1bedbeb983bc523a17259b81f118f" }
+
+[patch."https://github.com/squirelworks/seihai-core"]
+seihai-core = { git = "https://www.github.com/squirelworks/seihai-core", tag = "v0.2.16" }
 
 # PBKDF2 and the codecs are slow unoptimised; the tests log in dozens of times.
 [profile.dev.package."*"]
