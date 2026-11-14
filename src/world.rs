@@ -69,9 +69,11 @@
 //! - `PM`: `PLO_PRIVATEMESSAGE` (37) from [`NPC_SERVER_ID`].
 //! - `NPC_SHAPE`: kept on the server NPC; no client message carries it.
 //! - `PLAY_SOUND`, `STOP_SOUND`, `STOP_MIDI`, `NPC_TRIGGER_ACTION`: no build
-//!   in the profile table reads a server message for them (sounds), or the
-//!   layout has no capture yet (`PLO_TRIGGERACTION` 48), so they are logged
-//!   once and dropped.
+//!   in the profile table reads a server sound, and a script's own
+//!   `NPC_TRIGGER_ACTION` is not passed back to clients (the NPC-server
+//!   already ran it). They are logged once and dropped. A client's
+//!   `PLI_TRIGGERACTION` (38) is different: the others in the level who
+//!   read 48 get it, and the link gets `TRIGGER_ACTION`.
 //!
 //! Every message goes out only to builds whose profile lists its id.
 //!
@@ -134,6 +136,8 @@ const ID_LIMIT: u16 = 1 << 14;
 const NICKNAME: u8 = 0;
 /// The head image (player prop 11).
 const HEAD: u8 = 11;
+/// The chat bubble (player prop 12).
+const CURCHAT: u8 = 12;
 
 /// The id the NPC-server's PMs come from. Never given to a player.
 pub const NPC_SERVER_ID: u16 = ID_LIMIT - 1;
@@ -164,6 +168,8 @@ pub enum WorldIn {
     },
     /// `PLI_PLAYERPROPS` (2), as sent.
     Props { player: u16, raw: Vec<u8> },
+    /// `PLI_TRIGGERACTION` (38), as sent.
+    TriggerAction { player: u16, raw: Vec<u8> },
     /// `PLI_LEVELWARP` (0) or `PLI_LEVELWARPMOD` (30).
     LevelWarp(Warp),
     /// An item on the floor: `PLI_ITEMADD` (12), `PLI_ITEMDEL` (13) or
@@ -497,6 +503,14 @@ impl World {
         let (reply, answer) = oneshot::channel();
         self.tx.send(WorldIn::Joined { who, outbox, reply }).ok()?;
         answer.await.ok()
+    }
+
+    /// `PLI_TRIGGERACTION` (38), as the client sent it.
+    pub fn trigger_action(&self, player: u16, raw: &[u8]) {
+        let _ = self.tx.send(WorldIn::TriggerAction {
+            player,
+            raw: raw.to_vec(),
+        });
     }
 
     /// A player's prop update, as the client sent it.
@@ -1209,6 +1223,7 @@ impl WorldTask {
                 let _ = reply.send(n);
             }
             WorldIn::Props { player, raw } => self.props(player, &raw),
+            WorldIn::TriggerAction { player, raw } => self.trigger_action(player, &raw),
             WorldIn::NpcProps { player, raw } => self.npc_props(player, &raw),
             WorldIn::BaddyProps { player, raw } => self.baddy_props(player, &raw),
             WorldIn::BaddyHurt { player, raw } => self.baddy_hurt(player, &raw),
@@ -2306,6 +2321,49 @@ impl WorldTask {
         }
     }
 
+    /// A new non-empty chat line goes to the NPC-server as `PM_TO_NPC`.
+    /// An empty line only clears the bubble, and a repeat of the same
+    /// text is not a change.
+    fn chat_to_npc(&self, id: u16, change: &Change) {
+        if !change.has(CURCHAT) {
+            return;
+        }
+        let Some(text) = self
+            .players
+            .get(&id)
+            .and_then(|p| p.props.values().get(&CURCHAT))
+            .and_then(|raw| gstring(raw))
+            .filter(|t| !t.is_empty())
+        else {
+            return;
+        };
+        if let Some(hub) = &self.npc {
+            hub.pm_to_npc(id, text);
+        }
+    }
+
+    /// `PLI_TRIGGERACTION` (38). The body is a GINT3 npc id, two `GCHAR`
+    /// half-tile coordinates, then the action and an optional `,parameter`.
+    /// The others in the level who read 48 get the body with this player's
+    /// id as a `GSHORT` in front. The NPC-server gets the action name (the
+    /// text before the comma), the level, and the half-tile point.
+    fn trigger_action(&mut self, id: u16, raw: &[u8]) {
+        let Some((x, y, action)) = trigger_parts(raw) else {
+            return;
+        };
+        self.relay(id, crate::wire::ids::PLO_TRIGGERACTION, true, raw);
+        if action.is_empty() {
+            return;
+        }
+        let Some(key) = self.players.get(&id).map(|p| p.level.clone()) else {
+            return;
+        };
+        let level = self.loaded.get(&key).map(|l| l.name.clone()).unwrap_or(key);
+        if let Some(hub) = &self.npc {
+            hub.trigger_action(id, &level, x, y, &action);
+        }
+    }
+
     /// A bomb, shot or blast, passed on to the others in the level whose
     /// build reads `out`.
     fn relay(&self, id: u16, out: u8, named: bool, raw: &[u8]) {
@@ -2787,6 +2845,7 @@ impl WorldTask {
             // Into a new level: the players there met the player with
             // every prop, so this change is not said again.
             if self.players.get(&id).is_some_and(|p| p.level != before) {
+                self.chat_to_npc(id, &change);
                 return;
             }
         }
@@ -2820,6 +2879,7 @@ impl WorldTask {
                 }
             }
         }
+        self.chat_to_npc(id, &change);
         if !change.is_empty() {
             self.pending.entry(id).or_default().merge(change);
         }
@@ -4299,6 +4359,28 @@ const OLD_BUILD_PM: &str =
 
 /// `PLI_PRIVATEMESSAGE`: the ids and the text. `narrow` reads the count
 /// and the ids as one `GCHAR` each.
+/// A GSTRING: a length `GCHAR`, then that many bytes.
+fn gstring(raw: &[u8]) -> Option<&[u8]> {
+    let (n, rest) = raw.split_first()?;
+    let n = usize::from(n.wrapping_sub(0x20));
+    rest.get(..n)
+}
+
+/// `PLI_TRIGGERACTION` without the id: three bytes of npc id, two half-tile
+/// `GCHAR`s, then text. `None` when there is no action text. The returned
+/// name stops at the first comma; an empty name still means the body is
+/// long enough to pass on.
+fn trigger_parts(raw: &[u8]) -> Option<(u16, u16, Vec<u8>)> {
+    let rest = raw.get(5..).filter(|r| !r.is_empty())?;
+    let x = u16::from(raw[3].wrapping_sub(0x20));
+    let y = u16::from(raw[4].wrapping_sub(0x20));
+    let name = match rest.iter().position(|b| *b == b',') {
+        Some(i) => rest[..i].to_vec(),
+        None => rest.to_vec(),
+    };
+    Some((x, y, name))
+}
+
 fn parse_pm(raw: &[u8], narrow: bool) -> Option<(Vec<u16>, &[u8])> {
     let w = if narrow { 1 } else { 2 };
     let read = |b: &[u8]| -> Option<u16> {

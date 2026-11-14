@@ -287,3 +287,4 @@ messages; the NPC-server already sends them) turns the link off, and
 | 1 | 2026-11-04 | `NPC_TRIGGER_ACTION` (`0x4C`) specified. No version bump: the id was reserved. This copy only, as above. |
 | 1 | 2026-11-11 | No protocol change. The two copies are the same file again; the "this copy only" notes above no longer hold. `seihai-gserver` reads milestone 1 only and does not yet act on the milestone 2 messages. |
 | 1 | 2026-11-12 | NPC Control messages `0x80` to `0x84` specified and built on both sides (seihai-gserver issue #52). No version bump: the ids were reserved. |
+| 1 | 2026-11-14 | No protocol change. The gserver sends `PM_TO_NPC` for a new non-empty chat line and `TRIGGER_ACTION` for `PLI_TRIGGERACTION` (38). |
