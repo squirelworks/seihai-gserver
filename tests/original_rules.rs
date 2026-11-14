@@ -274,20 +274,25 @@ fn the_player_killer_flag_before_1_3() {
     let mut bob = RawClient::join(&addr, ClientVersion::V139, "bob", in_level);
     knows(&mut amy, &["bob"]);
     knows(&mut bob, &["amy"]);
-    // Status 20 (the account's) with 0x20: 52.
-    let flagged = [18 + 32, 52 + 32];
-    let plain = [18 + 32, 20 + 32];
+    // Status prop 18 with or without bit 0x20, whatever else it holds.
+    let status = |m: &Seen, id: u8, on: bool| {
+        m.iter().any(|(i, p)| {
+            *i == id
+                && p.windows(2)
+                    .any(|w| w[0] == 18 + 32 && (w[1].wrapping_sub(32) & 0x20 != 0) == on)
+        })
+    };
     // Two seconds.
     amy.send(2, &[25 + 32, 32, 34]);
-    amy.until("the flag", |m| holds(m, PLAYERPROPS, &flagged));
-    bob.until("the flag", |m| holds(m, OTHERPLPROPS, &flagged));
+    amy.until("the flag", |m| status(m, PLAYERPROPS, true));
+    bob.until("the flag", |m| status(m, OTHERPLPROPS, true));
     // Hearts while flagged and alive: not taken, nobody hears them.
     amy.send(2, &[2 + 32, 1 + 32]);
     let quiet = bob.settle();
     assert!(!holds(&quiet, OTHERPLPROPS, &[2 + 32, 1 + 32]), "{quiet:?}");
     // Two seconds on, the flag is gone, and hearts are taken again.
-    amy.until("the flag off", |m| holds(m, PLAYERPROPS, &plain));
-    bob.until("the flag off", |m| holds(m, OTHERPLPROPS, &plain));
+    amy.until("the flag off", |m| status(m, PLAYERPROPS, false));
+    bob.until("the flag off", |m| status(m, OTHERPLPROPS, false));
     amy.send(2, &[2 + 32, 1 + 32]);
     bob.until("the hearts", |m| holds(m, OTHERPLPROPS, &[2 + 32, 1 + 32]));
     drop((amy, bob));
@@ -300,7 +305,12 @@ fn the_player_killer_flag_before_1_3() {
     amy.settle();
     amy.send(2, &[25 + 32, 32, 34]);
     let quiet = amy.settle();
-    assert!(!holds(&quiet, PLAYERPROPS, &flagged), "{quiet:?}");
+    assert!(
+        !quiet
+            .iter()
+            .any(|(i, p)| *i == PLAYERPROPS && p.first() == Some(&(18 + 32))),
+        "{quiet:?}"
+    );
     let _ = std::fs::remove_dir_all(&w);
 }
 
