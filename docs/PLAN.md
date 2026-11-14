@@ -95,7 +95,10 @@ behaviour against, never a code source (see `00-rules.md`).
    token handshake, level list, keep-alive; the world task feeds the `Hub`
    (player join, props, `PLAYER_LEVEL`, leave, `LEVEL_RELOADED` from a 1 s
    check of the loaded level files, the server flags for a new link) and
-   applies `0x40` to `0x4C` (`world.rs` module notes say what each becomes).
+   applies `0x40` to `0x4E` (`world.rs` module notes say what each becomes).
+   `SEND_TO_NC` and `SEND_TO_RC` go to every logged-in session of that
+   kind as RC console line 74 (`tests/staff_lines.rs`). A finer rights
+   rule is still open.
    Dropped with a log line: the sound messages (no build reads a server
    sound) and a script's own `NPC_TRIGGER_ACTION` (not passed back to
    clients). A client's `PLI_TRIGGERACTION` (38) is passed to the others

@@ -13,7 +13,7 @@ seihai-core = { git = "https://github.com/squirelworks/seihai-core", tag = "v0.1
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time", "macros", "sync", "signal", "process"] }
 # The NPC-server link's wire format (PROTOCOL.md), shared with the NPC-server
 # so both sides use one codec.
-seihai-npcserver = { git = "https://github.com/squirelworks/seihai-npcserver", rev = "21de1cac293f3270ce3f634a01dac4a6bd0e0e8b" }
+seihai-npcserver = { git = "https://github.com/squirelworks/seihai-npcserver", rev = "1ebabde1cb49488b59d72861a29d21694cedc55e" }
 sha2 = "0.10"
 getrandom = "0.2"
 pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }

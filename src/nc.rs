@@ -25,7 +25,8 @@
 //! | 115 `NC_WEAPONLISTGET` | 167 with no names: the NPC-server keeps no weapons yet |
 //!
 //! While the NC is on, 158 and 159 also go out as the NPC-server's list
-//! changes.
+//! changes. A `SEND_TO_NC` line goes out as [`console_line`] (`PLO_RC_CHAT`,
+//! 74) to every logged-in NC. That is every such session, not a rights check.
 //!
 //! Classes and the rest of the weapon commands are not answered: the
 //! NPC-server has neither yet.
@@ -126,6 +127,16 @@ fn lines(text: &[u8]) -> Vec<Vec<u8>> {
 /// 167 with no names.
 pub fn no_weapons() -> Vec<u8> {
     msg(PLO_NC_WEAPONLISTGET, b"")
+}
+
+/// A console line for a logged-in NPC Control session.
+///
+/// An NC client shows this as `PLO_RC_CHAT` (74): the same packet Remote
+/// Control uses for a console line. Ids that are not NPC-list replies are
+/// read on that console, and 74 is the line itself. The text is the rest
+/// of the message. An empty text is still a line.
+pub fn console_line(text: &[u8]) -> Vec<u8> {
+    msg(crate::rc::PLO_RC_CHAT, text)
 }
 
 #[cfg(test)]
