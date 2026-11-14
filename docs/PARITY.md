@@ -90,24 +90,24 @@ test) and the lab notes.
 
 ## The 1999 rules (`rules = 1999`)
 
-What the original servers do (`ORIGINAL-SERVERS.md`) and where this server stands on each rule. Real-client runs: `lab/rules-1999-2026-11-13.md` (#110).
+What the original servers do (`ORIGINAL-SERVERS.md`) and where this server stands on each rule. Real-client runs: `lab/rules-1999-2026-11-13.md`, `lab/round2-2026-11-13.md`, `lab/round3-2026-11-14.md` (#110).
 
 | Rule | v2 (default) | 1999 | Status | Shown by | Notes |
 |---|---|---|---|---|---|
-| Horses kept per level, sent to arrivals, gone after `horse_lifetime` | same | same | partial | `original_rules.rs`; `lab/rules-1999-2026-11-13.md` | A real 1.39's dropped horse got `PLO_HORSEDEL` 10.04 s later (v2). A later arrival getting it: tests only |
-| `PLI_TOALL` to everyone else online | same | same | tests | `original_rules.rs` | No real-client way to send it is known yet |
-| Kill claim from 1.21 to 1.35 (one `GCHAR`) | counted, GServer-v2's cost | counted only when the victim has 10+ AP; cost (AP+10)/20 | tests | `original_rules.rs` | |
+| Horses kept per level, sent to arrivals, gone after `horse_lifetime` | same | same | lab | `original_rules.rs`; `lab/rules-1999-2026-11-13.md`, `lab/round2-2026-11-13.md`, `lab/round3-2026-11-14.md` | Expiry under both; a later arrival got `PLO_HORSEADD` under 1999 (round 2) and v2 (round 3) |
+| `PLI_TOALL` to everyone else online | same | same | lab | `original_rules.rs`; `lab/round3-2026-11-14.md` | A real 1.35 or 1.39 sends it for chat that starts with `toall:` |
+| Kill claim from 1.21 to 1.35 (one `GCHAR`) | counted, GServer-v2's cost | counted only when the victim has 10+ AP; cost (AP+10)/20 | lab | `original_rules.rs`; `lab/round3-2026-11-14.md` | A real 1.35's claim: 1999 cost 3 at victim AP 51, v2 cost 8 at killer AP 67; `KILLS 1` saved |
 | Deaths counted from the dead bit and saved | yes | yes | lab (v2) | `original_rules.rs`; `lab/rules-1999-2026-11-13.md` | `DEATHS 1` saved for real 1.35 and 1.39 |
 | Alignment +1 per `alignment_time` online, saved | yes | yes | lab | `original_rules.rs`; `lab/rules-1999-2026-11-13.md` | Saved under both rule sets |
-| A leader's own mode 9 starts the baddy respawn | yes | yes | tests | `baddies.rs`, `original_rules.rs` | |
-| Bush regrowth | 15 s | 0.75 to 1.25 x `respawn_time` | tests | `board_changes.rs`, `original_rules.rs` | The real-client cut was not captured in the 2026-11-13 run |
-| A dead leader hands off | no | yes | tests | `original_rules.rs` | |
+| A dead baddy comes back after `baddy_respawn_time` | yes | yes | lab | `baddies.rs`, `original_rules.rs`; `lab/round3-2026-11-14.md` | A real 1.39 leader sends mode 5, not 9; the server's 2 s step makes it 9. The hare came back 15.000 s later, in mode 0 (v2) and 7 (1999) |
+| Bush regrowth | 15 s | 0.75 to 1.25 x `respawn_time` | lab | `board_changes.rs`, `original_rules.rs`; `lab/round2-2026-11-13.md` | A real 2.22's cut: 15.0 s (v2), 9.03 s (1999) |
+| A dead leader hands off | no | yes | lab | `original_rules.rs`; `lab/round3-2026-11-14.md` | `PLO_ISLEADER` reached the other player in the same ms as the dead status |
 | Baddy changes from a follower | kept | dropped | tests | `baddies.rs` | |
-| Swamp soldier and hare start modes | 0 | 6 and 7 | tests | `baddies.rs` | |
+| Swamp soldier and hare start modes | 0 | 6 and 7 | lab | `baddies.rs`; `lab/round3-2026-11-14.md` | A respawned hare came back in mode 7 under 1999 |
 | A new nickname or head | to the level | to everyone online | tests | `original_rules.rs` | |
 | Prop limits (max hearts 20, gralats 9,999,999, arrows and bombs 99, alignment 0 to 100) | the anti-cheat's counted props | the 1999 limits | tests | `original_rules.rs` | |
-| The player-killer flag: prop 25 from a build before 1.3 sets status bit 0x20 for that many seconds; hearts not taken while it is on | prop 25 kept | flag and hearts rule | tests | `original_rules.rs` | Read from 1.28 beta 2. No 1.2x client has been run against it |
-| A new account's AP | 0 | 50 | tests | `original_rules.rs` | The 1.3 readme |
+| The player-killer flag: prop 25 from a build before 1.3 sets status bit 0x20 for that many seconds; hearts not taken while it is on | prop 25 kept | flag and hearts rule | tests | `original_rules.rs`; `lab/round3-2026-11-14.md` | Read from 1.28 beta 2. A real 1.28b2 and 1.27 sent no prop 25 in round 3, so nothing real has set it yet |
+| A new account's AP | 0 | 50 | lab | `original_rules.rs`; `lab/round3-2026-11-14.md` | The 1.3 readme. Four new accounts in round 3, 1.27 and 1.28b2 among them |
 | A second player claiming a carried NPC | kept | refused | tests | `original_rules.rs` | |
 | A baddy hit with one player in the level | to the leader | dropped | tests | `rules.rs` | |
 | `putnpc` and `PLI_NPCDEL` | off (`put_npcs = yes` turns them on) | on | tests | `original_rules.rs` | |

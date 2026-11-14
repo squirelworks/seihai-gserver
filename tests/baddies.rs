@@ -89,3 +89,34 @@ fn the_leader_runs_the_baddies() {
     fay.until("the lead", |m| m.iter().any(|(id, _)| *id == ISLEADER));
     let _ = std::fs::remove_dir_all(&w);
 }
+
+/// A leader who warps into the level they are in (a respawn) is sent the
+/// level again, and with it the baddies and the lead: a real 1.39 that
+/// got no `PLO_ISLEADER` then stopped running the level's baddies (lab
+/// round 3, 2026-11-14). A follower doing the same is not made leader.
+#[test]
+fn a_respawn_in_the_same_level_keeps_the_lead() {
+    let w = world("respawn-lead", "*\n");
+    std::fs::create_dir_all(w.join("levels")).unwrap();
+    std::fs::write(w.join("levels/onlinestartlocal.nw"), LEVEL).unwrap();
+    let (addr, _server) = start(&w);
+    let mut lea = RawClient::join(&addr, ClientVersion::V139, "lea", both_baddies);
+    assert!(lea.seen.iter().any(|(id, _)| *id == ISLEADER));
+    let mut fay = RawClient::join(&addr, ClientVersion::V139, "fay", both_baddies);
+    lea.settle();
+    let mut warp = vec![0x20 + 60, 0x20 + 60];
+    warp.extend(b"onlinestartlocal.nw");
+    lea.send(0, &warp);
+    let again = lea.until("the lead again", |m| {
+        both_baddies(m) && m.iter().any(|(id, _)| *id == ISLEADER)
+    });
+    assert!(!again.is_empty());
+    fay.send(0, &warp);
+    let got = fay.until("the baddies again", both_baddies);
+    let more = fay.settle();
+    assert!(
+        !got.iter().chain(more.iter()).any(|(id, _)| *id == ISLEADER),
+        "{got:?}"
+    );
+    let _ = std::fs::remove_dir_all(&w);
+}
