@@ -300,7 +300,7 @@ pub fn own_props(version: impl Into<ClientProfile>, p: &Player) -> Vec<u8> {
     let mut put = |id: u8, v: &[u8]| {
         if own.contains(id) {
             b.push(gchar(id));
-            b.extend_from_slice(v);
+            b.extend_from_slice(&crate::others::for_receiver(&version, id, v, false));
         }
     };
     let s = |text: &str| {

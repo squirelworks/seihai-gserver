@@ -58,7 +58,8 @@ The **Source** column says where the value comes from: `core` is
 | Player id width | another player's id as one `GCHAR` (up to 1.35) or a `GSHORT`, in 8 and 37 | server `one_byte_id` (until core carries it) | `others.rs`, `world.rs` | done |
 | NPC props | ids up to `npc_max`, prop 12 in the build's shape | core `props.npc_max`, server `prop10_bow` (2.05 override) | `npcs.rs` | done: prop 12 and the own-props burst's prop 10 read `ServerProfile`, so the 2.05 override reaches them |
 | Positions | half-tile X/Y before 2.3, pixel X2/Y2 from 2.3 | core `props.precise_pos` | `others.rs`, `burst.rs` | partial: level NPCs are always written as half tiles (`npcs.rs`, `half_tiles`) |
-| Image names | `.gif` before 2.1, `.png` after; baddy images | core `files.image_ext`, server `baddy_image_ext` (2.05 override) | `baddies.rs`, `files.rs` | partial: NPC and player image props pass the world's name through unchanged |
+| Image names | `.gif` before 2.1, `.png` after; baddy images; stock player art as preset numbers | core `files.image_ext`, server `image_ext` and `baddy_image_ext` (2.05 overrides) | `baddies.rs`, `files.rs`, `others.rs` (`for_receiver`), `burst.rs` | partial: player sword, shield, head and body go through `image_ext` (stock `swordN`/`shieldN`/`headN` as the preset, other names as `.gif`). NPC image props still pass the world's name through unchanged |
+| Status | value 4 is "swimming" in 1.x, "male" from 2.0 | server `status_4_swims` (1.x, until core carries it) | `others.rs` (`for_receiver`), `burst.rs` | done: cleared for 1.x receivers unless the player is 1.x too; always cleared in the own props |
 | Files | `PLO_FILE` mod time, large files | core `files.*`, server `file_modtime` (2.05 override) | `files.rs` | done |
 | Packages | `.gpak` / `.gpake` | server `loads_gpak`, `loads_gpake` | `gpak.rs` | partial: a build list in `profile.rs` (`GPAKE`), not a core field. Move it to core `files` once the 4.20r8 lab result is recorded there |
 | Levels | which board form (GR-V1.0x, NW); gmaps as gmaps or as linked single levels | core `levels.*`, `GmapRules` | `levels.rs`, `gmaps.rs` | partial: `gmaps::plays_gmaps` reads `GmapRules`, not the profile row. Single-level gmap output for pre-gmap builds is not written yet |
@@ -138,8 +139,9 @@ which that run did not manage. Until then, a wire check is the evidence:
    Left, each waiting on evidence rather than code:
    - Level NPC positions per `precise_pos`: needs a capture of what a 2.3+
      client does with NPC X2/Y2 next to X/Y, since a push moves X/Y.
-   - Image extensions on NPC and player image props: needs a rule for a
-     world that has only the `.png` (no image conversion here yet).
+   - Image extensions on NPC image props: needs a rule for a world that
+     has only the `.png` (no image conversion here yet). Player art is
+     done: stock art goes as presets, so a 1.x build draws its own.
    - The package list into core `files`, once the 4.20r8 lab result is
      recorded in seihai-core.
 3. **The scripts row.** Code done; the lab run is left.
