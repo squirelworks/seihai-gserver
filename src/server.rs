@@ -1434,6 +1434,7 @@ impl Session {
                 PLI_TOWEAPON => server.world.weapon_upload(self.id, payload),
                 PLI_UPDATESCRIPT => server.world.update_script(self.id, payload),
                 PLI_PRIVATEMESSAGE => server.world.private_message(self.id, payload),
+                PLI_TRIGGERACTION => server.world.trigger_action(self.id, payload),
                 PLI_REQUESTUPDATEBOARD => server.world.request_board(self.id, payload),
                 // A server warp: the listserver says where that server
                 // is, and the answer comes back through `link_out`.
