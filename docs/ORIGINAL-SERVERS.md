@@ -183,6 +183,7 @@ October server passed those on, as later servers and this one do.
 | A new account's AP | 0 | the same; `rules = 1999`: 50 |
 | A second player claiming a carried NPC | kept | the same; `rules = 1999`: refused, sprite cut to its direction, both props sent back |
 | A baddy hit in a level with one player | to the leader (the sender) | the same; `rules = 1999`: dropped |
+| `PLI_PUTNPC` (21), `PLI_NPCDEL` (22) | dropped | `rules = 1999` or `put_npcs = yes`: the NPC with its script file from `files/`, to the level and later arrivals; 22 takes away only an NPC a client put (`src/putnpc.rs`) |
 
 ## Private messages, nicknames and prop limits
 

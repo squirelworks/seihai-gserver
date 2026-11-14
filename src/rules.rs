@@ -49,6 +49,9 @@ pub struct Rules {
     /// Time online for each AP point gained, up to 100. Zero turns it off.
     /// 1200 s on both 1999 servers.
     pub alignment_time: Duration,
+    /// Whether clients may put NPCs (`putnpc.rs`). `None` takes the
+    /// era's: yes in 1999, no under `v2`.
+    pub put_npcs: Option<bool>,
 }
 
 impl Default for Rules {
@@ -59,6 +62,7 @@ impl Default for Rules {
             horse_life: Duration::from_secs(10),
             baddy_respawn: Duration::from_secs(60),
             alignment_time: Duration::from_secs(1200),
+            put_npcs: None,
         }
     }
 }
@@ -132,6 +136,12 @@ impl Rules {
     pub fn pk_flag(&self, v: seihai_core::protocol::ClientVersion) -> bool {
         use seihai_core::protocol::ClientVersion as V;
         self.era == Era::Y1999 && matches!(v, V::V121 | V::V128B2)
+    }
+
+    /// Whether a client may put an NPC in its level and take it away
+    /// again (`PLI_PUTNPC`, `PLI_NPCDEL`).
+    pub fn put_npcs(&self) -> bool {
+        self.put_npcs.unwrap_or(self.era == Era::Y1999)
     }
 
     /// Whether a second player claiming an NPC another player in the level

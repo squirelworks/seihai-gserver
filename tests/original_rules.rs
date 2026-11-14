@@ -352,3 +352,57 @@ fn new_accounts_start_at_50_ap_under_1999_rules() {
         let _ = std::fs::remove_dir_all(&w);
     }
 }
+
+/// `putnpc` (`PLI_PUTNPC` 21) and `PLI_NPCDEL` (22), allowed under
+/// `rules = 1999`: the NPC goes to everyone in the level with the script
+/// file read from the world, a later arrival gets it, and 22 takes it
+/// away. Under `v2` neither does anything.
+#[test]
+fn putnpc_and_npcdel_under_1999_rules() {
+    const NPCPROPS: u8 = 3;
+    const NPCDEL: u8 = 29;
+    let mut put = vec![0x20 + 8];
+    put.extend(b"door.png");
+    put.push(0x20 + 8);
+    put.extend(b"door.txt");
+    put.extend([0x20 + 61, 0x20 + 40]);
+    for (tag, extra, on) in [
+        ("putnpc-1999", "rules = 1999\n", true),
+        ("putnpc-v2", "", false),
+    ] {
+        let w = setup(tag, extra, &[]);
+        std::fs::create_dir_all(w.join("files")).unwrap();
+        std::fs::write(
+            w.join("files/door.txt"),
+            "if (playerenters) { message Welcome; }\n",
+        )
+        .unwrap();
+        let (addr, _server) = start(&w);
+        let mut amy = RawClient::join(&addr, ClientVersion::V139, "amy", in_level);
+        let mut bob = RawClient::join(&addr, ClientVersion::V222, "bob", in_level);
+        knows(&mut amy, &["bob"]);
+        knows(&mut bob, &["amy"]);
+        amy.send(21, &put);
+        if !on {
+            let quiet = bob.settle();
+            assert!(!holds(&quiet, NPCPROPS, b"door.png"), "{quiet:?}");
+            let _ = std::fs::remove_dir_all(&w);
+            continue;
+        }
+        let got = bob.until("the NPC", |m| holds(m, NPCPROPS, b"door.png"));
+        let id = got
+            .iter()
+            .find(|(i, p)| *i == NPCPROPS && p.windows(8).any(|w| w == b"door.png"))
+            .map(|(_, p)| p[..3].to_vec())
+            .unwrap();
+        // The sender gets it too; 1.39 runs GS1, so it gets the script.
+        amy.until("the NPC's script", |m| holds(m, NPCPROPS, b"Welcome"));
+        let cal = RawClient::join(&addr, ClientVersion::V222, "cal", |m| {
+            holds(m, NPCPROPS, b"door.png")
+        });
+        drop(cal);
+        amy.send(22, &id);
+        bob.until("the NPC going", |m| has(m, NPCDEL, &id));
+        let _ = std::fs::remove_dir_all(&w);
+    }
+}

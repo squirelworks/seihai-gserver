@@ -79,7 +79,7 @@ test) and the lab notes.
 | Level NPCs and their props (`PLI_NPCPROPS`) | lab | `level_npcs.rs`; `lab/stage3-2026-11-05.md` | |
 | Level NPC scripts per client build: GS1 text, GS2 bytecode or none | tests | `npcs.rs` unit tests | No original client has run the bytecode yet (#45) |
 | Baddies (`PLI_BADDYPROPS`, `BADDYHURT`) | lab | `baddies.rs`; `lab/stage3` | `PLI_BADDYADD` is not handled |
-| NPCs a client puts or deletes (`PLI_PUTNPC`, `PLI_NPCDEL`) | no | | |
+| NPCs a client puts or deletes (`PLI_PUTNPC`, `PLI_NPCDEL`) | tests | `original_rules.rs`, `putnpc.rs` | On under `rules = 1999` or with `put_npcs = yes`. As on the 1999 servers; a client can only take away an NPC a client put. No real-client run yet |
 | Trigger actions (`PLI_TRIGGERACTION`, `gr.*` commands) | no | | `PLO_TRIGGERACTION` needs a capture (#53) |
 | Weapons: `PLI_WEAPONADD`, `PLI_TOWEAPON` | partial | `weapons.rs`, `npc_messages.rs` | `PLI_WEAPONADD` gives default weapons and level-NPC weapons (`toweapons`), kept in `weapons/` and on the account. GS1 weapons go only to builds that run GS1. `PLI_TOWEAPON` (25, 1.21 to 1.37) keeps the weapon when the world has it or an NPC in the level gives it; the uploaded script is never used (`weapons.rs`) |
 | GS2 weapons and the weapon cache (`PLO_WEAPONHASH` 193, `PLI_UPDATESCRIPT` 158, 132) | lab | `weapons.rs`; `tests/weapons.rs`; lab comment on #120 | To builds that run GS2 and read 193 and 132 behind `PLO_RAWDATA` (4.04r2 to 4.20r8, the Mac 5.12): 33 with name and image, 193 with the CRC-32 of the bytecode; a 158 for a held weapon gets the bytecode in 132. Real 4.20r8 takes this server's 193 and 132, writes its cache and asks no more on the next login (lab, 2026-11-13). Not yet seen: the weapon running (the lab world had no stock art) |
@@ -110,6 +110,7 @@ What the original servers do (`ORIGINAL-SERVERS.md`) and where this server stand
 | A new account's AP | 0 | 50 | tests | `original_rules.rs` | The 1.3 readme |
 | A second player claiming a carried NPC | kept | refused | tests | `original_rules.rs` | |
 | A baddy hit with one player in the level | to the leader | dropped | tests | `rules.rs` | |
+| `putnpc` and `PLI_NPCDEL` | off (`put_npcs = yes` turns them on) | on | tests | `original_rules.rs` | |
 
 ## Files and packages
 

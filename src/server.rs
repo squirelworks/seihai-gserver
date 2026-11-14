@@ -1442,6 +1442,23 @@ impl Session {
                 crate::horses::PLI_HORSEADD => server.world.horse(self.id, true, payload),
                 crate::horses::PLI_HORSEDEL => server.world.horse(self.id, false, payload),
                 PLI_TOALL => server.world.toall(self.id, payload),
+                // `putnpc` (`putnpc.rs`): the script file is read here,
+                // like a file the client asks for.
+                crate::putnpc::PLI_PUTNPC if server.cfg.rules.put_npcs() => {
+                    if let Some(put) = crate::putnpc::parse(payload) {
+                        let script = server
+                            .files
+                            .find(&put.script)
+                            .map(|f| seihai_core::protocol::latin1(&f.data))
+                            .unwrap_or_default();
+                        server.world.put_npc(self.id, put, script);
+                    }
+                }
+                crate::putnpc::PLI_NPCDEL if server.cfg.rules.put_npcs() => {
+                    if let Some(npc) = crate::putnpc::parse_del(payload) {
+                        server.world.npc_del(self.id, npc);
+                    }
+                }
                 PLI_BADDYHURT => server.world.baddy_hurt(self.id, payload),
                 PLI_HURTPLAYER | PLI_CLAIMPKER => {
                     if server.verbose {

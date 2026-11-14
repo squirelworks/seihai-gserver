@@ -261,6 +261,7 @@ impl Config {
             "horse_lifetime" => self.rules.horse_life = secs(v)?,
             "baddy_respawn_time" => self.rules.baddy_respawn = secs(v)?,
             "alignment_time" => self.rules.alignment_time = secs(v)?,
+            "put_npcs" => self.rules.put_npcs = Some(flag(v)?),
             "board_tile" => self.board_tile = num::<u16>(v)? & 0x0FFF,
             "max_players" => self.max_players = num(v)?,
             "secure_login_key" => self.secure_login_key = PathBuf::from(v),

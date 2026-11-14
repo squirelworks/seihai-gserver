@@ -199,6 +199,14 @@ pub enum WorldIn {
     },
     /// `PLI_TOALL` (6), as sent: a message to everyone online.
     ToAll { player: u16, raw: Vec<u8> },
+    /// `PLI_PUTNPC`, read, with the script file's text.
+    PutNpc {
+        player: u16,
+        put: crate::putnpc::Put,
+        script: String,
+    },
+    /// `PLI_NPCDEL`: the NPC's id.
+    NpcDel { player: u16, npc: u32 },
     /// The game rules (`rules.rs`).
     SetRules(crate::rules::Rules),
     /// A message passed on to the others in the player's level as `out`,
@@ -396,6 +404,7 @@ impl World {
                 rules: crate::rules::Rules::default(),
                 npcs: HashMap::new(),
                 last_npc: 0,
+                put: HashSet::new(),
                 baddies: HashMap::new(),
                 leaders: HashMap::new(),
                 pending: BTreeMap::new(),
@@ -531,6 +540,20 @@ impl World {
             player,
             raw: raw.to_vec(),
         });
+    }
+
+    /// `PLI_PUTNPC`, read, with the script file's text (`putnpc.rs`).
+    pub fn put_npc(&self, player: u16, put: crate::putnpc::Put, script: String) {
+        let _ = self.tx.send(WorldIn::PutNpc {
+            player,
+            put,
+            script,
+        });
+    }
+
+    /// `PLI_NPCDEL` (`putnpc.rs`).
+    pub fn npc_del(&self, player: u16, npc: u32) {
+        let _ = self.tx.send(WorldIn::NpcDel { player, npc });
     }
 
     /// The game rules and their times (`rules.rs`). The world starts with
@@ -1005,6 +1028,8 @@ pub struct WorldTask {
     /// The NPCs of each level read so far (lower-case name).
     npcs: HashMap<String, Vec<Npc>>,
     last_npc: u32,
+    /// The NPCs clients put (`putnpc.rs`), by id.
+    put: HashSet<u32>,
     /// The baddies of each level read so far (lower-case name).
     baddies: HashMap<String, Vec<Baddy>>,
     /// Who leads each level (lower-case name): their client runs its
@@ -1184,6 +1209,12 @@ impl WorldTask {
             WorldIn::BoardModify { player, raw } => self.board_modify(player, &raw),
             WorldIn::Horse { player, add, raw } => self.horse(player, add, &raw),
             WorldIn::ToAll { player, raw } => self.toall(player, &raw),
+            WorldIn::PutNpc {
+                player,
+                put,
+                script,
+            } => self.put_npc(player, &put, &script),
+            WorldIn::NpcDel { player, npc } => self.npc_del(player, npc),
             WorldIn::SetRules(r) => self.rules = r,
             WorldIn::OpenChest { player, x, y } => self.open_chest(player, x, y),
             WorldIn::Item {
@@ -3102,6 +3133,48 @@ impl WorldTask {
         self.to_level_npc(&s.level, |o| {
             crate::npcs::message(s.id, &changed, o.profile)
         });
+    }
+
+    /// A client's `putnpc`: a new NPC in its level, sent to everyone there
+    /// (`putnpc.rs`).
+    fn put_npc(&mut self, id: u16, put: &crate::putnpc::Put, script: &str) {
+        if !self.rules.put_npcs() {
+            return;
+        }
+        let Some(level) = self.players.get(&id).map(|p| p.level.clone()) else {
+            return;
+        };
+        self.last_npc += 1;
+        let npc = Npc::put(self.last_npc, &put.image, script, put.x2, put.y2);
+        self.put.insert(npc.id);
+        self.to_level_npc(&level, |o| {
+            npc.message_on(o.profile, o.gmap.as_ref().map(|g| g.cell))
+        });
+        self.npcs.entry(level).or_default().push(npc);
+    }
+
+    /// A client's `PLI_NPCDEL`: an NPC a client put in the sender's level
+    /// goes, and the level is told (`putnpc.rs`).
+    fn npc_del(&mut self, id: u16, npc: u32) {
+        if !self.rules.put_npcs() || !self.put.contains(&npc) {
+            return;
+        }
+        let Some(level) = self.players.get(&id).map(|p| p.level.clone()) else {
+            return;
+        };
+        let Some(l) = self.npcs.get_mut(&level) else {
+            return;
+        };
+        let before = l.len();
+        l.retain(|n| n.id != npc);
+        if l.len() == before {
+            return;
+        }
+        self.put.remove(&npc);
+        let mut p = Vec::new();
+        crate::wire::gint3(npc, &mut p);
+        let m = crate::wire::msg(PLO_NPCDEL, &p);
+        self.to_level_npc(&level, |o| o.profile.reads(PLO_NPCDEL).then(|| m.clone()));
     }
 
     /// `NPC_DELETED`: gone from its level, `PLO_NPCDEL` to the players there.
