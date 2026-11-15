@@ -53,7 +53,7 @@ read (`weapons.rs`); 25's script is never used.
 |---|---|---|
 | C→S 162 | `PLI_PONG` | game clients: `!` and a GSHORT capped at 28671; an RC sends it empty |
 | S→C 108 | `PLO_PING` | sub byte, GSHORT. Sub 0 asks for 162. Sub 1 is not sent |
-| S→C 109 | `PLO_HTTPDOWNLOAD` | GINT5 mod time, local name, URL |
+| S→C 109 | `PLO_HTTPDOWNLOAD` | GINT5 mod time, local name, URL; 5.24r4–6.03r7 only — never 4.x / 5.12; first-string scheme-check open ([status](https://github.com/squirelworks/Graal_analysis/blob/main/protocol/plo-109-httpdownload.md)) |
 | S→C 140 | `PLO_NPCWEAPONSCRIPT` | header (type, name, cache flag, two GINT5 key words), then the body. GServer-v2 did not send it to 4.20r8 (lab, 2026-11-13) |
 | S→C 168 | `PLO_ONLINEMODE` | empty, after the login burst |
 | S→C 181 | `PLO_PLAYERNOUDP` | `GSHORT` player id, `GCHAR` toggle (≥ 3 bytes). While set, the client omits that player from peer-UDP nearby sends. 2.17–5.24r4; later builds drop it. Not sent yet |
