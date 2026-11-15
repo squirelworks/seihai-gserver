@@ -15,6 +15,11 @@ resolve to the same replacement. The lockfile contains one core package.
 The alternate host avoids Cargo's same-source patch restriction; it is the
 same repository, not a separate implementation.
 
+The staff-line branch keeps this whole-graph replacement and its NPC-server
+pin `1ebabde1cb49488b59d72861a29d21694cedc55e`. That revision still requests
+core `v0.1.0` and resolves to the same one core package. The lockfile differs
+from #138 by that pin alone.
+
 Main after #137 (`6a1db9cbf7fe322cbc827998e867a4b149d36939`) was merged
 normally into this branch at `955b8ab03841055153a0e3f69d4b4fddb3aecd0f`.
 At that integrated head, [CI run 43657008370](https://github.com/squirelworks/seihai-gserver/actions/runs/43657008370)
