@@ -56,10 +56,16 @@ The cells are arrives / body / moves / chat.
 | 6.03r7 | wire | wire | wire | wire | — |
 
 "wire" means every message arrived but the build draws no players under
-Wine (5.24r4 draws no tiles or players, and 6.03r7 is black). "n/a" means
-that player could not do the action:
-- 5.24r4's keys all landed as game keys, so it sent no chat.
-- 6.03r7 took no input at all.
+Wine (5.24r4 draws no tiles or players, and 6.03r7 is black). **Cause
+(owner 2026-11-16, see Graal_analysis `client-internals/v5v6-expiry-and-black-screen.md`):**
+those Wine installs lacked the **base asset set from a Graal 2.22 client
+folder** (`pics1.png` and the other starter files). That is an asset staging
+gap, not a seihai-gserver or client protocol defect. Re-run with assets
+before treating these cells as a draw bug. "n/a" means that player could
+not do the action:
+- 5.24r4's keys all landed as game keys, so it sent no chat (Wine input
+  edge; prefer a real Windows guest to re-check).
+- 6.03r7 took no input at all (same Wine/asset context).
 
 Chat from 1.39, 2.22 and 2.31 reached every other client once and was
 drawn on 1.39, 2.22 and 2.31.
@@ -88,6 +94,9 @@ handled, once each:
 
 ## Left
 
-- Chat from 5.24r4 and 6.03r7: no input path under Wine.
+- Chat from 5.24r4 and 6.03r7: no input path under Wine (re-check on real
+  Windows after staging the 2.22 base asset set).
 - The door's touch branch on GS1 builds: rerun with plain 8-bit art.
-- 6.03r7 running a script: it draws nothing under Wine.
+- 6.03r7 running a script: blocked on the same missing-asset black draw;
+  re-run with assets staged (Wine OK for draw; real Windows preferred for
+  input).
