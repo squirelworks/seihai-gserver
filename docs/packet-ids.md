@@ -56,6 +56,7 @@ read (`weapons.rs`); 25's script is never used.
 | S→C 109 | `PLO_HTTPDOWNLOAD` | GINT5 mod time, local name, URL |
 | S→C 140 | `PLO_NPCWEAPONSCRIPT` | header (type, name, cache flag, two GINT5 key words), then the body. GServer-v2 did not send it to 4.20r8 (lab, 2026-11-13) |
 | S→C 168 | `PLO_ONLINEMODE` | empty, after the login burst |
+| S→C 181 | `PLO_PLAYERNOUDP` | `GSHORT` player id, `GCHAR` toggle (≥ 3 bytes). While set, the client omits that player from peer-UDP nearby sends. 2.17–5.24r4; later builds drop it. Not sent yet |
 | S→C 194 | `PLO_RESETCLIENT` | empty |
 | S→C 197 | `PLO_LOADSCRIPT` | the same key and the CRC32 of the plain body; no body |
 
@@ -63,5 +64,4 @@ read (`weapons.rs`); 25's script is never used.
 
 Server to client 60, 81, 83 and 110: no client in the notes handles them.
 124's layout is unknown (an RC logs that player flags arrived and reads
-nothing). 181 is a player id and a toggle; which flag it sets is unknown.
-108 sub 1 is stored by the client and nothing that reads it was traced.
+nothing). 108 sub 1 is stored by the client and nothing that reads it was traced.
