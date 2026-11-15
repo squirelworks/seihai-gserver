@@ -56,7 +56,7 @@ read (`weapons.rs`); 25's script is never used.
 | S→C 109 | `PLO_HTTPDOWNLOAD` | GINT5 mod time, local name, URL |
 | S→C 140 | `PLO_NPCWEAPONSCRIPT` | header (type, name, cache flag, two GINT5 key words), then the body. GServer-v2 did not send it to 4.20r8 (lab, 2026-11-13) |
 | S→C 168 | `PLO_ONLINEMODE` | empty, after the login burst |
-| S→C 194 | `PLO_RESETCLIENT` | empty |
+| S→C 194 | `PLO_RESETCLIENT` | empty. Clears client script/state; amount differs by generation (4.x weapons+classes; 5.00r7 levels+caches; 6.03r7 broader). Do **not** implement a `login*`-weapon keep until stock confirms (`plo-194-resetclient.md`). Not sent yet on this path |
 | S→C 197 | `PLO_LOADSCRIPT` | the same key and the CRC32 of the plain body; no body |
 
 ## No constant
