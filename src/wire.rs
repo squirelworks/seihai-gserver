@@ -268,6 +268,12 @@ pub mod ids {
     pub const PLO_SERVERWARP: u8 = 178;
     /// Status-list text. Confirmed.
     pub const PLO_STATUSLIST: u8 = 180;
+    /// `{181}{GSHORT player id}{GCHAR toggle}`. While set, the client leaves
+    /// that player out of peer-to-peer UDP nearby sends (TCP via the server
+    /// still applies). Confirmed layout and effect on 2.17–5.24r4; dropped
+    /// later. Named, not sent yet (no peer-UDP lab on this path).
+    /// Graal_analysis `protocol/plo-181-player-noudp.md`.
+    pub const PLO_PLAYERNOUDP: u8 = 181;
     /// Empty in the login burst. Confirmed: asks for the process list.
     pub const PLO_LISTPROCESSES: u8 = 182;
 
@@ -304,9 +310,11 @@ pub mod ids {
     /// [`PLI_PONG`]. Sub 1 is stored and nothing that reads it was traced, so
     /// do not send it. 4.20r6, 4.20r8, 6.01r1, 6.03r7. Not 5.x, not before 4.20.
     pub const PLO_PING: u8 = 108;
-    /// `{109}{GINT5 mod time}{local name}{url}`. Confirmed layout. Inferred:
-    /// the client stores the download under the local name. 5.24r4 to 6.03r7.
-    /// Seihai name until 2026-11-11: `PLO_DOWNLOADURL`.
+    /// `{109}{GINT5 mod time}{local name}{url}`. Confirmed layout: URL is the
+    /// second string and is fetched over HTTP(S); the first is the local /
+    /// redirect name. Handled 5.24r4 to 6.03r7 — **not** 4.x or 5.12; profile-
+    /// gate before any send. First-string scheme-check (Others Work) still
+    /// open. Seihai name until 2026-11-11: `PLO_DOWNLOADURL`.
     pub const PLO_HTTPDOWNLOAD: u8 = 109;
     /// Header `type,name,cache flag,GINT5,GINT5` (the two GINT5 values are the
     /// DES key), then the body. Confirmed. With the cache flag set, the client
@@ -535,6 +543,7 @@ mod tests {
         assert_eq!(ids::PLO_ONLINEMODE, 168);
         assert_eq!(ids::PLO_WEAPONHASH, 193);
         assert_eq!(ids::PLO_RESETCLIENT, 194);
+        assert_eq!(ids::PLO_PLAYERNOUDP, 181);
         assert_eq!(ids::PLO_NPCWEAPONSCRIPT, 140);
         assert_eq!(ids::PLO_LOADSCRIPT, 197);
         assert_eq!(ids::PLI_UPDATESCRIPT, 158);
