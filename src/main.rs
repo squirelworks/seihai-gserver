@@ -10,6 +10,9 @@ const USAGE: &str = "\
 usage:
   seihai-gserver [--world DIR] [--bind IP] [--port N] [--create-accounts] [--verbose]
       run the server (the world folder defaults to the current folder)
+  seihai-gserver relay [--bind IP] [--port N] [--max-clients N]
+      run the separate 1998 room/peer relay (default 127.0.0.1:14801);
+      clients supply their own levels and game state; no accounts or listserver
   seihai-gserver account NAME --password-env VAR [--world DIR]
       make an account, or set its password, from the environment variable VAR
   seihai-gserver ban NAME [--for 30m|12h|3d|2w] [--reason TEXT] [--admin NAME] [--world DIR]
@@ -46,6 +49,15 @@ fn main() -> ExitCode {
         Some("unban") => return unban_command(&world, &args[1..]),
         Some("key-fingerprint") => return key_fingerprint_command(&world, &args[1..]),
         Some("import-v2") => return import_command(&world, &args[1..]),
+        Some("relay") => {
+            return match run_relay(&args[1..]) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("seihai-gserver relay: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
         _ => {}
     }
     match run_server(&world, args) {
@@ -55,6 +67,63 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+fn relay_options(args: &[String]) -> Result<(std::net::SocketAddr, usize), String> {
+    let mut bind = "127.0.0.1".parse::<std::net::IpAddr>().unwrap();
+    let mut port = 14801;
+    let mut max_clients = 128;
+    let mut args = args.iter();
+    while let Some(flag) = args.next() {
+        if !matches!(flag.as_str(), "--bind" | "--port" | "--max-clients") {
+            return Err(format!("unknown relay argument `{flag}`"));
+        }
+        let value = args
+            .next()
+            .ok_or_else(|| format!("{flag}: needs a value"))?;
+        match flag.as_str() {
+            "--bind" => {
+                bind = value
+                    .parse()
+                    .map_err(|_| "--bind: expected an IP address")?
+            }
+            "--port" => {
+                port = value
+                    .parse::<u16>()
+                    .map_err(|_| "--port: expected 1 to 65535")?;
+                if port == 0 {
+                    return Err("--port: expected 1 to 65535".into());
+                }
+            }
+            "--max-clients" => {
+                max_clients = value
+                    .parse::<usize>()
+                    .map_err(|_| "--max-clients: expected 1 to 9999")?;
+                if !(1..=9999).contains(&max_clients) {
+                    return Err("--max-clients: expected 1 to 9999".into());
+                }
+            }
+            _ => unreachable!(),
+        }
+    }
+    Ok((std::net::SocketAddr::new(bind, port), max_clients))
+}
+
+fn run_relay(args: &[String]) -> Result<(), String> {
+    let (address, max_clients) = relay_options(args)?;
+    let config = seihai_gserver::relay::RelayConfig {
+        max_clients,
+        ..Default::default()
+    };
+    let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
+    rt.block_on(async {
+        let listener = tokio::net::TcpListener::bind(address).await.map_err(|e| e.to_string())?;
+        eprintln!("1998 peer relay listening on {}; local-level mode; no account/world service", listener.local_addr().map_err(|e| e.to_string())?);
+        tokio::select! {
+            result = seihai_gserver::relay::run(listener, config) => result.map_err(|e| e.to_string()),
+            _ = stop_signal() => Ok(()),
+        }
+    })
 }
 
 fn take_value(args: &mut Vec<String>, flag: &str) -> Option<String> {
@@ -284,6 +353,35 @@ fn import_command(world: &std::path::Path, args: &[String]) -> ExitCode {
         Err(e) => {
             eprintln!("import-v2: {e}");
             ExitCode::FAILURE
+        }
+    }
+}
+
+#[cfg(test)]
+mod relay_cli_tests {
+    use super::relay_options;
+
+    #[test]
+    fn relay_is_loopback_by_default_and_requires_explicit_valid_overrides() {
+        let (address, limit) = relay_options(&[]).unwrap();
+        assert_eq!(address.to_string(), "127.0.0.1:14801");
+        assert_eq!(limit, 128);
+        let args = ["--bind", "::1", "--port", "14802", "--max-clients", "8"].map(String::from);
+        assert_eq!(
+            relay_options(&args).unwrap(),
+            ("[::1]:14802".parse().unwrap(), 8)
+        );
+        for args in [
+            vec!["--port"],
+            vec!["--port", "0"],
+            vec!["--bind", "localhost"],
+            vec!["--max-clients", "0"],
+            vec!["--max-clients", "10000"],
+            vec!["--create-accounts"],
+        ] {
+            assert!(
+                relay_options(&args.into_iter().map(String::from).collect::<Vec<_>>()).is_err()
+            );
         }
     }
 }

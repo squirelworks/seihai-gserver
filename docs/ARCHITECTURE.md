@@ -4,6 +4,12 @@ How the server is put together, and where each later stage plugs in. Read
 `AGENTS.md` first (licences, no real servers, loopback-only testing) and
 `docs/PLAN.md` for the stage list.
 
+The optional `relay` subcommand runs `relay.rs` on its own listener. Its
+bounded connection/room/party state is separate from accounts, the world task,
+GSERV codecs and listserver registration. Dropping the relay cancels its owned
+connection tasks. It forwards peer payload bytes and never translates game
+state. See [ANCIENT-NETWORKING.md](ANCIENT-NETWORKING.md).
+
 ## Layout
 
 | file | what it owns | stage |

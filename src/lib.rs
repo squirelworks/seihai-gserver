@@ -36,6 +36,7 @@ pub mod rcaccounts;
 pub mod rcfiles;
 pub mod rcprops;
 pub mod rcserver;
+pub mod relay;
 pub mod rules;
 pub mod secure;
 pub mod server;

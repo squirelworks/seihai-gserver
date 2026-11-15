@@ -79,6 +79,18 @@ RC and server-side NPC scripts are later stages.
 
 ## Build and run
 
+For the older, account-free room/peer protocol, use the separate relay:
+
+```sh
+seihai-gserver relay --bind 127.0.0.1 --port 14801
+```
+
+It forwards peer state without interpreting or rewriting it. Clients supply
+their own compatible levels; it does not serve a world or require a listserver.
+The normal world-server command below is unchanged. See
+[early networking and explicit endpoints](docs/ANCIENT-NETWORKING.md) for the
+1998 relay versus 1999 GSERV distinction, room compatibility and test limits.
+
 ```
 cargo build --release
 cargo test
