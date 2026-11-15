@@ -15,7 +15,10 @@
 //! takes a correction, the override here goes, and the field reads the
 //! profile again. Code elsewhere asks this table, never `version == …`.
 
-use crate::wire::ids::PLO_PING;
+use crate::wire::ids::{
+    PLO_LOADSCRIPT, PLO_NPCWEAPONSCRIPT, PLO_PING, PLO_RAWDATA, PLO_UNKNOWN132, PLO_UNKNOWN133,
+    PLO_WEAPONHASH,
+};
 use seihai_core::protocol::{ClientVersion, VersionProfile};
 
 /// Everything one connection's writes depend on, resolved once at login
@@ -48,6 +51,33 @@ impl ClientProfile {
     /// Whether the build reads server-to-client message `id`.
     pub fn reads(&self, id: u8) -> bool {
         self.core.protocol.plo.contains(id)
+    }
+
+    /// Classic weapon hash-and-ask path: 193 and 132 behind `PLO_RAWDATA`.
+    ///
+    /// Hard guard (Graal_analysis `protocol/script-packet-guards.md`): never
+    /// send those ids when this is false (5.24+ / v6 dropped them). Prefer
+    /// this path while it is true, including transitional 5.00r7 / 5.12 that
+    /// also list 197/140.
+    pub fn reads_classic_weapon_bytecode(&self) -> bool {
+        [PLO_WEAPONHASH, PLO_UNKNOWN132, PLO_RAWDATA]
+            .into_iter()
+            .all(|id| self.reads(id))
+    }
+
+    /// Classic class bytecode: 133 behind `PLO_RAWDATA` (3.153–5.12).
+    pub fn reads_classic_class_bytecode(&self) -> bool {
+        [PLO_UNKNOWN133, PLO_RAWDATA]
+            .into_iter()
+            .all(|id| self.reads(id))
+    }
+
+    /// Modern script cache path: 197 + 140. Never send those to a build
+    /// that returns false (pure 4.x).
+    pub fn reads_modern_script_cache(&self) -> bool {
+        [PLO_LOADSCRIPT, PLO_NPCWEAPONSCRIPT]
+            .into_iter()
+            .all(|id| self.reads(id))
     }
 }
 
@@ -245,6 +275,47 @@ mod tests {
         // before 4.20 reads it.
         for v in [V404R2, V500R7, V512, V524R4, V530R3, V531R4, V600R2, V205] {
             assert!(!ServerProfile::of(v).ping, "{v:?}");
+        }
+    }
+
+    /// Hard guards from Graal_analysis `protocol/script-packet-guards.md`:
+    /// never classic bytecode ids to 5.24+/v6; never modern cache ids to
+    /// pure 4.x. Gate on the shared profile `plo` set.
+    #[test]
+    fn script_packet_guards_match_core_profiles() {
+        use ClientVersion::*;
+        // Pure 4.x: classic yes, modern no.
+        for v in [V404R2, V420R6, V420R8] {
+            let c = ClientProfile::of(v);
+            assert!(c.reads_classic_weapon_bytecode(), "{v:?}");
+            assert!(c.reads_classic_class_bytecode(), "{v:?}");
+            assert!(!c.reads_modern_script_cache(), "{v:?}");
+            assert!(
+                !c.reads(PLO_LOADSCRIPT) && !c.reads(PLO_NPCWEAPONSCRIPT),
+                "{v:?}"
+            );
+        }
+        // 5.24+ / v6: classic no, modern yes.
+        for v in [V524R4, V530R3, V531R4, V600R2, V603R7, V603R7Linux] {
+            let c = ClientProfile::of(v);
+            assert!(!c.reads(PLO_UNKNOWN132), "{v:?}");
+            assert!(!c.reads(PLO_UNKNOWN133), "{v:?}");
+            assert!(!c.reads(PLO_WEAPONHASH), "{v:?}");
+            assert!(!c.reads_classic_weapon_bytecode(), "{v:?}");
+            assert!(!c.reads_classic_class_bytecode(), "{v:?}");
+            assert!(c.reads_modern_script_cache(), "{v:?}");
+        }
+        // Transitional 5.00r7 / 5.12: core lists 193/132/133 and 197/140, but
+        // not 100 (`PLO_RAWDATA`), so this server's RAWDATA-wrapped classic
+        // send stays off until a lab says otherwise.
+        for v in [V500R7, V512] {
+            let c = ClientProfile::of(v);
+            assert!(c.reads(PLO_WEAPONHASH) && c.reads(PLO_UNKNOWN132), "{v:?}");
+            assert!(c.reads(PLO_UNKNOWN133), "{v:?}");
+            assert!(c.reads_modern_script_cache(), "{v:?}");
+            assert!(!c.reads(PLO_RAWDATA), "{v:?}");
+            assert!(!c.reads_classic_weapon_bytecode(), "{v:?}");
+            assert!(!c.reads_classic_class_bytecode(), "{v:?}");
         }
     }
 }

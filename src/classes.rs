@@ -23,7 +23,7 @@
 
 use crate::npcs::{Script, LEVEL_ERA};
 use crate::profile::ClientProfile;
-use crate::wire::ids::{PLO_RAWDATA, PLO_UNKNOWN133};
+use crate::wire::ids::PLO_UNKNOWN133;
 use crate::wire::{gchar, latin1, raw_block};
 use seihai_core::scripting::delivery::Delivery;
 use std::collections::BTreeMap;
@@ -84,9 +84,7 @@ impl Class {
 
 /// The build reads class bytecode as 133 behind `PLO_RAWDATA`.
 fn reads_class(to: &ClientProfile) -> bool {
-    [PLO_UNKNOWN133, PLO_RAWDATA]
-        .into_iter()
-        .all(|id| to.reads(id))
+    to.reads_classic_class_bytecode()
 }
 
 fn crc32(bytes: &[u8]) -> u32 {

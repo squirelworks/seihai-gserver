@@ -66,6 +66,7 @@ The **Source** column says where the value comes from: `core` is
 | Frames | gen 5 long frames, round-down | core `protocol.gen5_*` | `codec.rs`, `server.rs` | done |
 | Login burst | the burst per era, lobby or not | core `protocol.*`, `burst::shape_version` | `burst.rs`, `login.rs` | done |
 | **Scripts** | GS1 text, GS2 bytecode or a stub, per NPC | core `scripts` through `seihai_core::scripting::delivery` | `npcs.rs` (`Npc::message_on`) | done in code; the lab run is left (see below) |
+| Script packet era | classic 193/132/133 vs modern 197/140 | core `protocol.plo` via `ClientProfile::reads_classic_*` / `reads_modern_script_cache` | `weapons.rs`, `classes.rs` | done: hard guards pinned in `profile.rs` tests (never classic to 5.24+/v6; never modern to pure 4.x) |
 
 ## The scripts row
 
