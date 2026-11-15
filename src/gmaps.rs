@@ -241,10 +241,8 @@ mod tests {
         let (g, _) = Gmaps::load(&missing);
         assert!(g.file_frames(ClientVersion::V222, "world.gmap").is_none());
 
-        let dir = std::env::temp_dir().join(format!(
-            "seihai-gserver-gmaps-bytes-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("seihai-gserver-gmaps-bytes-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("world.gmap"), GRID).unwrap();
