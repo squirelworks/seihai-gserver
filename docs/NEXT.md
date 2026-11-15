@@ -11,6 +11,39 @@ separate. See [ANCIENT-NETWORKING.md](ANCIENT-NETWORKING.md).
 
 # Current dependency follow-through
 
+## Research boundaries: intermediate clients and profile gaps
+
+- **Type 4 / generation 4:** `src/login.rs` accepts the corresponding
+  tokens and `src/codec.rs` implements a synthetic framing contract. Its
+  tests do not establish an original-client exchange. Original 2.19–2.21
+  clients are lost; no executable-dependent native experiment for those
+  builds is ready. Historical server records and adjacent versions can
+  constrain hypotheses, but cannot establish their native framing. Early
+  3.x artifacts must be identified and traced independently before any
+  capture is proposed; a result for one must not be transferred to the
+  lost builds. Type-4 login framing is separate from Torque UDP gameplay.
+  No default admission or framing behavior is changed by this note.
+- **Profile overrides:** `src/profile.rs` combines shared core facts with
+  server-only decisions and recorded overrides. Its tests deliberately
+  pin the 2.05 file-time, image and prop-10 differences and the pre-switch
+  ping exceptions. Moving a field into core requires matching client and
+  server semantics plus a consumer audit; duplication alone is not proof
+  that the override should be removed. See `docs/CLIENT-PROFILES.md`.
+- **Level NPC output:** `Npc::from_level` in `src/npcs.rs` still converts
+  coordinates through `half_tiles`; this does not establish the native
+  precedence of NPC X2/Y2 versus X/Y. NPC image names still need a
+  world-asset policy when only one extension exists. Capture those cases
+  independently before changing serialization or rewriting image names.
+- **Lowered flags:** `world.rs`'s `client.gs1_` stripping and
+  `tests/gs1_flags.rs` are an explicit compatibility bridge for compiled
+  GS1 flags. Preserve that contract unless evidence justifies an
+  alternative; the prefix itself is not a demonstrated defect.
+
+These are source-level findings at the post-#140 / post-#141 baseline, not
+new native observations. #132's introduction ordering/property-layout
+question remains open, separately from these profile and framing questions.
+
+
 ## Core v0.4.0 consumer update
 
 Both the direct core dependency and the whole-graph `www.github.com` patch
