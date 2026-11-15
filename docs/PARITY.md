@@ -46,7 +46,7 @@ test) and the lab notes.
 | Area | Status | Shown by | Notes |
 |---|---|---|---|
 | Levels: `.nw`, `.graal`, `.zelda`; links and warps | lab | `world_levels.rs`, `level_warps.rs`; `lab/stage2-2026-11-04.md` | |
-| Gmaps and adjacent levels (`PLI_ADJACENTLEVEL`) | lab | `gmaps.rs`; `lab/stage2` | Gmaps as linked single levels for pre-gmap builds are not written (`CLIENT-PROFILES.md`) |
+| Gmaps and adjacent levels (`PLI_ADJACENTLEVEL`) | lab | `gmaps.rs`; `lab/stage2` | Pre-3.0 builds get the `.gmap` file before every `PLAYERWARP2` (login and warp); once-per-session was not enough when `saveimages` is off. Gmaps as linked single levels for pre-gmap builds are not written (`CLIENT-PROFILES.md`) |
 | Signs, chests (`PLI_OPENCHEST`) | lab | `chests.rs`; `lab/stage2` | |
 | Items on the ground (`PLI_ITEMADD`, `ITEMDEL`, `ITEMTAKE`) | lab | `floor_items.rs`; `lab/stage2` | |
 | Player flags and server flags (`PLI_FLAGSET`, `FLAGDEL`) | lab | `lab/stage2` | Server flags come from the NPC-server (stage 5) |

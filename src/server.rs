@@ -607,6 +607,19 @@ impl Conn {
         // Whatever came behind the login line in its frame: the language,
         // and for some builds the tamper check or file checks.
         let early = codec.messages(after);
+        // Pre-3.0 gmap clients need the .gmap file before PLAYERWARP2
+        // (Graal_analysis protocol/gmap-file-on-warp.md).
+        if let Some(g) = &gmap {
+            if crate::gmaps::needs_gmap_file_before_warp(version) {
+                if let Some(found) = self.server.files.find(&g.gmap) {
+                    if let Some(file) = crate::files::send_file(version, &found) {
+                        for f in file {
+                            self.send(&mut codec, &f).await?;
+                        }
+                    }
+                }
+            }
+        }
         let frames = burst::login_burst(
             &cfg,
             version,
