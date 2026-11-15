@@ -11,7 +11,7 @@
 //!   world task calls [`Hub::joined`], [`Hub::props`], [`Hub::level`],
 //!   [`Hub::left`] and [`Hub::level_reloaded`]; each updates the state and
 //!   forwards a message when an NPC-server is connected.
-//! - The NPC-server's own messages (`0x40` to `0x4C`) go to the world task
+//! - The NPC-server's own messages (`0x40` to `0x4E`) go to the world task
 //!   as [`WorldIn::FromNpc`], in the order they arrived, and the world
 //!   applies them (`world.rs`, "The NPC-server"). When the link closes the
 //!   world hears [`WorldIn::NpcGone`] and takes the server NPCs down.
@@ -92,11 +92,14 @@ pub struct NcNpc {
     pub level: Vec<u8>,
 }
 
-/// A change to the NPC Control list.
+/// A change an NPC Control session should hear.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NcChange {
     Added(u32, NcNpc),
     Deleted(u32),
+    /// A console line (`SEND_TO_NC`). The bytes are the line, which may
+    /// be empty. The session shows it as `PLO_RC_CHAT` (74).
+    Console(Vec<u8>),
 }
 
 /// Shared link state. One per server; cheap when no NPC-server connects.
@@ -273,6 +276,14 @@ impl Hub {
         if st.players.remove(&id).is_some() {
             send(&mut st, Message::PlayerLeft { player_id: id });
         }
+    }
+
+    /// A `SEND_TO_NC` line for every logged-in NPC Control session.
+    /// An empty line is still sent. A session that has gone is dropped.
+    pub fn nc_console(&self, text: &[u8]) {
+        let mut st = self.state.lock().unwrap();
+        let change = NcChange::Console(text.to_vec());
+        st.nc_watchers.retain(|w| w.send(change.clone()).is_ok());
     }
 
     /// NPC Control: the NPC list now, and a receiver for its changes.
@@ -574,7 +585,7 @@ async fn handle(hub: &Hub, mut stream: TcpStream, peer: SocketAddr) -> io::Resul
                 | Message::NcText { .. }
                 | Message::NcNpcDelete { .. }) => hub.nc_from_npc(&m),
                 // The NPC-server's own messages: the world applies them.
-                m if (0x40..=0x4C).contains(&m.id()) && !matches!(m, Message::Unknown { .. }) => {
+                m if (0x40..=0x4E).contains(&m.id()) && !matches!(m, Message::Unknown { .. }) => {
                     if !hub.to_world(WorldIn::FromNpc(m)) && !world_gone {
                         world_gone = true;
                         hub.log(&peer, "no world task; NPC-server messages are dropped");

@@ -120,7 +120,7 @@ World task ──Hub::joined / props / level / left / level_reloaded──▶ Hu
                                              │  only when an NPC-server is connected
                                              ▼
                      link task (serve_link) ──frames──▶ seihai-npcserver
-World task ◀──WorldIn::FromNpc (0x40 to 0x4C), NpcGone── link task
+World task ◀──WorldIn::FromNpc (0x40 to 0x4E), NpcGone── link task
                                              ▲
          supervise (npcserver = auto): starts seihai-npcserver with
          --gserver 127.0.0.1:<link port> --world <world> --once and the token in

@@ -74,6 +74,11 @@
 //!   already ran it). They are logged once and dropped. A client's
 //!   `PLI_TRIGGERACTION` (38) is different: the others in the level who
 //!   read 48 get it, and the link gets `TRIGGER_ACTION`.
+//! - `SEND_TO_NC` (`0x4D`): the text as `PLO_RC_CHAT` (74) to every logged-in
+//!   NPC Control session. `SEND_TO_RC` (`0x4E`): the same packet, on the RC
+//!   chat path (`to_rcs`), to every logged-in Remote Control session. An
+//!   empty text is still sent. This is every session of that kind. A finer
+//!   NC-versus-RC-rights rule is still unresolved, and this is not that check.
 //!
 //! Every message goes out only to builds whose profile lists its id.
 //!
@@ -272,7 +277,7 @@ pub enum WorldIn {
         flags: Vec<String>,
         reply: oneshot::Sender<()>,
     },
-    /// A message from the NPC-server (`0x40` to `0x4C`), from the link.
+    /// A message from the NPC-server (`0x40` to `0x4E`), from the link.
     FromNpc(Message),
     /// `PLI_WEAPONADD`.
     WeaponAdd { player: u16, raw: Vec<u8> },
@@ -1483,6 +1488,24 @@ impl WorldTask {
                 let _ = p.outbox.send(vec![m]);
             }
         }
+    }
+
+    /// `SEND_TO_NC`: the text to every logged-in NPC Control session, as
+    /// the console line those clients already read (`PLO_RC_CHAT`, 74).
+    /// An empty text is still sent. This is every such session, not a
+    /// rights check.
+    fn send_to_nc(&self, text: &[u8]) {
+        if let Some(hub) = &self.npc {
+            hub.nc_console(text);
+        }
+    }
+
+    /// `SEND_TO_RC`: the text on the RC chat path (`to_rcs`, `PLO_RC_CHAT`
+    /// 74) to every logged-in Remote Control session. An empty text is
+    /// still sent: this path does not drop an empty body. This is every
+    /// such session, not a rights check.
+    fn send_to_rc(&self, text: &[u8]) {
+        self.to_rcs(None, Some(crate::wire::msg(crate::rc::PLO_RC_CHAT, text)));
     }
 
     /// `body` to every RC but `except`.
@@ -3178,6 +3201,8 @@ impl WorldTask {
                 "NPC_TRIGGER_ACTION",
                 "PLO_TRIGGERACTION (48) has no capture yet",
             ),
+            Message::SendToNc { text } => self.send_to_nc(&text),
+            Message::SendToRc { text } => self.send_to_rc(&text),
             other => eprintln!("npcserver: message 0x{:02x} is not the world's", other.id()),
         }
     }

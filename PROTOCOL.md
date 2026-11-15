@@ -213,10 +213,11 @@ players the gserver has listed, as it does for other text it sends. An
 empty text is still sent. The line is not tied to a level, so a level-less
 NPC sends it too (a Control-NPC's `playerlogin` line is the usual case).
 The intended recipient category is logged-in NPC Control for `sendtonc`
-and Remote Control for `sendtorc`. Consumer delivery is pending: the
-gserver logs and skips `0x4D` and `0x4E`. The exact policy (every NPC
-Control connection versus Remote Control rights, and who is eligible) is
-unresolved; that decision is still open.
+and Remote Control for `sendtorc`. The gserver delivers `SEND_TO_NC` to
+every logged-in NPC Control session and `SEND_TO_RC` to every logged-in
+Remote Control session, each as `PLO_RC_CHAT` (74). An empty text is
+still delivered. A player receives neither. This is not a historical
+rights check. A finer NC-versus-RC-rights rule is still unresolved.
 
 ### 0x80 to 0x8F: NPC Control
 
@@ -308,4 +309,5 @@ messages; the NPC-server already sends them) turns the link off, and
 | 1 | 2026-11-11 | No protocol change. The two copies are the same file again; the "this copy only" notes above no longer hold. `seihai-gserver` reads milestone 1 only and does not yet act on the milestone 2 messages. |
 | 1 | 2026-11-12 | NPC Control messages `0x80` to `0x84` specified and built on both sides (seihai-gserver issue #52). No version bump: the ids were reserved. |
 | 1 | 2026-11-14 | `SEND_TO_NC` (`0x4D`) and `SEND_TO_RC` (`0x4E`) specified. No version bump: the ids were reserved. The NPC-server produces them. Intended recipient categories are logged-in NPC Control for `sendtonc` and Remote Control for `sendtorc`. Consumer delivery is pending: the gserver logs and skips `0x4D` and `0x4E`. The exact policy (every NPC Control connection versus Remote Control rights, and who is eligible) is unresolved; that decision is still open. |
+| 1 | 2026-11-14 | No protocol change. The gserver delivers `SEND_TO_NC` to every logged-in NPC Control session and `SEND_TO_RC` to every logged-in Remote Control session, each as `PLO_RC_CHAT` (74). An empty text is still delivered. A player receives neither. This is not a historical rights check. A finer NC-versus-RC-rights rule is still unresolved. |
 | 1 | 2026-11-14 | No protocol change. The gserver sends `PM_TO_NPC` for a new non-empty chat line and `TRIGGER_ACTION` for `PLI_TRIGGERACTION` (38). |

@@ -1177,6 +1177,7 @@ impl Conn {
                     let m = match change {
                         crate::npclink::NcChange::Added(id, n) => crate::nc::npc_add(id, &n),
                         crate::npclink::NcChange::Deleted(id) => crate::nc::npc_delete(id),
+                        crate::npclink::NcChange::Console(text) => crate::nc::console_line(&text),
                     };
                     if let Err(e) = self.send(&mut codec, &m).await {
                         break Err(e);
