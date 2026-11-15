@@ -60,6 +60,9 @@ checked. "n/a" means the column's client could not do that action.
    `basepackage.gupd`, `arial.ttf`, `sprites.png`, `state.png` and other
    files, and got not-found for each. Adding a one-line `basepackage.gupd`
    did not change the panel. Its game state was live: it walked, and the
-   other clients saw it move.
+   other clients saw it move. **Cause (owner 2026-11-16):** missing base
+   assets from a Graal 2.22 client folder (`pics1.png` and siblings), not
+   a seihai-gserver defect. See `five-clients-2026-11-14.md` and
+   Graal_analysis `client-internals/v5v6-expiry-and-black-screen.md`.
 5. **6.03r7 is black under Wine/Xvfb**, as in earlier runs. It was sent
-   every player and every chat line.
+   every player and every chat line. Same missing-asset cause as finding 4.

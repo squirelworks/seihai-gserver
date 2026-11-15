@@ -121,10 +121,11 @@ This row's acceptance is a lab run, not a unit test. Put one door NPC
 (the script in the `delivery` tests) in a level. Then 1.39, 2.22, 2.31,
 5.24r4 and 6.03r7 join together, and each one opens the door. That is the
 same five-client setup as `docs/lab/five-clients-2026-11-12.md`. The
-5.24r4 and 6.03r7 results depend on those builds drawing under Wine,
-which that run did not manage. Until then, a wire check is the evidence:
-`PLO_NPCBYTECODE` arrived and the client answered with the expected
-`PLI_NPCPROPS`.
+5.24r4 and 6.03r7 draws failed under Wine because the installs lacked the
+Graal 2.22 base asset set (`pics1.png`, …; owner 2026-11-16 — see
+`lab/five-clients-2026-11-14.md`). Until a re-run with assets staged, a
+wire check is the evidence: `PLO_NPCBYTECODE` arrived and the client
+answered with the expected `PLI_NPCPROPS`.
 
 ## Order of work
 
