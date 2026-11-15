@@ -10,10 +10,11 @@ protocols. Choosing a version label does not convert one into the other.
 | 1.21–1.32, including 1.28 beta 2 | Direct central GSERV connection, account/password and version token, length-prefixed zlib frames; server supplies levels. 1.28 beta 2 also exchanges gameplay directly between peers over UDP | Normal world server supports the central protocol; original early-player rendering and peer UDP parity remain incomplete |
 
 These original contracts come from the canonical research:
-[relay protocol](https://github.com/squirelworks/Graal_analysis/blob/main/protocol/relay-1998.md),
-[GSERV protocol](https://github.com/squirelworks/Graal_analysis/blob/main/protocol/gserv-1999.md),
-[room interoperability](https://github.com/squirelworks/Graal_analysis/blob/main/client-internals/relay-room-bridge.md),
-and [qualified early native runs](https://github.com/squirelworks/Graal_analysis/blob/main/client-internals/live-trace-early.md).
+[relay protocol](https://github.com/squirelworks/Graal_analysis/blob/ab9a7d74b606ac4751579b8c2e349a13761931ca/protocol/relay-1998.md),
+[GSERV protocol](https://github.com/squirelworks/Graal_analysis/blob/ab9a7d74b606ac4751579b8c2e349a13761931ca/protocol/gserv-1999.md),
+[room interoperability](https://github.com/squirelworks/Graal_analysis/blob/ab9a7d74b606ac4751579b8c2e349a13761931ca/client-internals/relay-room-bridge.md),
+[qualified early native runs](https://github.com/squirelworks/Graal_analysis/blob/ab9a7d74b606ac4751579b8c2e349a13761931ca/client-internals/live-trace-early.md),
+and the [full-party and availability contract](https://github.com/squirelworks/Graal_analysis/blob/ab9a7d74b606ac4751579b8c2e349a13761931ca/client-internals/precursors-and-fan-builds.md#the-gserv-lobby).
 The research distinguishes static findings, captured behavior and inference.
 
 ## Run a small relay
