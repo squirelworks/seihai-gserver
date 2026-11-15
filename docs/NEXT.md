@@ -1,3 +1,14 @@
+# Relay-era listener
+
+An optional `relay` subcommand adds the account-free line/room/peer transport
+separately from the central world server. Generated stream regressions cover
+same-room pairing, unchanged peer data, explicit room isolation and cleanup;
+they do not establish native client compatibility. The first native acceptance
+candidate is Java Graal and **4th Graal alpha** in the same `G2` level room.
+The historical Java/5th Graal result used a room-renaming proxy; this listener
+does not rename rooms. Original-client Windows admission and #132 remain
+separate. See [ANCIENT-NETWORKING.md](ANCIENT-NETWORKING.md).
+
 # Current dependency follow-through
 
 ## Core v0.4.0 consumer update
