@@ -14,7 +14,7 @@ These original contracts come from the canonical research:
 [GSERV protocol](https://github.com/squirelworks/Graal_analysis/blob/ab9a7d74b606ac4751579b8c2e349a13761931ca/protocol/gserv-1999.md),
 [room interoperability](https://github.com/squirelworks/Graal_analysis/blob/ab9a7d74b606ac4751579b8c2e349a13761931ca/client-internals/relay-room-bridge.md),
 [qualified early native runs](https://github.com/squirelworks/Graal_analysis/blob/ab9a7d74b606ac4751579b8c2e349a13761931ca/client-internals/live-trace-early.md),
-and the [full-party and availability contract](https://github.com/squirelworks/Graal_analysis/blob/ab9a7d74b606ac4751579b8c2e349a13761931ca/client-internals/precursors-and-fan-builds.md#the-gserv-lobby).
+and the [full-party and availability contract](https://github.com/squirelworks/Graal_analysis/blob/ab9a7d74b606ac4751579b8c2e349a13761931ca/client-internals/precursors-and-fan-builds.md#network-gserv-standalone-and-the-java-clients).
 The research distinguishes static findings, captured behavior and inference.
 
 ## Run a small relay
