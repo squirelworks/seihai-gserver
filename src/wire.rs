@@ -268,6 +268,12 @@ pub mod ids {
     pub const PLO_SERVERWARP: u8 = 178;
     /// Status-list text. Confirmed.
     pub const PLO_STATUSLIST: u8 = 180;
+    /// `{181}{GSHORT player id}{GCHAR toggle}`. While set, the client leaves
+    /// that player out of peer-to-peer UDP nearby sends (TCP via the server
+    /// still applies). Confirmed layout and effect on 2.17–5.24r4; dropped
+    /// later. Named, not sent yet (no peer-UDP lab on this path).
+    /// Graal_analysis `protocol/plo-181-player-noudp.md`.
+    pub const PLO_PLAYERNOUDP: u8 = 181;
     /// Empty in the login burst. Confirmed: asks for the process list.
     pub const PLO_LISTPROCESSES: u8 = 182;
 
@@ -532,6 +538,7 @@ mod tests {
         assert_eq!(ids::PLO_ONLINEMODE, 168);
         assert_eq!(ids::PLO_WEAPONHASH, 193);
         assert_eq!(ids::PLO_RESETCLIENT, 194);
+        assert_eq!(ids::PLO_PLAYERNOUDP, 181);
         assert_eq!(ids::PLO_NPCWEAPONSCRIPT, 140);
         assert_eq!(ids::PLO_LOADSCRIPT, 197);
         assert_eq!(ids::PLI_UPDATESCRIPT, 158);
