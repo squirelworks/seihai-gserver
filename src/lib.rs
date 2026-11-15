@@ -13,6 +13,7 @@ pub mod baddies;
 pub mod bans;
 pub mod board;
 pub mod burst;
+pub mod classes;
 pub mod codec;
 pub mod config;
 pub mod files;
