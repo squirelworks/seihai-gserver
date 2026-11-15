@@ -285,6 +285,8 @@ pub enum WorldIn {
     ToWeapon { player: u16, raw: Vec<u8> },
     /// `PLI_UPDATESCRIPT`.
     UpdateScript { player: u16, raw: Vec<u8> },
+    /// `PLI_UPDATECLASS`.
+    UpdateClass { player: u16, raw: Vec<u8> },
     /// `PLI_PRIVATEMESSAGE`.
     PrivateMessage { player: u16, raw: Vec<u8> },
     /// `PLI_REQUESTUPDATEBOARD`.
@@ -440,6 +442,7 @@ impl World {
                 server_flags: BTreeMap::new(),
                 flags_file: None,
                 weapons: crate::weapons::Weapons::default(),
+                classes: crate::classes::Classes::default(),
                 board_rules: None,
                 noted: HashSet::new(),
                 board_refused: HashSet::new(),
@@ -781,6 +784,22 @@ impl World {
         });
     }
 
+    /// `PLI_UPDATECLASS` (161), as sent.
+    pub fn update_class(&self, player: u16, raw: &[u8]) {
+        let _ = self.tx.send(WorldIn::UpdateClass {
+            player,
+            raw: raw.to_vec(),
+        });
+    }
+
+    /// The world's class folder (`scripts/`): read now. Call before
+    /// [`World::start`]; later calls do nothing.
+    pub fn set_scripts_dir(&self, dir: PathBuf) {
+        if let Some(t) = self.task.lock().unwrap().as_mut() {
+            t.classes = crate::classes::Classes::load(&dir);
+        }
+    }
+
     /// `PLI_PRIVATEMESSAGE` (28), as sent.
     pub fn private_message(&self, player: u16, raw: &[u8]) {
         let _ = self.tx.send(WorldIn::PrivateMessage {
@@ -1081,6 +1100,8 @@ pub struct WorldTask {
     flags_file: Option<PathBuf>,
     /// The world's weapons (`weapons/`).
     weapons: crate::weapons::Weapons,
+    /// The world's classes (`scripts/`).
+    classes: crate::classes::Classes,
     /// The world's board rules (`config/boardrules.txt`), for the board
     /// check; `None` without the file.
     board_rules: Option<crate::board::BoardRules>,
@@ -1335,6 +1356,7 @@ impl WorldTask {
             WorldIn::WeaponAdd { player, raw } => self.weapon_add(player, &raw),
             WorldIn::ToWeapon { player, raw } => self.weapon_upload(player, &raw),
             WorldIn::UpdateScript { player, raw } => self.update_script(player, &raw),
+            WorldIn::UpdateClass { player, raw } => self.update_class(player, &raw),
             WorldIn::PrivateMessage { player, raw } => self.player_pm(player, &raw),
             WorldIn::RequestBoard { player, raw } => self.request_board(player, &raw),
             WorldIn::NpcGone => self.npc_gone(),
@@ -3522,6 +3544,27 @@ impl WorldTask {
             .get(&name)
             .and_then(|w| w.bytecode_message(p.profile))
         {
+            let _ = p.outbox.send(vec![m]);
+        }
+    }
+
+    /// `PLI_UPDATECLASS` (161): `GINT5` CRC of the client's stored body,
+    /// then the class name. Builds that read 133 get the class bytecode
+    /// (or an empty class when the world has no such name); a matching
+    /// CRC is not answered (`classes.rs`).
+    fn update_class(&mut self, id: u16, raw: &[u8]) {
+        let Some(p) = self.players.get(&id) else {
+            return;
+        };
+        let Some((crc_bytes, name_bytes)) = raw.split_at_checked(5) else {
+            return;
+        };
+        let crc = crate::wire::read_gint5(crc_bytes) as u32;
+        let name = latin1_text(name_bytes).trim().to_string();
+        if name.is_empty() {
+            return;
+        }
+        if let Some(m) = self.classes.answer(&name, crc, p.profile) {
             let _ = p.outbox.send(vec![m]);
         }
     }

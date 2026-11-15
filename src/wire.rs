@@ -291,6 +291,14 @@ pub mod ids {
     /// 2026-11-13, #120). Core names it `UNKNOWN132`; gs2lib's name was not
     /// checked.
     pub const PLO_UNKNOWN132: u8 = 132;
+    /// Behind [`PLO_RAWDATA`]: `GCHAR` length and a class name, then the
+    /// class's GS2 bytecode file whole, the compiler's `\n` included, then
+    /// the raw block's own closing `\n`. The answer to
+    /// [`PLI_UPDATECLASS`] on builds that still read 133 (3.153 to 5.12,
+    /// including 4.20r8). Layout from Graal_analysis
+    /// `protocol/class-bytecode-v4.md` / `unknown-ids-2026-11-06.md`. Core
+    /// names it `UNKNOWN133`.
+    pub const PLO_UNKNOWN133: u8 = 133;
     // Named for a later stage. Not sent yet.
     /// `{108}{sub}{GSHORT value}`. Confirmed for sub 0: the client answers
     /// [`PLI_PONG`]. Sub 1 is stored and nothing that reads it was traced, so
@@ -414,6 +422,10 @@ pub mod ids {
     /// asks when its cache does not match [`PLO_WEAPONHASH`], and is
     /// answered with [`PLO_UNKNOWN132`].
     pub const PLI_UPDATESCRIPT: u8 = 158;
+    /// `GINT5` CRC of the client's stored class body (0 when none), then
+    /// the class name. Confirmed layout; answered with [`PLO_UNKNOWN133`]
+    /// on 3.153–5.12 (`classes.rs`).
+    pub const PLI_UPDATECLASS: u8 = 161;
     /// `GCHAR` length and a level name, `GINT5` mod time, then `GSHORT` x,
     /// y, width and height. Layout from the notes (4.04r2 on); no server
     /// answer is known (GServer-v2 logs it and sends nothing, and the 1999
@@ -524,5 +536,7 @@ mod tests {
         assert_eq!(ids::PLO_LOADSCRIPT, 197);
         assert_eq!(ids::PLI_UPDATESCRIPT, 158);
         assert_eq!(ids::PLO_UNKNOWN132, 132);
+        assert_eq!(ids::PLO_UNKNOWN133, 133);
+        assert_eq!(ids::PLI_UPDATECLASS, 161);
     }
 }

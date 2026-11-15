@@ -85,7 +85,8 @@ test) and the lab notes.
 | GS2 weapons and the weapon cache (`PLO_WEAPONHASH` 193, `PLI_UPDATESCRIPT` 158, 132) | lab | `weapons.rs`; `tests/weapons.rs`; lab comment on #120 | To builds that run GS2 and read 193 and 132 behind `PLO_RAWDATA` (4.04r2 to 4.20r8, the Mac 5.12): 33 with name and image, 193 with the CRC-32 of the bytecode; a 158 for a held weapon gets the bytecode in 132. Real 4.20r8 takes this server's 193 and 132, writes its cache and asks no more on the next login (lab, 2026-11-13). Not yet seen: the weapon running (the lab world had no stock art) |
 | `PLO_NPCWEAPONSCRIPT` (140) | no | | GServer-v2 never sent it to 4.20r8. 5.00r7, 5.12 and 5.24 on still get no scripted weapon |
 | `PLI_NPCWEAPONDEL` | no | | |
-| Classes and GS2 script updates (`PLI_UPDATECLASS`, `UPDATEGANI`) | no | | `PLI_UPDATESCRIPT` is answered for weapons (above) |
+| Classes (`PLI_UPDATECLASS` → 133) | tests | `classes.rs`; `tests/classes.rs` | v4 path (3.153–5.12, including 4.20r8): 161 with CRC (0 when cold) answers as raw 133 behind `PLO_RAWDATA` from `scripts/<name>.txt`; matching CRC silent; missing name → empty 133. Not yet: real-client lab; `UPDATEGANI`; 5.24+ 197 delivery |
+| GS2 script updates (`PLI_UPDATEGANI`) | no | | `PLI_UPDATESCRIPT` is answered for weapons (above) |
 | Server-side scripts (the NPC-server) | tests | `npc_link.rs`, `npc_messages.rs`, `nc.rs`; `lab/npclink-2026-10-31.md`, `lab/nc-2026-11-12.md` | A separate program, `seihai-npcserver`, runs GS1. GServer-v2 runs GS2 server scripts in-process; there is no GS2 server engine here |
 
 ## The 1999 rules (`rules = 1999`)
