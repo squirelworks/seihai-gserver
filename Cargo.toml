@@ -9,7 +9,7 @@ publish = false
 
 [dependencies]
 # Protocol, framing, version profiles and scripting shared with the Seihai client.
-seihai-core = { git = "https://github.com/squirelworks/seihai-core", tag = "v0.2.16", default-features = false }
+seihai-core = { git = "https://github.com/squirelworks/seihai-core", tag = "v0.4.0", default-features = false }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time", "macros", "sync", "signal", "process"] }
 # The NPC-server link's wire format (PROTOCOL.md), shared with the NPC-server
 # so both sides use one codec.
@@ -30,7 +30,7 @@ tokio = { version = "1", features = ["test-util"] }
 seihai-rc = { git = "https://github.com/squirelworks/seihai-rc", rev = "dd103226dca1bedbeb983bc523a17259b81f118f" }
 
 [patch."https://github.com/squirelworks/seihai-core"]
-seihai-core = { git = "https://www.github.com/squirelworks/seihai-core", tag = "v0.2.16" }
+seihai-core = { git = "https://www.github.com/squirelworks/seihai-core", tag = "v0.4.0" }
 
 # PBKDF2 and the codecs are slow unoptimised; the tests log in dozens of times.
 [profile.dev.package."*"]

@@ -1,5 +1,22 @@
 # Current dependency follow-through
 
+## Core v0.4.0 consumer update
+
+Both the direct core dependency and the whole-graph `www.github.com` patch
+move from `v0.2.16` (`8fb62fbfa2bc770412de8cc470e2f1269676667c`) to published
+`v0.4.0` (`eb7434ac1fbddc35d127ab4bbe8717e8bf1d64e7`). The patch continues
+to unify the pinned RC (`dd103226dca1bedbeb983bc523a17259b81f118f`) and
+NPC-server (`1ebabde1cb49488b59d72861a29d21694cedc55e`) dependencies with the
+direct core. Preserve the merged chat/trigger and staff-line routing.
+
+The source audit found no exhaustive match on core's scripting `Era` in
+this consumer: level NPC preparation and NC fixtures select `Era::V217`;
+the exhaustive matches in `rules.rs` concern the separate local rules enum.
+Registering `V140` does not establish original-client behavior or script
+argument semantics. Fresh Linux/Windows CI on this PR's resulting head is
+required; earlier pin-update CI below is historical evidence only. No local
+heavy compilation or new original-client run is claimed.
+
 ## Core pin update (#138)
 
 The paired manifest and lockfile update moves `seihai-core` from tag
