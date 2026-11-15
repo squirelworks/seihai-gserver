@@ -15,19 +15,18 @@
 //!   the image (0) and the script (1), the layout core's client reader
 //!   takes (`SessionState::weapons`). Builds that run the script as GS1
 //!   text get it this way.
-//! - For a build that runs GS2 and reads `PLO_WEAPONHASH` (193) and
-//!   `PLO_UNKNOWN132` (132) behind `PLO_RAWDATA` (by the profiles, 4.04r2
-//!   to 4.20r8 and the Mac 5.12; 5.00r7 and 5.12 list no 100 and are
-//!   left out until a lab run says otherwise): 33 with the name and image
-//!   only, then 193 with the CRC-32 of the weapon's bytecode and its name.
-//!   A client whose cached copy does not match asks with
-//!   `PLI_UPDATESCRIPT` (158), and gets the bytecode in 132 behind
-//!   `PLO_RAWDATA`. This is the order GServer-v2 used with real 4.20r8
-//!   (lab, 2026-11-13); GServer-v2 never sent that build
-//!   `PLO_NPCWEAPONSCRIPT` (140).
-//! - Builds that read neither (5.24 on) are sent nothing for a scripted
-//!   weapon until 140 has a capture, which is also what they were sent
-//!   before weapons were served.
+//! - For a build that runs GS2 and reads the classic path
+//!   (`ClientProfile::reads_classic_weapon_bytecode`: 193 and 132 behind
+//!   `PLO_RAWDATA`; by the profiles, 4.04r2 to 4.20r8 and the Mac 5.12;
+//!   5.00r7 and 5.12 list 193/132 but no 100 and stay out until a lab
+//!   run says otherwise): 33 with the name and image only, then 193 with
+//!   the CRC-32 of the weapon's bytecode and its name. A client whose
+//!   cached copy does not match asks with `PLI_UPDATESCRIPT` (158), and
+//!   gets the bytecode in 132 behind `PLO_RAWDATA`. Hard guard: never
+//!   those ids to 5.24+ / v6; never 197/140 to pure 4.x
+//!   (`protocol/script-packet-guards.md`).
+//! - Builds that read neither classic form (5.24 on) are sent nothing for
+//!   a scripted weapon until 140 has a capture.
 //!
 //! `PLI_WEAPONADD` (33), from 1.38 on, is a client asking to keep a
 //! weapon: type 0 and a default weapon's item id, or type 1 and the
@@ -45,9 +44,7 @@
 
 use crate::npcs::{Script, LEVEL_ERA};
 use crate::profile::ClientProfile;
-use crate::wire::ids::{
-    PLO_DEFAULTWEAPON, PLO_NPCWEAPONADD, PLO_RAWDATA, PLO_UNKNOWN132, PLO_WEAPONHASH,
-};
+use crate::wire::ids::{PLO_DEFAULTWEAPON, PLO_NPCWEAPONADD, PLO_UNKNOWN132, PLO_WEAPONHASH};
 use crate::wire::{gchar, gint5, gshort, latin1, msg, raw_block};
 use seihai_core::protocol::Runs;
 use seihai_core::scripting::delivery::Delivery;
@@ -223,16 +220,9 @@ impl Weapon {
 }
 
 /// The build reads the hash-and-ask path: 33, 193, and 132 behind
-/// `PLO_RAWDATA`.
+/// `PLO_RAWDATA` (profile guards in `ClientProfile`).
 fn reads_hash(to: &ClientProfile) -> bool {
-    [
-        PLO_NPCWEAPONADD,
-        PLO_WEAPONHASH,
-        PLO_UNKNOWN132,
-        PLO_RAWDATA,
-    ]
-    .into_iter()
-    .all(|id| to.reads(id))
+    to.reads(PLO_NPCWEAPONADD) && to.reads_classic_weapon_bytecode()
 }
 
 /// CRC-32 (the zlib one) of `bytes`.
