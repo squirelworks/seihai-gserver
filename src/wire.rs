@@ -332,8 +332,11 @@ pub mod ids {
     /// `.code` file, which holds an encoded form.
     /// Seihai name until 2026-11-11: `PLO_WEAPONCRC`.
     pub const PLO_WEAPONHASH: u8 = 193;
-    /// Empty. Confirmed: clears the loaded weapon and class scripts.
-    /// 4.04r2 to 6.03r7.
+    /// Empty. Confirmed: clears loaded scripts / state; how much depends on
+    /// the client generation (4.x: weapon and class lists; 5.00r7: levels and
+    /// level caches; 6.03r7: broader reset). Do not assume a `login*`-origin
+    /// keep filter until stock re-read + lab say so
+    /// (Graal_analysis `protocol/plo-194-resetclient.md`). 4.04r2 to 6.03r7.
     /// Seihai name until 2026-11-11: `PLO_CLEARWEAPONS`.
     pub const PLO_RESETCLIENT: u8 = 194;
     /// Use the cached script: the same DES key as [`PLO_NPCWEAPONSCRIPT`] and
