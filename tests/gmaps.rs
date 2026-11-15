@@ -47,11 +47,13 @@ fn a_gmap_is_one_world() {
     assert!(sa.gmap.is_none());
     assert_eq!(sa.board.as_deref(), Some(&west[..]));
 
-    // Gia (2.22) logs into the same cell and is told the gmap.
+    // Gia (2.22) logs into the same cell and is told the gmap. Pre-3.0
+    // clients also get the .gmap file before PLAYERWARP2.
     let v = ClientVersion::V222;
     let mut g = login_gserver(&addr, v, random_key(), "gia", PASSWORD, false).unwrap();
     let rg = g.conn.spawn_reader().unwrap();
     let mut sg = SessionState::for_version(v);
+    sg.file_has_modtime = seihai_gserver::files::has_modtime(v);
     read_until(&rg, &mut sg, Duration::from_secs(10), |s| {
         s.board.is_some() && s.others.iter().any(|o| o.account.as_deref() == Some("amy"))
     })
@@ -63,14 +65,26 @@ fn a_gmap_is_one_world() {
         Some("onlinestartlocal.nw")
     );
     assert_eq!(sg.board.as_deref(), Some(&west[..]));
+    assert!(
+        sg.file_requests.iter().any(|f| f == "FILE:world.gmap")
+            || sg.incoming_files.iter().any(|(n, _)| n == "world.gmap"),
+        "login must push world.gmap before 49; got files {:?} requests {:?}",
+        sg.incoming_files
+            .iter()
+            .map(|(n, _)| n.as_str())
+            .collect::<Vec<_>>(),
+        sg.file_requests
+    );
     read_until(&ra, &mut sa, Duration::from_secs(10), |s| {
         s.others.iter().any(|o| o.nick.as_deref() == Some("gia"))
     })
     .unwrap();
 
-    // The client has the .gmap (file serving comes later): the grid is set
-    // as the client would read it from its cache.
-    sg.set_gmap_grid(Gmap::parse(GRID).unwrap());
+    // Apply the pushed file (or the same grid) as the client would.
+    let _ = sg.take_files();
+    if sg.gmap.as_ref().and_then(|g| g.map.as_ref()).is_none() {
+        sg.set_gmap_grid(Gmap::parse(GRID).unwrap());
+    }
 
     // The east neighbour, asked for with no copy.
     g.conn

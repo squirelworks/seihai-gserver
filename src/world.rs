@@ -87,7 +87,9 @@
 
 use crate::anticheat::{AntiCheat, Kind, Score, Walk, HURT_RANGE, LINK_SLACK};
 use crate::baddies::Baddy;
-use crate::gmaps::{plays_gmaps, Gmaps, Place, GMAPLEVELX, GMAPLEVELY};
+use crate::gmaps::{
+    needs_gmap_file_before_warp, plays_gmaps, Gmaps, Place, GMAPLEVELX, GMAPLEVELY,
+};
 use crate::levels::Level;
 use crate::npclink::Hub;
 use crate::npcs::Npc;
@@ -1952,7 +1954,15 @@ impl WorldTask {
         match &gmap {
             // A link into a gmap cell says where on the gmap, then the
             // level as a gmap level (Seihai's beta4 lab notes, "Warps").
+            // Pre-3.0 clients need the .gmap file on the wire before 49
+            // (Graal_analysis protocol/gmap-file-on-warp.md).
             Some(g) => {
+                let mut frames = Vec::new();
+                if needs_gmap_file_before_warp(p.version) {
+                    if let Some(file) = self.gmaps.file_frames(p.version, &g.gmap) {
+                        frames.extend(file);
+                    }
+                }
                 let mut f = crate::wire::msg(
                     crate::wire::ids::PLO_PLAYERWARP2,
                     &crate::burst::warp2(w.x, w.y, g),
@@ -1962,7 +1972,8 @@ impl WorldTask {
                         p.version, &level, &g.gmap, !cached,
                     ));
                 }
-                let _ = p.outbox.send(vec![f]);
+                frames.push(f);
+                let _ = p.outbox.send(frames);
             }
             None => {
                 // A server warp says where first, as the login burst does.

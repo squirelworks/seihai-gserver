@@ -4,18 +4,25 @@
 //!
 //! A player whose build plays gmaps (`GmapRules`: `levels.gmap`, message 49,
 //! own props 43/44 and `PLI_ADJACENTLEVEL`) and whose level is a cell of a
-//! gmap plays it as one: the login and links into it say `PLO_PLAYERWARP2`
-//! (49) with the gmap's name and the cell, every level sent ends with a
-//! `PLO_LEVELNAME` naming the gmap again, the client asks for the
-//! neighbours with `PLI_ADJACENTLEVEL` (35), and walking across a seam is a
-//! props message with the new cell (43 `GMAPLEVELX`, 44 `GMAPLEVELY`). Older
-//! builds get the same levels as plain levels, joined by their links.
+//! gmap plays it as one: the login and links into it push the `.gmap` file
+//! then say `PLO_PLAYERWARP2` (49) with the gmap's name and the cell, every
+//! level sent ends with a `PLO_LEVELNAME` naming the gmap again, the client
+//! asks for the neighbours with `PLI_ADJACENTLEVEL` (35), and walking across
+//! a seam is a props message with the new cell (43 `GMAPLEVELX`, 44
+//! `GMAPLEVELY`). Older builds get the same levels as plain levels, joined
+//! by their links.
 //!
 //! See Seihai `documentation/protocol.md`, "Gmaps".
+//!
+//! Pre-3.0 builds parse the `.gmap` from disk when they handle
+//! `PLO_PLAYERWARP2` (49). The world therefore keeps the file bytes so a
+//! login or warp can push them before 49 (see
+//! Graal_analysis `protocol/gmap-file-on-warp.md`).
 
 use seihai_core::gmap::{Gmap, GmapRules};
 use seihai_core::protocol::ClientVersion;
 use std::path::Path;
+use std::time::UNIX_EPOCH;
 
 /// Own props that name the gmap cell.
 pub const GMAPLEVELX: u8 = 43;
@@ -36,10 +43,52 @@ pub fn plays_gmaps(version: ClientVersion) -> bool {
     r.enabled && r.adjacent
 }
 
+/// Whether a gmap warp must push the `.gmap` file before every 49.
+///
+/// Matches GServer-v2's `CLVER_3` (3.0) cut: older builds load `LEVELNAMES`
+/// from disk when they handle 49.
+pub fn needs_gmap_file_before_warp(version: ClientVersion) -> bool {
+    plays_gmaps(version) && !clver3_or_later(version)
+}
+
+/// GServer-v2 `CLVER_3` (3.0) and every later profile this server knows.
+fn clver3_or_later(version: ClientVersion) -> bool {
+    matches!(
+        version,
+        ClientVersion::V304
+            | ClientVersion::V3153
+            | ClientVersion::V404R2
+            | ClientVersion::V404R2Mac
+            | ClientVersion::V420R6
+            | ClientVersion::V420R8
+            | ClientVersion::V500R7
+            | ClientVersion::V512
+            | ClientVersion::V512Mac
+            | ClientVersion::V524R4
+            | ClientVersion::V530R3
+            | ClientVersion::V531R4
+            | ClientVersion::V600R2
+            | ClientVersion::V600R4
+            | ClientVersion::V6015
+            | ClientVersion::V6034
+            | ClientVersion::V603R7
+            | ClientVersion::V603R7Linux
+    )
+}
+
+/// One loaded gmap: grid, raw file bytes and mod time for a file push.
+#[derive(Debug)]
+struct Entry {
+    name: String,
+    map: Gmap,
+    data: Vec<u8>,
+    mod_time: u64,
+}
+
 /// The world's gmaps.
 #[derive(Debug, Default)]
 pub struct Gmaps {
-    maps: Vec<(String, Gmap)>,
+    maps: Vec<Entry>,
 }
 
 impl Gmaps {
@@ -59,28 +108,48 @@ impl Gmaps {
         files.sort();
         let mut maps = Vec::new();
         for name in files {
-            let text = std::fs::read(dir.join(&name))
-                .map(|b| String::from_utf8_lossy(&b).into_owned())
-                .unwrap_or_default();
+            let path = dir.join(&name);
+            let data = std::fs::read(&path).unwrap_or_default();
+            let text = String::from_utf8_lossy(&data).into_owned();
+            let mod_time = std::fs::metadata(&path)
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                .map_or(0, |d| d.as_secs());
             match Gmap::parse(&text) {
-                Some(g) => maps.push((name, g)),
+                Some(map) => maps.push(Entry {
+                    name,
+                    map,
+                    data,
+                    mod_time,
+                }),
                 None => warnings.push(format!("{name}: not a GRMAP001 gmap; left out")),
             }
         }
         (Gmaps { maps }, warnings)
     }
 
-    /// The gmaps as given, for tests.
+    /// The gmaps as given, for tests. File bytes are the empty string.
     pub fn from_maps(maps: Vec<(String, Gmap)>) -> Self {
-        Gmaps { maps }
+        Gmaps {
+            maps: maps
+                .into_iter()
+                .map(|(name, map)| Entry {
+                    name,
+                    map,
+                    data: Vec::new(),
+                    mod_time: 0,
+                })
+                .collect(),
+        }
     }
 
     /// The gmap and cell `level` is in (the first gmap that names it).
     pub fn find(&self, level: &str) -> Option<Place> {
-        self.maps.iter().find_map(|(name, g)| {
-            let (x, y) = g.cell_of(level)?;
+        self.maps.iter().find_map(|e| {
+            let (x, y) = e.map.cell_of(level)?;
             Some(Place {
-                gmap: name.clone(),
+                gmap: e.name.clone(),
                 cell: (u8::try_from(x).ok()?, u8::try_from(y).ok()?),
             })
         })
@@ -88,11 +157,35 @@ impl Gmaps {
 
     /// The level at `cell` of the gmap called `gmap`, if the cell holds one.
     pub fn level_at(&self, gmap: &str, cell: (u8, u8)) -> Option<&str> {
-        let (_, g) = self
+        let e = self
             .maps
             .iter()
-            .find(|(n, _)| n.eq_ignore_ascii_case(gmap))?;
-        g.level_at(i32::from(cell.0), i32::from(cell.1))
+            .find(|e| e.name.eq_ignore_ascii_case(gmap))?;
+        e.map.level_at(i32::from(cell.0), i32::from(cell.1))
+    }
+
+    /// Frames that send the `.gmap` file named `gmap` to `version`, or
+    /// none when the world has no bytes for it or the build cannot take it.
+    pub fn file_frames(
+        &self,
+        version: impl Into<crate::profile::ClientProfile>,
+        gmap: &str,
+    ) -> Option<Vec<Vec<u8>>> {
+        let e = self
+            .maps
+            .iter()
+            .find(|e| e.name.eq_ignore_ascii_case(gmap))?;
+        if e.data.is_empty() {
+            return None;
+        }
+        crate::files::send_file(
+            version,
+            &crate::files::Found {
+                name: e.name.clone(),
+                data: e.data.clone(),
+                mod_time: e.mod_time,
+            },
+        )
     }
 }
 
@@ -128,5 +221,38 @@ mod tests {
         assert!(plays_gmaps(ClientVersion::V231));
         assert!(!plays_gmaps(ClientVersion::V205));
         assert!(!plays_gmaps(ClientVersion::V139));
+    }
+
+    #[test]
+    fn pre_3_gmap_builds_need_the_file_before_49() {
+        assert!(needs_gmap_file_before_warp(ClientVersion::V222));
+        assert!(needs_gmap_file_before_warp(ClientVersion::V231));
+        assert!(!needs_gmap_file_before_warp(ClientVersion::V205));
+        assert!(!needs_gmap_file_before_warp(ClientVersion::V420R8));
+    }
+
+    #[test]
+    fn file_frames_carry_the_gmap_bytes() {
+        let missing = std::env::temp_dir().join(format!(
+            "seihai-gserver-gmaps-missing-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&missing);
+        let (g, _) = Gmaps::load(&missing);
+        assert!(g.file_frames(ClientVersion::V222, "world.gmap").is_none());
+
+        let dir = std::env::temp_dir().join(format!(
+            "seihai-gserver-gmaps-bytes-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("world.gmap"), GRID).unwrap();
+        let (g, warnings) = Gmaps::load(&dir);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let frames = g.file_frames(ClientVersion::V222, "world.gmap").unwrap();
+        let body = frames.concat();
+        assert!(body.windows(GRID.len()).any(|w| w == GRID.as_bytes()));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
