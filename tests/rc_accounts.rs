@@ -166,7 +166,7 @@ fn an_rc_reads_and_sets_player_props() {
     use seihai_core::net::{login_gserver, random_key};
     use seihai_core::protocol::{ClientVersion, SessionState};
     use seihai_rc::players::{
-        parse_prop_edit, parse_props, props_get, props_get_account, props_set,
+        parse_prop_edit, parse_props, props_get, props_get_account, props_set, resolve_prop_edits,
     };
     let w = world("rcprops", "*\n");
     let store = Store::new(w.join("accounts"));
@@ -206,6 +206,7 @@ fn an_rc_reads_and_sets_player_props() {
         .iter()
         .map(|e| parse_prop_edit(e).unwrap())
         .collect();
+    let edits = resolve_prop_edits(&got, &edits).unwrap();
     s.send_messages(&[props_set(&got, &edits).unwrap()])
         .unwrap();
     s.send_messages(&[props_get_account("test1").unwrap()])
@@ -248,6 +249,7 @@ fn an_rc_reads_and_sets_player_props() {
     // The set's flags replace the player's in the world.
     let mut online = online;
     online.flags = vec!["quest=3".into()];
+    let edits = resolve_prop_edits(&online, &edits).unwrap();
     s.send_messages(&[props_set(&online, &edits).unwrap()])
         .unwrap();
     read_until(&rx, &mut st, Duration::from_secs(10), |s| {
