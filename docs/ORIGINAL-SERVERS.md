@@ -119,6 +119,13 @@ the mod time; then each chest, opened or not for this account; each horse
 The first player in leads. Players in other levels hear the new level and
 position.
 
+A captured 1.28 login with a second player already in the level sends
+`PLO_OTHERPLPROPS` (8) for that player with nickname and level (prop 20)
+before the warp (`live-trace-early.md`). This server keeps prop 20 on
+retained other-player props when a player joins or changes level so those
+introductions match that shape (issue #132). IP and UDP port (30/31) for
+1.28 peer draw are still open.
+
 ## The player-killer flag (before 1.3)
 
 Read from GServer 1.28 beta 2. The 1.27 readme lists "a new player

@@ -6,8 +6,18 @@ same-room pairing, unchanged peer data, explicit room isolation and cleanup;
 they do not establish native client compatibility. The first native acceptance
 candidate is Java Graal and **4th Graal alpha** in the same `G2` level room.
 The historical Java/5th Graal result used a room-renaming proxy; this listener
-does not rename rooms. Original-client Windows admission and #132 remain
-separate. See [ANCIENT-NETWORKING.md](ANCIENT-NETWORKING.md).
+does not rename rooms. Original-client Windows admission remains separate.
+See [ANCIENT-NETWORKING.md](ANCIENT-NETWORKING.md).
+
+## #132 early OTHERPLPROPS level prop
+
+- [x] Synthesize prop 20 (`CURLEVEL`) into retained other-player props on
+      join and level change, so same-level `PLO_OTHERPLPROPS` introductions
+      carry the level the way original 1.28 did (`live-trace-early.md`).
+      Unit coverage in `others.rs`. No new original-client VM run in this
+      slice.
+- [ ] Still open for #132: relay `IPADDR`/`UDPPORT` (30/31) for 1.28b2 UDP
+      peer draw; confirm with an existing-install lab on the VMs.
 
 # Current dependency follow-through
 
@@ -40,8 +50,8 @@ separate. See [ANCIENT-NETWORKING.md](ANCIENT-NETWORKING.md).
   alternative; the prefix itself is not a demonstrated defect.
 
 These are source-level findings at the post-#140 / post-#141 baseline, not
-new native observations. #132's introduction ordering/property-layout
-question remains open, separately from these profile and framing questions.
+new native observations. #132's missing level prop on introductions is
+addressed above; IP/UDP peer fields and a confirming lab remain open.
 
 
 ## Core v0.4.0 consumer update

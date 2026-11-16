@@ -1159,6 +1159,9 @@ impl WorldTask {
                     if let Some(p) = self.players.get_mut(&id) {
                         p.level = level.name.to_ascii_lowercase();
                         p.props.apply(&who.props, ClientVersion::V222);
+                        // Original 1.28 introductions carry nickname and
+                        // level (#132); own_props does not emit prop 20.
+                        p.props.set_level(&level.name);
                         p.gmap = gmap.clone();
                         if gmap.is_some() {
                             p.entered.insert(p.level.clone());
@@ -1740,6 +1743,7 @@ impl WorldTask {
             return;
         };
         let old = std::mem::replace(&mut p.level, key.clone());
+        p.props.set_level(&level.name);
         p.gmap = Some(Place {
             gmap: gmap.gmap.clone(),
             cell,
@@ -1925,6 +1929,7 @@ impl WorldTask {
             .then(|| self.gmaps.find(&level.name))
             .flatten();
         let old = std::mem::replace(&mut p.level, key.clone());
+        p.props.set_level(&level.name);
         // The client may still send the spot it warped from once, with
         // props it had queued: that position is not a step in the new level.
         p.stale = p.props.x().zip(p.props.y());
@@ -4655,6 +4660,7 @@ mod bench {
                 ),
                 ClientVersion::V222,
             );
+            p.props.set_level("one.nw");
         }
         let ids: Vec<u16> = w.players.keys().copied().collect();
         let ticks = 40;
