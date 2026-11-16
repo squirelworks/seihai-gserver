@@ -1583,11 +1583,14 @@ impl Session {
                     let [x, y, name @ ..] = rest else {
                         continue;
                     };
+                    // LEVELWARP arrival bytes are level-local half-tiles.
                     server.world.warp(crate::world::Warp {
                         player: self.id,
                         level: seihai_core::protocol::latin1(name),
-                        x: crate::others::classic_pos(*x),
-                        y: crate::others::classic_pos(*y),
+                        at: crate::coords::LocalPos::new(
+                            crate::others::classic_pos(*x),
+                            crate::others::classic_pos(*y),
+                        ),
                         mod_time,
                     });
                 }

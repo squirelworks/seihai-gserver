@@ -157,7 +157,7 @@ logged once and not sent. `0x4F` to `0x7F` stay reserved.
 | `0x41` | `NPC_PROPS` | `npc_id: u32`, `props: blob`, only what changed |
 | `0x42` | `NPC_DELETED` | `npc_id: u32` |
 | `0x43` | `SET_PLAYER_PROPS` | `player_id: u16`, `props: blob` |
-| `0x44` | `WARP_PLAYER` | `player_id: u16`, `level: str`, `x: u16`, `y: u16` (half tiles) |
+| `0x44` | `WARP_PLAYER` | `player_id: u16`, `level: str`, `x: u16`, `y: u16` (level-local half tiles; not gmap-global) |
 | `0x45` | `ADD_WEAPON` | `player_id: u16`, `weapon: str` |
 | `0x46` | `SERVER_FLAG` | `name: str`, `set: u8` (1 set, 0 unset), `value: str` |
 | `0x47` | `PM` | `player_id: u16`, `text: str` |
@@ -180,7 +180,7 @@ the players in that level and answers `SET_PLAYER_PROPS` with the usual
 separate PM event, and the message does not name an NPC). `SERVER_FLAGS`
 replaces the server flag set scripts read as `server.` names.
 `TRIGGER_ACTION` fires `action<name>` on each NPC whose touch rectangle
-holds that point. `x` and `y` are half tiles, the same unit as
+holds that point. `x` and `y` are level-local half tiles, the same unit as
 `WARP_PLAYER`.
 
 The sound messages are for the players in `level`, the level whose script
