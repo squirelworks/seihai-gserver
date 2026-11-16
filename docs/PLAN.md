@@ -87,39 +87,46 @@ behaviour against, never a code source (see `00-rules.md`).
    (`tests/rc_accounts.rs`): a get shows what the world holds over the
    file, and a set goes to the player at once (as the NPC-server's
    `SET_PLAYER_PROPS`), replaces the world's flags and writes the file.
-   Next: server options once a lab has their layouts, then NC.
-5. NPC-server link for `seihai-npcserver`. **Built from source, lab run
-   open** (`src/npclink.rs`, `src/world.rs`, `PROTOCOL.md`,
+   Stage 4 is **done** (issue #52 closed): RC/NC staff logins and the
+   options they use were lab-run over `SEI00001` (#95; NC note
+   `docs/lab/nc-2026-11-12.md`). Finer RC rights on NPC-server staff lines
+   are still open.
+5. NPC-server link for `seihai-npcserver`. **Done and lab-run** (issue #53
+   closed; `src/npclink.rs`, `src/world.rs`, `PROTOCOL.md`,
    `tests/npc_link.rs`, `tests/npc_messages.rs`,
-   `docs/lab/npclink-2026-10-31.md`): `npcserver = off | external | auto`, the
-   token handshake, level list, keep-alive; the world task feeds the `Hub`
-   (player join, props, `PLAYER_LEVEL`, leave, `LEVEL_RELOADED` from a 1 s
-   check of the loaded level files, the server flags for a new link) and
-   applies `0x40` to `0x4E` (`world.rs` module notes say what each becomes).
-   `SEND_TO_NC` and `SEND_TO_RC` go to every logged-in session of that
-   kind as RC console line 74 (`tests/staff_lines.rs`). A finer rights
+   `docs/lab/npclink-2026-10-31.md`,
+   `docs/lab/npcserver-205-2026-11-13.md`): `npcserver = off | external | auto`,
+   the token handshake, level list, keep-alive; the world task feeds the
+   `Hub` (player join, props, `PLAYER_LEVEL`, leave, `LEVEL_RELOADED` from
+   a 1 s check of the loaded level files, the server flags for a new link)
+   and applies `0x40` to `0x4E` (`world.rs` module notes say what each
+   becomes). `SEND_TO_NC` and `SEND_TO_RC` go to every logged-in session of
+   that kind as RC console line 74 (`tests/staff_lines.rs`). A finer rights
    rule is still open.
    Dropped with a log line: the sound messages (no build reads a server
    sound) and a script's own `NPC_TRIGGER_ACTION` (not passed back to
    clients). A client's `PLI_TRIGGERACTION` (38) is passed to the others
    who read 48, with the sender's id first, and to the NPC-server as
    `TRIGGER_ACTION` (the action name, the level, half-tile x and y). A
-   new non-empty chat line is `PM_TO_NPC`.
-   Left: the lab run (`npcserver = auto` with seihai-npcserver's
-   `examples/world`, real 2.05 rev 2 and 2.22).
+   new non-empty chat line is `PM_TO_NPC`. A real 2.05 rev 2 saw
+   NPC-server NPCs move and talk (#119).
 6. 3.x to 6.x: the Login lobby and server warp, GS2 bytecode delivery, and later our
    own GS2 compiler (gs2-parser is GPL, so it cannot be used). **The lobby is
    built** (`lobby_port`, `lobby_host` in `config/server.txt`;
    `tests/lobby.rs`): 4.x to 6.x builds that log in on the lobby port get the
    login burst, leave the world, and are sent `PLO_SERVERWARP` (178) to the
-   game port, as the lab lobby did for real 5.24r4 and 6.03r7
-   (`docs/lab/five-clients-2026-11-12.md`). Players in the start level may see
-   the lobby login arrive and leave. GS2 bytecode goes to level NPCs per build
-   (#45). No real client has been run against this lobby yet.
-7. Server-side anti-cheat (see "Milestone: server-side anti-cheat" below). Each
-   check lands with the feature it guards (movement and warps with stage 2,
-   items, hearts and gralats with stages 2 and 3), behind one policy layer that
-   admins configure. No client-side anti-debugging.
+   game port. Real 5.24r4 and 6.03r7 reached the game port that way in
+   `docs/lab/five-clients-2026-11-12.md` and the 2026-11-14 rerun. Players in
+   the start level may see the lobby login arrive and leave. GS2 bytecode
+   goes to level NPCs per build (#45; #120/#121). **Still open on #56:** an
+   on-screen Stage 6 check on a setup that draws (Wine needs the base
+   asset set; prefer a rendering Windows guest for 5.x/6.x).
+7. Server-side anti-cheat (see "Milestone: server-side anti-cheat" below).
+   **Done** (issue #54 closed): items, hearts, gralats, hurt range, policy
+   bans and the staff exemption, plus machine/address bans (#64, #88, #96,
+   #99). Each check lands with the feature it guards (movement and warps
+   with stage 2, items, hearts and gralats with stages 2 and 3), behind one
+   policy layer that admins configure. No client-side anti-debugging.
 
 ## Out of band: Graal3D (February 2000)
 
