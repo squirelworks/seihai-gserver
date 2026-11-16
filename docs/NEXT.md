@@ -46,12 +46,13 @@ question remains open, separately from these profile and framing questions.
 
 ## Core v0.4.0 consumer update
 
-Both the direct core dependency and the whole-graph `www.github.com` patch
-move from `v0.2.16` (`8fb62fbfa2bc770412de8cc470e2f1269676667c`) to published
-`v0.4.0` (`eb7434ac1fbddc35d127ab4bbe8717e8bf1d64e7`). The patch continues
-to unify the pinned RC (`dd103226dca1bedbeb983bc523a17259b81f118f`) and
-NPC-server (`1ebabde1cb49488b59d72861a29d21694cedc55e`) dependencies with the
-direct core. Preserve the merged chat/trigger and staff-line routing.
+Direct core is published `v0.4.0` (`eb7434ac1fbddc35d127ab4bbe8717e8bf1d64e7`).
+The temporary `www.github.com` `[patch]` is gone: NPC-server is pinned at
+`f0904910f581fb2f16b71dcc7b6e0b7f74b0bcb0` and RC at
+`90cb87f31bfb9f81490aa7e6c8c6e082ecbab75d` (after seihai-rc#61), both already
+on core `v0.4.0`, so the lock has one core without a patch
+(squirelworks/seihai-core#79). Preserve the merged chat/trigger and
+staff-line routing.
 
 The source audit found no exhaustive match on core's scripting `Era` in
 this consumer: level NPC preparation and NC fixtures select `Era::V217`;
