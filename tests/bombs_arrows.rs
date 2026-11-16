@@ -6,7 +6,7 @@
 
 mod common;
 
-use common::raw::{has, RawClient, Seen};
+use common::raw::{has, has_gstring, RawClient, Seen};
 use common::*;
 use seihai_core::net::levelwarp_message;
 use seihai_core::protocol::ClientVersion;
@@ -43,10 +43,10 @@ fn bombs_and_shots_reach_the_level() {
     dee.until("the house", |m| has(m, 6, b"house.nw"));
     let id_of = |c: &RawClient, account: &str| {
         // The others' id as the others see it: an OTHERPLPROPS whose
-        // account prop names them.
+        // nick/account GSTRING names them (not a CURLEVEL substring).
         c.seen
             .iter()
-            .find(|(id, p)| *id == 8 && p.windows(account.len()).any(|w| w == account.as_bytes()))
+            .find(|(id, p)| *id == 8 && has_gstring(p, account.as_bytes()))
             .map(|(_, p)| p[..2].to_vec())
             .unwrap_or_else(|| panic!("no {account}"))
     };

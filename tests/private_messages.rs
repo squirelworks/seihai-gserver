@@ -7,7 +7,7 @@
 
 mod common;
 
-use common::raw::{RawClient, Seen};
+use common::raw::{has_gstring, RawClient, Seen};
 use common::*;
 use seihai_core::protocol::ClientVersion;
 
@@ -28,7 +28,7 @@ fn contains(hay: &[u8], needle: &[u8]) -> bool {
 fn id_of(c: &mut RawClient, account: &str, one_byte: bool) -> Vec<u8> {
     let find = |seen: &Seen| {
         seen.iter()
-            .find(|(id, p)| *id == OTHERPLPROPS && contains(p, account.as_bytes()))
+            .find(|(id, p)| *id == OTHERPLPROPS && has_gstring(p, account.as_bytes()))
             .map(|(_, p)| p[..if one_byte { 1 } else { 2 }].to_vec())
     };
     if find(&c.seen).is_none() {
