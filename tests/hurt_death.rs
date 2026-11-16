@@ -6,7 +6,7 @@
 
 mod common;
 
-use common::raw::{RawClient, Seen};
+use common::raw::{has_gstring, RawClient, Seen};
 use common::*;
 use seihai_core::protocol::ClientVersion;
 use std::time::{Duration, Instant};
@@ -19,13 +19,12 @@ fn in_level(m: &Seen) -> bool {
     m.iter().any(|(id, _)| *id == 6)
 }
 
-/// The id the others know `account` by: an `OTHERPLPROPS` naming them.
+/// The id the others know `account` by: an `OTHERPLPROPS` naming them
+/// as a `GSTRING` nick or account (not a raw substring of `CURLEVEL`).
 fn id_of(c: &RawClient, account: &str) -> Vec<u8> {
     c.seen
         .iter()
-        .find(|(id, p)| {
-            *id == OTHERPLPROPS && p.windows(account.len()).any(|w| w == account.as_bytes())
-        })
+        .find(|(id, p)| *id == OTHERPLPROPS && has_gstring(p, account.as_bytes()))
         .map(|(_, p)| p[..2].to_vec())
         .unwrap_or_else(|| panic!("no {account}"))
 }
@@ -125,7 +124,7 @@ fn a_hit_from_across_the_level() {
         amy.until("bob and cal", |m| {
             ["bob", "cal"].iter().all(|n| {
                 m.iter()
-                    .any(|(id, p)| *id == OTHERPLPROPS && p.windows(3).any(|w| w == n.as_bytes()))
+                    .any(|(id, p)| *id == OTHERPLPROPS && has_gstring(p, n.as_bytes()))
             })
         });
         let amy_id = id_of(&bob, "amy");

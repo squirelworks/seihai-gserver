@@ -53,6 +53,11 @@ pub fn one_byte_id(v: ClientVersion) -> bool {
 
 pub const JOINLEAVELVL: u8 = 50;
 pub const PCONNECTED: u8 = 51;
+/// Level name on another player (`PLPROP_CURLEVEL`). Original 1.28
+/// introductions carry nickname and level (`live-trace-early.md`); without
+/// it, real 1.27 / 1.28b2 clients get `PLO_OTHERPLPROPS` but draw nobody
+/// (issue #132).
+pub const CURLEVEL: u8 = 20;
 const SWORD: u8 = 8;
 const SHIELD: u8 = 9;
 const HEAD: u8 = 11;
@@ -530,6 +535,15 @@ impl Props {
         true
     }
 
+    /// Keep the level name (prop [`CURLEVEL`]) so same-level introductions
+    /// include it. `own_props` does not emit 20; the world sets this when
+    /// the player joins or changes level.
+    pub fn set_level(&mut self, level: &str) {
+        let mut v = Vec::new();
+        crate::wire::gstring(&crate::wire::latin1(level), &mut v);
+        self.values.insert(CURLEVEL, v);
+    }
+
     /// Everything kept, as a change.
     pub fn all(&self) -> Change {
         Change {
@@ -874,6 +888,32 @@ mod tests {
             ClientVersion::V222,
         );
         p
+    }
+
+    /// Early builds read prop 20 (`CURLEVEL`) on other players. A join
+    /// without it matches the #132 lab: they get id 8 but draw nobody.
+    /// Original 1.28 introductions carried nickname and level.
+    #[test]
+    fn joined_otherplprops_carries_level_for_early_builds() {
+        let mut p = alice();
+        assert!(prop_in(
+            &message(ClientVersion::V128B2, 7, &p.all(), &JOINED).unwrap(),
+            ClientVersion::V128B2,
+            CURLEVEL
+        )
+        .is_none());
+        p.set_level("onlinestartlocal.graal");
+        let mut expected = Vec::new();
+        crate::wire::gstring(b"onlinestartlocal.graal", &mut expected);
+        for v in [
+            ClientVersion::V121,
+            ClientVersion::V128B2,
+            ClientVersion::V135,
+            ClientVersion::V222,
+        ] {
+            let m = message(v, 7, &p.all(), &JOINED).unwrap();
+            assert_eq!(prop_in(&m, v, CURLEVEL), Some(expected.clone()), "{v:?}");
+        }
     }
 
     /// Every build reads the whole message, and sees the nickname and the

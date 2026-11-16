@@ -7,7 +7,7 @@
 
 mod common;
 
-use common::raw::{has, RawClient, Seen};
+use common::raw::{has, has_gstring, RawClient, Seen};
 use common::*;
 use seihai_core::protocol::ClientVersion;
 use std::path::Path;
@@ -47,9 +47,7 @@ fn setup(tag: &str, extra: &str, accounts: &[(&str, u8)]) -> std::path::PathBuf 
 fn id_of(c: &RawClient, account: &str, one_byte: bool) -> Vec<u8> {
     c.seen
         .iter()
-        .find(|(id, p)| {
-            *id == OTHERPLPROPS && p.windows(account.len()).any(|w| w == account.as_bytes())
-        })
+        .find(|(id, p)| *id == OTHERPLPROPS && has_gstring(p, account.as_bytes()))
         .map(|(_, p)| p[..if one_byte { 1 } else { 2 }].to_vec())
         .unwrap_or_else(|| panic!("no {account}"))
 }
@@ -60,7 +58,7 @@ fn knows(c: &mut RawClient, names: &[&str]) {
     let all = |m: &Seen| {
         names.iter().all(|n| {
             m.iter()
-                .any(|(id, p)| *id == OTHERPLPROPS && p.windows(n.len()).any(|w| w == n.as_bytes()))
+                .any(|(id, p)| *id == OTHERPLPROPS && has_gstring(p, n.as_bytes()))
         })
     };
     if all(&c.seen) {

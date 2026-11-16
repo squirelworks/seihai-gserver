@@ -94,3 +94,16 @@ pub fn messages(b: &[u8]) -> Vec<(u8, Vec<u8>)> {
 pub fn has(m: &Seen, id: u8, payload: &[u8]) -> bool {
     m.iter().any(|(i, p)| *i == id && p == payload)
 }
+
+/// True when `hay` holds `needle` as a Graal `GSTRING` (`len+32` then the
+/// bytes). Substring search is not enough once `OTHERPLPROPS` carries
+/// `CURLEVEL`: level names like `onlinestartlocal.nw` contain account
+/// fragments such as `cal`.
+pub fn has_gstring(hay: &[u8], needle: &[u8]) -> bool {
+    if needle.len() > 223 {
+        return false;
+    }
+    let prefix = needle.len() as u8 + 32;
+    hay.windows(needle.len() + 1)
+        .any(|w| w[0] == prefix && &w[1..] == needle)
+}
