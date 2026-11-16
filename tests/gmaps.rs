@@ -11,7 +11,7 @@ use common::*;
 use seihai_core::gmap::{
     adjacent_level_message, crossing_props_message, Crossing, Gmap, GmapRules,
 };
-use seihai_core::net::{login_gserver, random_key};
+use seihai_core::net::{levelwarp_message, login_gserver, random_key};
 use seihai_core::protocol::{ClientVersion, SessionState};
 use std::time::Duration;
 
@@ -147,5 +147,127 @@ fn a_gmap_is_one_world() {
     .unwrap();
     assert!(sg.ignored.is_empty(), "{:?}", sg.ignored);
     assert!(sa.ignored.is_empty(), "{:?}", sa.ignored);
+    let _ = std::fs::remove_dir_all(&w);
+}
+
+/// Login onto a cell that is not (0, 0): PLAYERWARP2 must carry level-local
+/// X/Y plus that cell, not `cell*64 + local`.
+#[test]
+fn login_onto_a_nonzero_gmap_offset_stays_local() {
+    let w = world("gmap-offset", "*\n");
+    std::fs::create_dir_all(w.join("levels")).unwrap();
+    std::fs::write(w.join("levels/world.gmap"), GRID).unwrap();
+    std::fs::write(w.join("levels/onlinestartlocal.nw"), WEST).unwrap();
+    std::fs::write(w.join("levels/east.nw"), EAST).unwrap();
+    let mut a = seihai_gserver::accounts::Account::new("ned", "east.nw", 12.5, 40.0);
+    a.set_password(PASSWORD.as_bytes());
+    seihai_gserver::accounts::Store::new(w.join("accounts"))
+        .save(&a)
+        .unwrap();
+    let (addr, _server) = start(&w);
+
+    let v = ClientVersion::V222;
+    let mut g = login_gserver(&addr, v, random_key(), "ned", PASSWORD, false).unwrap();
+    let rg = g.conn.spawn_reader().unwrap();
+    let mut sg = SessionState::for_version(v);
+    sg.file_has_modtime = seihai_gserver::files::has_modtime(v);
+    read_until(&rg, &mut sg, Duration::from_secs(10), |s| s.board.is_some()).unwrap();
+    let gm = sg.gmap.as_ref().expect("on the gmap");
+    assert_eq!((gm.name.as_str(), gm.cell), ("world.gmap", (1, 0)));
+    assert_eq!(sg.current_level_name().as_deref(), Some("east.nw"));
+    assert_eq!((sg.player_x, sg.player_y), (Some(12.5), Some(40.0)));
+    let _ = std::fs::remove_dir_all(&w);
+}
+
+/// A link between adjacent gmap cells: arrival stays level-local and the
+/// client lands in the neighbour cell (not at global x = 64 + local).
+#[test]
+fn link_warp_between_adjacent_gmap_levels_stays_local() {
+    let w = world("gmap-link", "*\n");
+    std::fs::create_dir_all(w.join("levels")).unwrap();
+    std::fs::write(w.join("levels/world.gmap"), GRID).unwrap();
+    std::fs::write(
+        w.join("levels/onlinestartlocal.nw"),
+        "GLEVNW01\nBOARD 0 0 2 0 ABAB\nLINK east.nw 63 30 1 2 0.5 30\n",
+    )
+    .unwrap();
+    std::fs::write(w.join("levels/east.nw"), EAST).unwrap();
+    let cfg = w.join("config/server.txt");
+    let mut text = std::fs::read_to_string(&cfg).unwrap();
+    text.push_str("start_x = 62\nstart_y = 30\n");
+    std::fs::write(&cfg, text).unwrap();
+    let (addr, _server) = start(&w);
+
+    let v = ClientVersion::V222;
+    let mut g = login_gserver(&addr, v, random_key(), "lia", PASSWORD, false).unwrap();
+    let rg = g.conn.spawn_reader().unwrap();
+    let mut sg = SessionState::for_version(v);
+    sg.file_has_modtime = seihai_gserver::files::has_modtime(v);
+    read_until(&rg, &mut sg, Duration::from_secs(10), |s| {
+        s.board.is_some() && s.gmap.is_some()
+    })
+    .unwrap();
+    assert_eq!(sg.gmap.as_ref().map(|g| g.cell), Some((0, 0)));
+
+    g.conn
+        .send_messages(&[levelwarp_message(0.5, 30.0, "east.nw")])
+        .unwrap();
+    read_until(&rg, &mut sg, Duration::from_secs(10), |s| {
+        s.current_level_name().as_deref() == Some("east.nw")
+    })
+    .unwrap();
+    let gm = sg.gmap.as_ref().expect("still on the gmap");
+    assert_eq!((gm.name.as_str(), gm.cell), ("world.gmap", (1, 0)));
+    // Client-driven LEVELWARP puts the player at the link arrival itself;
+    // the server's PLAYERWARP2 must not have shifted that into global space.
+    assert_eq!((sg.player_x, sg.player_y), (Some(0.5), Some(30.0)));
+    let _ = std::fs::remove_dir_all(&w);
+}
+
+/// From a plain level onto a gmap cell: the answer is PLAYERWARP2 with the
+/// cell and level-local arrival.
+#[test]
+fn warp_from_plain_level_onto_a_gmap_stays_local() {
+    let w = world("gmap-from-plain", "*\n");
+    std::fs::create_dir_all(w.join("levels")).unwrap();
+    std::fs::write(w.join("levels/world.gmap"), GRID).unwrap();
+    // Hub is outside the gmap (island/east are the cells).
+    std::fs::write(
+        w.join("levels/world.gmap"),
+        "GRMAP001\nWIDTH 2\nHEIGHT 1\nLEVELNAMES\n\
+\"island.nw\",\"east.nw\",\nLEVELNAMESEND\n",
+    )
+    .unwrap();
+    std::fs::write(
+        w.join("levels/onlinestartlocal.nw"),
+        "GLEVNW01\nLINK east.nw 30 0 2 1 12.5 40\n",
+    )
+    .unwrap();
+    std::fs::write(w.join("levels/island.nw"), WEST).unwrap();
+    std::fs::write(w.join("levels/east.nw"), EAST).unwrap();
+    let cfg = w.join("config/server.txt");
+    let mut text = std::fs::read_to_string(&cfg).unwrap();
+    text.push_str("start_y = 1\n");
+    std::fs::write(&cfg, text).unwrap();
+    let (addr, _server) = start(&w);
+
+    let v = ClientVersion::V222;
+    let mut g = login_gserver(&addr, v, random_key(), "pia", PASSWORD, false).unwrap();
+    let rg = g.conn.spawn_reader().unwrap();
+    let mut sg = SessionState::for_version(v);
+    sg.file_has_modtime = seihai_gserver::files::has_modtime(v);
+    read_until(&rg, &mut sg, Duration::from_secs(10), |s| s.board.is_some()).unwrap();
+    assert!(sg.gmap.is_none(), "start hub is plain, not a gmap cell");
+
+    g.conn
+        .send_messages(&[levelwarp_message(12.5, 40.0, "east.nw")])
+        .unwrap();
+    read_until(&rg, &mut sg, Duration::from_secs(10), |s| {
+        s.gmap.is_some() && s.current_level_name().as_deref() == Some("east.nw")
+    })
+    .unwrap();
+    let gm = sg.gmap.as_ref().expect("entered the gmap");
+    assert_eq!((gm.name.as_str(), gm.cell), ("world.gmap", (1, 0)));
+    assert_eq!((sg.player_x, sg.player_y), (Some(12.5), Some(40.0)));
     let _ = std::fs::remove_dir_all(&w);
 }
