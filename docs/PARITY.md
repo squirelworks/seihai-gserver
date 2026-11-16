@@ -39,7 +39,7 @@ test) and the lab notes.
 | Ping (`PLO_PING` 108 / `PLI_PONG` 162) | tests | `ping.rs` | The lab capture is open (#56, "Lab") |
 | Word filter | no | | |
 | UPnP port forwarding | no | | Low priority: `seihai-servertools setup` covers going public |
-| Login lobby and server warp (`PLO_SERVERWARP` 178, `PLI_SERVERWARP`) for 5.x/6.x | partial | `lobby.rs` | `lobby_port` in `config/server.txt` (off by default) answers a 4.x–6.x lobby build's login with 178 to this server. `PLI_SERVERWARP` (41) asks the listserver (`SERVERINFO`) and passes its answer on as 178 (`listserver_link.rs`). No real-client run (#102) |
+| Login lobby and server warp (`PLO_SERVERWARP` 178, `PLI_SERVERWARP`) for 5.x/6.x | partial | `lobby.rs`; `lab/five-clients-2026-11-14.md` | `lobby_port` in `config/server.txt` (off by default) answers a 4.x–6.x lobby build's login with 178 to this server. `PLI_SERVERWARP` (41) asks the listserver (`SERVERINFO`) and passes its answer on as 178 (`listserver_link.rs`). Real 5.24r4 and 6.03r7 took the 178 warp on the wire; on-screen confirmation on a drawing setup is still open (#56 Stage 6) |
 
 ## World
 
