@@ -257,7 +257,7 @@ pub enum RcEvent {
     /// `PLI_RC_DISCONNECTPLAYER` (61).
     Kick(u16),
     /// `PLI_RC_WARPPLAYER` (82): player `id` to `level` at `x2`, `y2` in
-    /// half tiles. The level name is Latin-1.
+    /// **level-local** half tiles (not gmap-global). The level name is Latin-1.
     Warp {
         id: u16,
         level: Vec<u8>,

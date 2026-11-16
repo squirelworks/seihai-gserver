@@ -134,7 +134,11 @@ pub fn login_burst(
     out.put(PLO_DEFAULTWEAPON, &[gchar(8)]);
     out.put(PLO_DEFAULTWEAPON, &[gchar(7)]);
     match gmap {
-        Some(g) => out.put(PLO_PLAYERWARP2, &warp2(a.x, a.y, g)),
+        // Account X/Y are level-local; the cell rides in `g`.
+        Some(g) => out.put(
+            PLO_PLAYERWARP2,
+            &warp2(crate::coords::LocalPos::new(a.x, a.y), g),
+        ),
         None => out.put(PLO_PLAYERWARP, &warp),
     }
     out.put(PLO_LEVELNAME, &latin1(level));
@@ -219,12 +223,13 @@ pub fn level_answer(
 }
 
 /// `PLO_PLAYERWARP2` (49): `GCHAR x*2, y*2, z, gmap x, gmap y`, then the
-/// gmap's name. z goes as 50, the value in the captured 49s Seihai's tests
+/// gmap's name. `at` is **level-local** tiles inside `g.cell` (never
+/// gmap-global). z goes as 50, the value in the captured 49s Seihai's tests
 /// keep; no client build reads it.
-pub fn warp2(x: f32, y: f32, g: &Place) -> Vec<u8> {
+pub fn warp2(at: crate::coords::LocalPos, g: &Place) -> Vec<u8> {
     let mut w = vec![
-        gchar((x * 2.0).clamp(0.0, 223.0) as u8),
-        gchar((y * 2.0).clamp(0.0, 223.0) as u8),
+        gchar((at.x * 2.0).clamp(0.0, 223.0) as u8),
+        gchar((at.y * 2.0).clamp(0.0, 223.0) as u8),
         gchar(50),
         gchar(g.cell.0),
         gchar(g.cell.1),

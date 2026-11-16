@@ -87,6 +87,7 @@
 
 use crate::anticheat::{AntiCheat, Kind, Score, Walk, HURT_RANGE, LINK_SLACK};
 use crate::baddies::Baddy;
+use crate::coords::{GlobalPos, LocalPos};
 use crate::gmaps::{
     needs_gmap_file_before_warp, plays_gmaps, Gmaps, Place, GMAPLEVELX, GMAPLEVELY,
 };
@@ -305,13 +306,17 @@ pub enum WorldIn {
 pub type Outbox = mpsc::UnboundedSender<Vec<Vec<u8>>>;
 
 /// A link request: the player walked into a link to `level`.
+///
+/// `at` is always **level-local** tiles for the destination level (or its
+/// gmap cell). Callers must not pass gmap-global coordinates; use
+/// [`crate::coords::LocalPos`] and convert with [`LocalPos::to_global`] only
+/// for anti-cheat / hurt math.
 #[derive(Debug, Clone)]
 pub struct Warp {
     pub player: u16,
     pub level: String,
-    /// The arrival, in tiles.
-    pub x: f32,
-    pub y: f32,
+    /// Arrival in level-local tiles (never gmap-global).
+    pub at: crate::coords::LocalPos,
     /// `PLI_LEVELWARPMOD`: the mod time of the client's cached copy.
     pub mod_time: Option<u64>,
 }
@@ -944,13 +949,10 @@ impl Online {
         }
     }
 
-    /// The position in gmap coordinates (the level's own off a gmap).
-    fn global(&self) -> (f32, f32) {
-        let (cx, cy) = self.gmap.as_ref().map_or((0, 0), |g| g.cell);
-        (
-            f32::from(cx) * 64.0 + self.props.x().unwrap_or(0.0),
-            f32::from(cy) * 64.0 + self.props.y().unwrap_or(0.0),
-        )
+    /// The position in gmap-global tiles (level-local off a gmap).
+    fn global(&self) -> GlobalPos {
+        let cell = self.gmap.as_ref().map_or((0, 0), |g| g.cell);
+        LocalPos::new(self.props.x().unwrap_or(0.0), self.props.y().unwrap_or(0.0)).to_global(cell)
     }
 }
 
@@ -1175,7 +1177,8 @@ impl WorldTask {
                         p.staff = who.staff;
                         p.machines = who.machines.clone();
                         p.flags = who.flags.iter().map(|f| split_flag(f)).collect();
-                        p.walk = Walk::at(p.global().0, p.global().1, Instant::now());
+                        let g = p.global();
+                        p.walk = Walk::at(g.x, g.y, Instant::now());
                     }
                     let key = level.name.to_ascii_lowercase();
                     let leader = self.leader_of(&key).is_none_or(|l| l == id);
@@ -1430,12 +1433,12 @@ impl WorldTask {
             RcEvent::Warp { id, level, x2, y2 } => {
                 // As an NPC-server warp: no warp check; a level change
                 // lists the player again for every RC (`meet`).
+                // RC half-tiles are level-local for the destination.
                 self.warp_to(
                     Warp {
                         player: id,
                         level: latin1_text(&level),
-                        x: f32::from(x2) / 2.0,
-                        y: f32::from(y2) / 2.0,
+                        at: LocalPos::new(f32::from(x2) / 2.0, f32::from(y2) / 2.0),
                         mod_time: None,
                     },
                     true,
@@ -1933,13 +1936,11 @@ impl WorldTask {
         // The client may still send the spot it warped from once, with
         // props it had queued: that position is not a step in the new level.
         p.stale = p.props.x().zip(p.props.y());
-        let moved = p.props.moved(w.x, w.y);
-        let (cx, cy) = gmap.as_ref().map_or((0, 0), |g| g.cell);
-        p.walk = Walk::at(
-            f32::from(cx) * 64.0 + w.x,
-            f32::from(cy) * 64.0 + w.y,
-            Instant::now(),
-        );
+        let moved = p.props.moved(w.at.x, w.at.y);
+        // Walk tracks gmap-global tiles; `w.at` is level-local.
+        let cell = gmap.as_ref().map_or((0, 0), |g| g.cell);
+        let g = w.at.to_global(cell);
+        p.walk = Walk::at(g.x, g.y, Instant::now());
         let cached = w.mod_time == Some(level.mod_time);
         p.gmap = gmap.clone();
         if gmap.is_some() {
@@ -1970,7 +1971,7 @@ impl WorldTask {
                 }
                 let mut f = crate::wire::msg(
                     crate::wire::ids::PLO_PLAYERWARP2,
-                    &crate::burst::warp2(w.x, w.y, g),
+                    &crate::burst::warp2(w.at, g),
                 );
                 if !same {
                     f.extend(crate::burst::gmap_level(
@@ -1985,8 +1986,8 @@ impl WorldTask {
                 let mut warp = Vec::new();
                 if server && p.profile.reads(PLO_PLAYERWARP) {
                     let mut b = vec![
-                        gchar((w.x * 2.0).clamp(0.0, 223.0) as u8),
-                        gchar((w.y * 2.0).clamp(0.0, 223.0) as u8),
+                        gchar((w.at.x * 2.0).clamp(0.0, 223.0) as u8),
+                        gchar((w.at.y * 2.0).clamp(0.0, 223.0) as u8),
                     ];
                     b.extend(crate::wire::latin1(&level.name));
                     warp = crate::wire::msg(PLO_PLAYERWARP, &b);
@@ -2035,11 +2036,12 @@ impl WorldTask {
             return None;
         }
         let (px, py) = (p.props.x().unwrap_or(0.0), p.props.y().unwrap_or(0.0));
-        let what = || format!("to {} {} {} from {px} {py}", w.level, w.x, w.y);
+        let what = || format!("to {} {} {} from {px} {py}", w.level, w.at.x, w.at.y);
         let Some(level) = self.loaded.get(&p.level) else {
             return Some(what());
         };
         // The player's middle, as the clients take links and items.
+        // Link rectangles and arrivals are level-local, like `w.at`.
         let (mx, my) = (px + 1.5, py + 2.0);
         let near = |at: i32, len: i32, m: f32| {
             m >= at as f32 - LINK_SLACK && m <= (at + len) as f32 + LINK_SLACK
@@ -2049,8 +2051,8 @@ impl WorldTask {
             l.dest.trim().eq_ignore_ascii_case(w.level.trim())
                 && near(l.x, l.width, mx)
                 && near(l.y, l.height, my)
-                && arrives(l.new_x, w.x)
-                && arrives(l.new_y, w.y)
+                && arrives(l.new_x, w.at.x)
+                && arrives(l.new_y, w.at.y)
         });
         (!ok).then(what)
     }
@@ -2465,8 +2467,8 @@ impl WorldTask {
         if v.level != p.level || !v.profile.reads(PLO_HURTPLAYER) {
             return;
         }
-        let ((ax, ay), (vx, vy)) = (p.global(), v.global());
-        let d = (ax - vx).hypot(ay - vy);
+        let (a, b) = (p.global(), v.global());
+        let d = (a.x - b.x).hypot(a.y - b.y);
         if d > HURT_RANGE {
             let what = format!("hit {} from {d:.1} tiles", v.account);
             if self.report(id, Kind::Hurt, what) {
@@ -2862,10 +2864,10 @@ impl WorldTask {
                     change.byte(GMAPLEVELY).unwrap_or(c.1),
                 )
             });
-            let (x, y) = (p.props.x().unwrap_or(0.0), p.props.y().unwrap_or(0.0));
-            let (gx, gy) = (f32::from(cell.0) * 64.0 + x, f32::from(cell.1) * 64.0 + y);
-            if let Some((kind, d)) = p.walk.step(gx, gy, Instant::now()) {
-                let what = format!("{d:.1} tiles to {gx} {gy}");
+            let local = LocalPos::new(p.props.x().unwrap_or(0.0), p.props.y().unwrap_or(0.0));
+            let g = local.to_global(cell);
+            if let Some((kind, d)) = p.walk.step(g.x, g.y, Instant::now()) {
+                let what = format!("{d:.1} tiles to {} {}", g.x, g.y);
                 if self.report(id, kind, what) {
                     let Some(p) = self.players.get_mut(&id) else {
                         return;
@@ -2881,7 +2883,7 @@ impl WorldTask {
                         let _ = p.outbox.send(vec![m]);
                     }
                 } else if let Some(p) = self.players.get_mut(&id) {
-                    p.walk.accept(gx, gy);
+                    p.walk.accept(g.x, g.y);
                 }
             }
         }
@@ -3206,16 +3208,18 @@ impl WorldTask {
                 level,
                 x,
                 y,
-            } => self.warp_to(
-                Warp {
-                    player: player_id,
-                    level: latin1_text(&level),
-                    x: f32::from(x) / 2.0,
-                    y: f32::from(y) / 2.0,
-                    mod_time: None,
-                },
-                true,
-            ),
+            } => {
+                // NPC-server / setlevel2 half-tiles are level-local.
+                self.warp_to(
+                    Warp {
+                        player: player_id,
+                        level: latin1_text(&level),
+                        at: LocalPos::new(f32::from(x) / 2.0, f32::from(y) / 2.0),
+                        mod_time: None,
+                    },
+                    true,
+                )
+            }
             Message::AddWeapon { player_id, weapon } => self.add_weapon(player_id, &weapon),
             Message::ServerFlag { name, set, value } => {
                 self.server_flag(latin1_text(&name), set, latin1_text(&value))
@@ -3419,8 +3423,9 @@ impl WorldTask {
             let (x, y) = (p.props.x().unwrap_or(0.0), p.props.y().unwrap_or(0.0));
             own.extend(others::own_position(x, y));
             p.stale = was;
-            let (gx, gy) = p.global();
-            p.walk = Walk::at(gx, gy, Instant::now());
+            // SET_PLAYER_PROPS X/Y are level-local; Walk wants global.
+            let g = p.global();
+            p.walk = Walk::at(g.x, g.y, Instant::now());
         }
         if let Some(m) = others::own_message(p.profile, &own) {
             let _ = p.outbox.send(vec![m]);
@@ -4166,15 +4171,13 @@ mod tests {
         w.warp(Warp {
             player: amy,
             level: "TWO.nw".into(),
-            x: 30.0,
-            y: 30.0,
+            at: LocalPos::new(30.0, 30.0),
             mod_time: None,
         });
         w.warp(Warp {
             player: amy,
             level: "gone.nw".into(),
-            x: 1.0,
-            y: 1.0,
+            at: LocalPos::new(1.0, 1.0),
             mod_time: None,
         });
         // A round trip so the warps are handled.
@@ -4202,8 +4205,7 @@ mod tests {
         w.warp(Warp {
             player: amy,
             level: "one.nw".into(),
-            x: 1.0,
-            y: 30.0,
+            at: LocalPos::new(1.0, 30.0),
             mod_time: Some(one.mod_time),
         });
         let (e, _re) = outbox();
@@ -4218,6 +4220,83 @@ mod tests {
         }
         assert!(ids.contains(&6) && ids.contains(&156));
         assert!(!ids.contains(&101), "{ids:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Gmap warps keep level-local arrivals on the wire and lift them to
+    /// gmap-global only for the anti-cheat walk: a non-zero cell must not
+    /// put `cell*64 + local` into PLAYERWARP2's x/y bytes.
+    #[tokio::test]
+    async fn gmap_warps_keep_local_arrivals_on_the_wire() {
+        let dir =
+            std::env::temp_dir().join(format!("seihai-gserver-gmap-coord-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("world.gmap"),
+            "GRMAP001\nWIDTH 2\nHEIGHT 1\nLEVELNAMES\n\
+\"west.nw\",\"east.nw\",\nLEVELNAMESEND\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("west.nw"),
+            "GLEVNW01\nLINK east.nw 63 30 1 2 0.5 30\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("east.nw"), "GLEVNW01\n").unwrap();
+        std::fs::write(dir.join("house.nw"), "GLEVNW01\n").unwrap();
+        let w = World::new(
+            8,
+            LevelSource {
+                dir: dir.clone(),
+                ..blank()
+            },
+        );
+        w.start();
+        let v = ClientVersion::V222;
+        let (out, mut rx) = outbox();
+        let id = w
+            .join(joining("gia", "house.nw", v), out)
+            .await
+            .unwrap()
+            .unwrap()
+            .id;
+        let _ = seen(v, &mut rx);
+
+        // From a plain level onto the east cell (non-zero gmap offset).
+        w.warp(Warp {
+            player: id,
+            level: "east.nw".into(),
+            at: LocalPos::new(12.5, 40.0),
+            mod_time: None,
+        });
+        let (ping, _pr) = outbox();
+        w.join(who("rt1", "x.nw"), ping).await.unwrap().unwrap();
+        let mut st = SessionState::for_version(v);
+        while let Ok(frames) = rx.try_recv() {
+            frames.iter().for_each(|f| st.apply_body(f));
+        }
+        let gm = st.gmap.as_ref().expect("on the gmap");
+        assert_eq!((gm.name.as_str(), gm.cell), ("world.gmap", (1, 0)));
+        assert_eq!(st.current_level_name().as_deref(), Some("east.nw"));
+        assert_eq!((st.player_x, st.player_y), (Some(12.5), Some(40.0)));
+
+        // Between adjacent gmap cells: still local arrival, new cell.
+        w.warp(Warp {
+            player: id,
+            level: "west.nw".into(),
+            at: LocalPos::new(62.0, 30.0),
+            mod_time: None,
+        });
+        let (ping, _pr) = outbox();
+        w.join(who("rt2", "x.nw"), ping).await.unwrap().unwrap();
+        while let Ok(frames) = rx.try_recv() {
+            frames.iter().for_each(|f| st.apply_body(f));
+        }
+        let gm = st.gmap.as_ref().expect("still on the gmap");
+        assert_eq!((gm.name.as_str(), gm.cell), ("world.gmap", (0, 0)));
+        assert_eq!(st.current_level_name().as_deref(), Some("west.nw"));
+        assert_eq!((st.player_x, st.player_y), (Some(62.0), Some(30.0)));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -4247,8 +4326,7 @@ mod tests {
         w.warp(Warp {
             player: id,
             level: "two.nw".into(),
-            x: 30.0,
-            y: 30.0,
+            at: LocalPos::new(30.0, 30.0),
             mod_time: None,
         });
         let (b, _rb) = outbox();

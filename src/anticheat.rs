@@ -5,17 +5,20 @@
 //!
 //! Checks so far:
 //! - **Speed** and **teleport** (`world.rs`): each player's position is
-//!   followed in gmap coordinates, so walking across a seam is a step like
-//!   any other. A step longer than [`TELEPORT`] tiles is a teleport; else
-//!   the step is paid from a budget that fills at [`MAX_SPEED`] tiles a
-//!   second up to [`BURST`] tiles, so steps a client batches after a stall
-//!   pass. Moves the server makes (a warp's arrival, a login) start afresh,
-//!   and the first position after a warp that still names the spot left is
-//!   dropped (props the client queued before the warp).
+//!   followed in **gmap-global** tiles (`crate::coords::GlobalPos`: local +
+//!   `cell * 64`), so walking across a seam is a step like any other. Wire
+//!   and warp arrivals stay level-local (`LocalPos`). A step longer than
+//!   [`TELEPORT`] tiles is a teleport; else the step is paid from a budget
+//!   that fills at [`MAX_SPEED`] tiles a second up to [`BURST`] tiles, so
+//!   steps a client batches after a stall pass. Moves the server makes (a
+//!   warp's arrival, a login) start afresh, and the first position after a
+//!   warp that still names the spot left is dropped (props the client
+//!   queued before the warp).
 //! - **Warp** (`world.rs`): `PLI_LEVELWARP`/`PLI_LEVELWARPMOD` only for a
 //!   link in the player's level to that level, which the player stands on
 //!   (with [`LINK_SLACK`] tiles for a position a frame old), and to the
-//!   link's arrival; a gmap crossing only into a cell next to the player's.
+//!   link's **level-local** arrival; a gmap crossing only into a cell next
+//!   to the player's.
 //! - **Items** (`world.rs`): the server keeps the counted props (max
 //!   hearts 1, hearts 2, gralats 3, arrows 4, bombs 5). A client's raise
 //!   of one is a violation unless the server already gave it: a floor item
