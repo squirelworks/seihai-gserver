@@ -37,7 +37,7 @@ test) and the lab notes.
 | Secure login (`SEI00001`) | lab | `secure_login.rs`; `lab/secure-login-2026-10-31.md` | Seihai's own. GServer-v2 has its own secure login, which is a different scheme |
 | Bans: account, address, machine | tests | `items_bans.rs`, `rc_accounts.rs`, `machine_bans.rs` | Machine bans use the machine fields that 5.00+ send on the login line. Staff accounts are not kept out by a machine or address ban (#99) |
 | Ping (`PLO_PING` 108 / `PLI_PONG` 162) | tests | `ping.rs` | The lab capture is open (#56, "Lab") |
-| Word filter | no | | |
+| Word filter | tests | `wordfilter.rs` unit tests, `level_objects.rs` | `config/wordfilter.txt`: a word or phrase a line, `word = replacement` or asterisks, ASCII case ignored, read again when the file changes. Covers chat (prop 12), `PLI_TOALL` and the text of a player's PM. Seihai's own format, not GServer-v2's |
 | UPnP port forwarding | no | | Low priority: `seihai-servertools setup` covers going public |
 | Login lobby and server warp (`PLO_SERVERWARP` 178, `PLI_SERVERWARP`) for 5.x/6.x | partial | `lobby.rs`; `lab/five-clients-2026-11-14.md` | `lobby_port` in `config/server.txt` (off by default) answers a 4.x–6.x lobby build's login with 178 to this server. `PLI_SERVERWARP` (41) asks the listserver (`SERVERINFO`) and passes its answer on as 178 (`listserver_link.rs`). Real 5.24r4 and 6.03r7 took the 178 warp on the wire; on-screen confirmation on a drawing setup is still open (#56 Stage 6) |
 
@@ -54,6 +54,8 @@ test) and the lab notes.
 | Board changes (`PLI_BOARDMODIFY`, `PLI_REQUESTUPDATEBOARD`, `PLO_BOARDMODIFY2`) | partial | `board_changes.rs` | `PLI_BOARDMODIFY` is passed on to the level and sent to later arrivals; 2x2 changes grow back after 15 s (`rules = 1999`: 7.5 to 12.5 s). On a gmap, players in that cell or next to it get 186 with the cell, arrivals and neighbour loads included. `PLI_REQUESTUPDATEBOARD` (130) gets the kept changes in its rectangle; no server's answer to 130 is known, so this is this server's choice. A level keeps at most 256 changes (#106). The board check (`anticheat.board`, off by default) refuses blocks that match none of the world's `config/boardrules.txt` (#107); the bush cut is captured from 2.05 and 2.22 (the sample world has the 2.22 line); pushing a stone on 2.22 sends no board change, and dug holes are not captured, so a world with them needs its own lines |
 | Horses (`PLI_HORSEADD`, `HORSEDEL`) | tests | `original_rules.rs`, `horses.rs` | As the 1999 servers keep them (`ORIGINAL-SERVERS.md`): shown to arrivals, gone after `horse_lifetime` |
 | `PLI_ENTERLEVEL` (newer builds' level entry) | no | | |
+| NPC movement blocking (GServer-v2 beta4 option 32) | no | | New in upstream beta4 (fork sync, seihai-gserver-v2#102). Its behaviour is to be written up from a lab run on the fork before this server takes it |
+| NPCs' real x and y when a move queue ends | no | | Upstream beta4 sends an NPC's real position once its queued moves finish (seihai-gserver-v2#102); this server has no NPC move queue yet |
 | Level groups (`gr.setlevelgroup`) | no | | |
 
 ## Players and combat
@@ -61,13 +63,14 @@ test) and the lab notes.
 | Area | Status | Shown by | Notes |
 |---|---|---|---|
 | Own and other players' props, per receiver's build | lab | `other_players.rs`; `lab/five-clients-2026-11-12.md` | 1.39 draws others with no body (that lab note) |
+| The classic bow (prop 10 before 2.1, 2.05 rev 2 aside) | partial | `others.rs` | Not kept from bow-slot senders and not sent to bow-slot receivers. Upstream beta4 sends the classic bow form with preset 1 as the default (seihai-gserver-v2#102); not here yet |
 | Chat (prop 12) | lab | `lab/five-clients-2026-11-12.md` | |
 | `PLI_TOALL` (to everyone online, `PLO_TOALL` 13) | tests | `original_rules.rs` | |
 | Bombs, arrows, fire spy, explosions | lab | `bombs_arrows.rs`; `lab/stage3-2026-11-05.md` | |
 | Player hits, hurt and death, `PLI_CLAIMPKER` | lab | `hurt_death.rs`; `lab/hurt-2026-11-12.md` | The kill cost is GServer-v2's; `rules = 1999` takes the 1999 servers' (`original_rules.rs`). One-byte claims from 1.21 to 1.35: tests only. Deaths and alignment over time were saved for real 1.35 and 1.39 (`lab/rules-1999-2026-11-13.md`) |
-| Carry and throw (`PLI_THROWCARRIED`) | no | | Its shape needs a capture of a real throw |
-| `PLI_HITOBJECTS`, `PLI_SHOOT`, `PLI_SHOOT2` | no | | |
-| `PLI_SHOWIMGPLAYER` | no | | |
+| Carry and throw (`PLI_THROWCARRIED`) | tests | `level_objects.rs` | 11 is empty and goes to the level as 21 with the thrower's id, as 2.05 reads it (`packet-layouts.md`). A capture of a real throw is still open |
+| `PLI_HITOBJECTS`, `PLI_SHOOT`, `PLI_SHOOT2` | tests | `level_objects.rs`, `shoot.rs` unit tests | 36 goes to the level as 46 with the sender's id. A shot goes as 175 or 191, each receiver in the form it reads; a 40 for a 6.01+ receiver becomes 191 (default gravity 2.0) and a 48 for 2.17 to 3.153 becomes 175, from the static read in `shoot-5007.md`. No real-client shot yet |
+| `PLI_SHOWIMGPLAYER` | tests | `level_objects.rs` | 24 goes to the level as 32 with the sender's id, as the stock server relays it (lab capture in `packet-ids.md`) |
 | Private messages between players (`PLI_PRIVATEMESSAGE`) | partial | `listserver_link.rs`, `private_messages.rs` | From RCs, the listserver and players online. 1.21 to 1.35 read and write one-byte ids. A target whose build reads no 37 makes the sender get a server message, and a text over 1024 bytes an admin message (GServer 1.3). PMs to players on other servers from a game client are not sent on yet |
 | Guilds (`gr.setguild` and the rest) | no | | |
 | Player groups (`gr.setgroup`, `gr.setplayergroup`) | no | | |
@@ -78,13 +81,13 @@ test) and the lab notes.
 |---|---|---|---|
 | Level NPCs and their props (`PLI_NPCPROPS`) | lab | `level_npcs.rs`; `lab/stage3-2026-11-05.md` | |
 | Level NPC scripts per client build: GS1 text, GS2 bytecode or none | tests | `npcs.rs` unit tests | No original client has run the bytecode yet (#45) |
-| Baddies (`PLI_BADDYPROPS`, `BADDYHURT`) | lab | `baddies.rs`; `lab/stage3` | `PLI_BADDYADD` is not handled |
+| Baddies (`PLI_BADDYPROPS`, `BADDYHURT`) | lab | `baddies.rs`; `lab/stage3` | `PLI_BADDYADD` (a baddy a client puts): tests only (`level_objects.rs`). It gets the next free id and goes to the whole level; at most 50 a level, and it is gone for good once dead |
 | NPCs a client puts or deletes (`PLI_PUTNPC`, `PLI_NPCDEL`) | tests | `original_rules.rs`, `putnpc.rs` | On under `rules = 1999` or with `put_npcs = yes`. As on the 1999 servers; a client can only take away an NPC a client put. No real-client run yet |
 | Trigger actions (`PLI_TRIGGERACTION`, `gr.*` commands) | partial | `npc_messages.rs` | `PLI_TRIGGERACTION` (38) is a GINT3 npc id, two half-tile `GCHAR`s, then the action and an optional comma and parameter. The others in the level who read 48 get that body with the sender's id as a `GSHORT` in front. The NPC-server gets `TRIGGER_ACTION` with the name before the comma. A new non-empty chat line (prop 12) is `PM_TO_NPC`. A script's `NPC_TRIGGER_ACTION` is still not passed on to clients, and `gr.*` commands are not run here. No new real-client capture of 48 |
 | Weapons: `PLI_WEAPONADD`, `PLI_TOWEAPON` | partial | `weapons.rs`, `npc_messages.rs` | `PLI_WEAPONADD` gives default weapons and level-NPC weapons (`toweapons`), kept in `weapons/` and on the account. GS1 weapons go only to builds that run GS1. `PLI_TOWEAPON` (25, 1.21 to 1.37) keeps the weapon when the world has it or an NPC in the level gives it; the uploaded script is never used (`weapons.rs`) |
 | GS2 weapons and the weapon cache (`PLO_WEAPONHASH` 193, `PLI_UPDATESCRIPT` 158, 132) | lab | `weapons.rs`; `tests/weapons.rs`; lab comment on #120 | To builds that run GS2 and read 193 and 132 behind `PLO_RAWDATA` (4.04r2 to 4.20r8, the Mac 5.12): 33 with name and image, 193 with the CRC-32 of the bytecode; a 158 for a held weapon gets the bytecode in 132. Real 4.20r8 takes this server's 193 and 132, writes its cache and asks no more on the next login (lab, 2026-11-13). Not yet seen: the weapon running (the lab world had no stock art) |
 | `PLO_NPCWEAPONSCRIPT` (140) / `PLO_LOADSCRIPT` (197) | no | `profile.rs` guards | Modern cache path not sent yet. Profile helpers refuse 197/140 on pure 4.x and refuse 132/133/193 on 5.24+/v6 (`protocol/script-packet-guards.md`) |
-| `PLI_NPCWEAPONDEL` | no | | |
+| `PLI_NPCWEAPONDEL` | tests | `level_objects.rs` | The weapon is taken off the account. Nothing is sent back |
 | Classes (`PLI_UPDATECLASS` → 133) | tests | `classes.rs`; `tests/classes.rs` | v4 path (3.153–5.12, including 4.20r8): 161 with CRC (0 when cold) answers as raw 133 behind `PLO_RAWDATA` from `scripts/<name>.txt`; matching CRC silent; missing name → empty 133. Not yet: real-client lab; `UPDATEGANI`; 5.24+ 197 delivery |
 | GS2 script updates (`PLI_UPDATEGANI`) | no | | `PLI_UPDATESCRIPT` is answered for weapons (above) |
 | Server-side scripts (the NPC-server) | tests | `npc_link.rs`, `npc_messages.rs`, `nc.rs`; `lab/npclink-2026-10-31.md`, `lab/nc-2026-11-12.md` | A separate program, `seihai-npcserver`, runs GS1. GServer-v2 runs GS2 server scripts in-process; there is no GS2 server engine here |
@@ -118,7 +121,7 @@ What the original servers do (`ORIGINAL-SERVERS.md`) and where this server stand
 | Area | Status | Shown by | Notes |
 |---|---|---|---|
 | `PLI_WANTFILE`, `PLI_UPDATEFILE`, large files | lab | `file_serving.rs`, `file_rtt.rs`; `lab/stage2` | |
-| `PLI_VERIFYWANTSEND` | no | | |
+| `PLI_VERIFYWANTSEND` | tests | `level_objects.rs` | `GINT5` CRC-32 and a name: the file when the server's copy differs, `PLO_FILEUPTODATE` when it matches, `PLO_FILESENDFAILED` when there is none |
 | Packages (`.gpak`, `.gpake`, `PLI_UPDATEPACKAGEREQUESTFILE`) | partial | `gpak.rs` unit tests; real clients 2026-11-06 (`gpak.rs` notes) | Packages are served and load on 4.20r8 to 6.03r7. The update-package request is not handled |
 | `foldersconfig.txt` | partial | `import_v2.rs` | Read by `import-v2` to lay out a world; not a live setting |
 
@@ -130,7 +133,7 @@ What the original servers do (`ORIGINAL-SERVERS.md`) and where this server stand
 | RC accounts, rights, comments, bans | tests | `rc_accounts.rs` | |
 | RC file browser | tests | `rc_files.rs` | Move, delete and rename are not captured from a real RC |
 | Server options, folder config, server flags from RC | partial | `rc_server.rs`; `lab/rc-options-2026-11-12.md` | Real RC2 2.05 reads all three. Its save dialogs crash under Wine, so saving is shown with seihai-rc only |
-| NC: NPC Control | lab | `nc.rs`; `lab/nc-2026-11-12.md` | |
+| NC: NPC Control | lab | `nc.rs`, `nc_scripts.rs`; `lab/nc-2026-11-12.md` | NPC list, attributes, scripts and delete: lab. Classes (`scripts/`) and weapons (`weapons/`): list, get, save and delete, tests only. NPC reset, warp, flags, add, local NPCs and the level list are not answered |
 | `PLI_PROCESSLIST` | no | | |
 
 ## Anti-cheat
@@ -160,7 +163,7 @@ From the rows above, in the roadmap's order:
 3. **Board changes:** a lab capture of a dug hole, for the sample
    `boardrules.txt` (#107).
 4. **Trigger actions**, once `PLO_TRIGGERACTION` has a capture.
-5. Carry and throw, guilds and the word filter.
+5. Real-client runs of the shot, throw and hit relays; guilds.
 
 Each row moves to **lab** only with a recorded run. A differential run
 against the fork is the stronger evidence: same world, same client, same

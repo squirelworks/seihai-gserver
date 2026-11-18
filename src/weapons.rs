@@ -295,6 +295,9 @@ pub fn file_name(name: &str) -> String {
 pub struct Weapons {
     dir: Option<PathBuf>,
     by_name: BTreeMap<String, Weapon>,
+    /// The file each loaded weapon came from, by lower-case name; a
+    /// weapon written here is in [`file_name`].
+    files: BTreeMap<String, PathBuf>,
 }
 
 impl Weapons {
@@ -303,6 +306,7 @@ impl Weapons {
         let mut w = Weapons {
             dir: Some(dir.to_path_buf()),
             by_name: BTreeMap::new(),
+            files: BTreeMap::new(),
         };
         let Ok(entries) = std::fs::read_dir(dir) else {
             return w;
@@ -329,7 +333,9 @@ impl Weapons {
                     {
                         eprintln!("weapon {}: no GS2 bytecode: {e}", weapon.name);
                     }
-                    w.by_name.insert(weapon.name.to_ascii_lowercase(), weapon);
+                    let key = weapon.name.to_ascii_lowercase();
+                    w.files.insert(key.clone(), path.clone());
+                    w.by_name.insert(key, weapon);
                 }
                 None => eprintln!("{}: not a weapon file (no REALNAME)", path.display()),
             }
@@ -343,6 +349,44 @@ impl Weapons {
 
     pub fn names(&self) -> impl Iterator<Item = &str> {
         self.by_name.values().map(|w| w.name.as_str())
+    }
+
+    /// NPC Control's weapon save: the weapon replaces any by that name
+    /// and its file is written (the file it was loaded from, else
+    /// [`file_name`]).
+    pub fn set(&mut self, weapon: Weapon) -> std::io::Result<()> {
+        let key = weapon.name.to_ascii_lowercase();
+        if let Some(dir) = &self.dir {
+            let path = self
+                .files
+                .get(&key)
+                .cloned()
+                .unwrap_or_else(|| dir.join(file_name(&weapon.name)));
+            std::fs::create_dir_all(dir)?;
+            std::fs::write(&path, latin1(&weapon.to_text()))?;
+            self.files.insert(key.clone(), path);
+        }
+        self.by_name.insert(key, weapon);
+        Ok(())
+    }
+
+    /// NPC Control's weapon delete: the weapon and its file go. False when
+    /// the world had no such weapon.
+    pub fn remove(&mut self, name: &str) -> bool {
+        let key = name.to_ascii_lowercase();
+        if self.by_name.remove(&key).is_none() {
+            return false;
+        }
+        let path = self
+            .files
+            .remove(&key)
+            .or_else(|| self.dir.as_ref().map(|d| d.join(file_name(name))));
+        if let Some(path) = path {
+            if let Err(e) = std::fs::remove_file(&path) {
+                eprintln!("weapon {name}: could not remove {}: {e}", path.display());
+            }
+        }
+        true
     }
 
     /// Add a weapon and write its file, unless the world has one by that
@@ -361,6 +405,7 @@ impl Weapons {
                         path.display()
                     );
                 }
+                self.files.insert(key.clone(), path);
             }
             self.by_name.insert(key.clone(), weapon);
         }

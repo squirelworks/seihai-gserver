@@ -15,11 +15,13 @@ fn line(id: u8) -> Vec<u8> {
     vec![id.wrapping_add(0x20), b'\n']
 }
 
-/// Log in, send `probe` (an id stage 1 does not handle) and `quiet` in one
-/// frame with a file request, and wait until the probe is recorded. The
-/// file request is the sync: the reply is written after that frame is
-/// handled, so the quiet id has been seen too.
-fn seen_probe(version: ClientVersion, account: &str, quiet: u8, probe: u8) {
+/// Log in, send `quiet` and, when given, `probe` (an id this server does
+/// not handle) in one frame with a file request. The file request is the
+/// sync: the reply is written after that frame is handled, so the quiet id
+/// has been seen. The probe, when there is one, shows that unhandled ids
+/// are recorded at all. 1.33 and 1.39 have none left: this server handles
+/// every id their tables can send.
+fn seen_probe(version: ClientVersion, account: &str, quiet: u8, probe: Option<u8>) {
     let w = world(account, "*\n");
     let (addr, server) = start(&w);
     let mut sess = login_gserver(&addr, version, 1, account, PASSWORD, false)
@@ -28,10 +30,12 @@ fn seen_probe(version: ClientVersion, account: &str, quiet: u8, probe: u8) {
         sess.conn.can_send(quiet),
         "{account} profile cannot send {quiet}"
     );
-    assert!(
-        sess.conn.can_send(probe),
-        "{account} profile cannot send {probe}"
-    );
+    if let Some(probe) = probe {
+        assert!(
+            sess.conn.can_send(probe),
+            "{account} profile cannot send {probe}"
+        );
+    }
     let rx = sess.conn.spawn_reader().unwrap();
     let mut st = SessionState::for_version(version);
     read_until(&rx, &mut st, Duration::from_secs(10), |s| {
@@ -41,13 +45,25 @@ fn seen_probe(version: ClientVersion, account: &str, quiet: u8, probe: u8) {
 
     let before = st.file_requests.len();
     sess.conn
-        .send_messages(&[line(quiet), line(probe), wantfile_message("no-such.png")])
+        .send_messages(&[
+            line(quiet),
+            line(probe.unwrap_or(quiet)),
+            wantfile_message("no-such.png"),
+        ])
         .unwrap();
     read_until(&rx, &mut st, Duration::from_secs(5), |s| {
         s.file_requests.len() > before
     })
     .unwrap_or_else(|e| panic!("{account} file reply: {e}"));
 
+    let Some(probe) = probe else {
+        let unknown = server.unknown_ids();
+        assert!(
+            !unknown.contains(&quiet),
+            "{account}: {quiet} was logged as unhandled; unknown {unknown:?}"
+        );
+        return;
+    };
     let end = Instant::now() + Duration::from_secs(2);
     loop {
         let unknown = server.unknown_ids();
@@ -67,13 +83,19 @@ fn seen_probe(version: ClientVersion, account: &str, quiet: u8, probe: u8) {
 
 #[test]
 fn upload_25_and_add_33_are_not_unhandled() {
-    seen_probe(ClientVersion::V133, "w133", ids::PLI_TOWEAPON, 11);
-    seen_probe(ClientVersion::V139, "w139", ids::PLI_WEAPONADD, 11);
+    seen_probe(ClientVersion::V133, "w133", ids::PLI_TOWEAPON, None);
+    seen_probe(ClientVersion::V139, "w139", ids::PLI_WEAPONADD, None);
 }
 
 /// Real 5.24r4 and 6.03r7 send 157 `idle` after the login (lab,
 /// 2026-11-12, #45).
 #[test]
 fn update_gani_157_is_not_unhandled() {
-    seen_probe(ClientVersion::V524R4, "w524", ids::PLI_UPDATEGANI, 11);
+    // 152 (`PLI_REQUESTTEXT`) is not handled yet.
+    seen_probe(
+        ClientVersion::V524R4,
+        "w524",
+        ids::PLI_UPDATEGANI,
+        Some(152),
+    );
 }

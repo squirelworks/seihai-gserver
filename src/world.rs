@@ -87,6 +87,9 @@
 
 use crate::anticheat::{AntiCheat, Kind, Score, Walk, HURT_RANGE, LINK_SLACK};
 use crate::baddies::Baddy;
+
+/// Baddies clients may put in one level (`PLI_BADDYADD`).
+pub const MAX_PUT_BADDIES: usize = 50;
 use crate::coords::{GlobalPos, LocalPos};
 use crate::gmaps::{
     needs_gmap_file_before_warp, plays_gmaps, Gmaps, Place, GMAPLEVELX, GMAPLEVELY,
@@ -212,6 +215,8 @@ pub enum WorldIn {
     NpcProps { player: u16, raw: Vec<u8> },
     /// `PLI_BADDYPROPS` (15): a baddy id, then the props that changed.
     BaddyProps { player: u16, raw: Vec<u8> },
+    /// `PLI_BADDYADD` (17), as sent.
+    BaddyAdd { player: u16, raw: Vec<u8> },
     /// `PLI_BADDYHURT` (16): a follower's hit on a baddy, for the leader.
     BaddyHurt { player: u16, raw: Vec<u8> },
     /// `PLI_HURTPLAYER` (26): `GSHORT victim`, dx, dy, power.
@@ -240,6 +245,20 @@ pub enum WorldIn {
     SetRules(crate::rules::Rules),
     /// A message passed on to the others in the player's level as `out`,
     /// with the player's id first when `named` (bombs, shots, blasts).
+    /// `PLI_SHOOT` (40) or, with `two`, `PLI_SHOOT2` (48), as sent
+    /// (`shoot.rs`).
+    Shoot {
+        player: u16,
+        two: bool,
+        raw: Vec<u8>,
+    },
+    /// NPC Control reading or changing the world's classes and weapons.
+    NcStore {
+        op: crate::nc::StoreOp,
+        reply: oneshot::Sender<crate::nc::StoreAnswer>,
+    },
+    /// `PLI_NPCWEAPONDEL`: the weapon is taken off the account.
+    NpcWeaponDel { player: u16, name: String },
     Relay {
         player: u16,
         out: u8,
@@ -537,6 +556,14 @@ impl World {
     }
 
     /// `PLI_BADDYPROPS`, as sent.
+    /// `PLI_BADDYADD` (17), as sent: a baddy the client puts.
+    pub fn baddy_add(&self, player: u16, raw: &[u8]) {
+        let _ = self.tx.send(WorldIn::BaddyAdd {
+            player,
+            raw: raw.to_vec(),
+        });
+    }
+
     pub fn baddy_props(&self, player: u16, raw: &[u8]) {
         let _ = self.tx.send(WorldIn::BaddyProps {
             player,
@@ -558,6 +585,33 @@ impl World {
             named,
             raw: raw.to_vec(),
         });
+    }
+
+    /// NPC Control's class and weapon requests (`nc.rs`). `Done(false)`
+    /// when the world task is gone.
+    pub async fn nc_store(&self, op: crate::nc::StoreOp) -> crate::nc::StoreAnswer {
+        let (reply, answer) = oneshot::channel();
+        if self.tx.send(WorldIn::NcStore { op, reply }).is_err() {
+            return crate::nc::StoreAnswer::Done(false);
+        }
+        answer.await.unwrap_or(crate::nc::StoreAnswer::Done(false))
+    }
+
+    /// A shot, as sent (`shoot.rs`).
+    pub fn shoot(&self, player: u16, two: bool, raw: &[u8]) {
+        let _ = self.tx.send(WorldIn::Shoot {
+            player,
+            two,
+            raw: raw.to_vec(),
+        });
+    }
+
+    /// `PLI_NPCWEAPONDEL`: the rest is the weapon's name.
+    pub fn npc_weapon_del(&self, player: u16, raw: &[u8]) {
+        let name = latin1_text(raw).trim().to_string();
+        if !name.is_empty() {
+            let _ = self.tx.send(WorldIn::NpcWeaponDel { player, name });
+        }
     }
 
     /// `PLI_BOARDMODIFY` (1), as sent.
@@ -1260,6 +1314,7 @@ impl WorldTask {
             WorldIn::TriggerAction { player, raw } => self.trigger_action(player, &raw),
             WorldIn::NpcProps { player, raw } => self.npc_props(player, &raw),
             WorldIn::BaddyProps { player, raw } => self.baddy_props(player, &raw),
+            WorldIn::BaddyAdd { player, raw } => self.baddy_add(player, &raw),
             WorldIn::BaddyHurt { player, raw } => self.baddy_hurt(player, &raw),
             WorldIn::HurtPlayer { player, raw } => self.hurt_player(player, &raw),
             WorldIn::ClaimPker { player, raw } => self.claim_pker(player, &raw),
@@ -1269,6 +1324,15 @@ impl WorldTask {
                 named,
                 raw,
             } => self.relay(player, out, named, &raw),
+            WorldIn::Shoot { player, two, raw } => self.shoot(player, two, &raw),
+            WorldIn::NcStore { op, reply } => {
+                let _ = reply.send(self.nc_store(op));
+            }
+            WorldIn::NpcWeaponDel { player, name } => {
+                if let Some(p) = self.players.get_mut(&player) {
+                    p.weapons.retain(|w| !w.eq_ignore_ascii_case(&name));
+                }
+            }
             WorldIn::LevelWarp(w) => self.warp(w),
             WorldIn::BoardModify { player, raw } => self.board_modify(player, &raw),
             WorldIn::Horse { player, add, raw } => self.horse(player, add, &raw),
@@ -2359,6 +2423,40 @@ impl WorldTask {
         }
     }
 
+    /// A baddy a client puts in its level: the next free id, and the whole
+    /// baddy to everyone there, the sender too. At most [`MAX_PUT_BADDIES`]
+    /// put baddies a level; ids stop at 223.
+    fn baddy_add(&mut self, id: u16, raw: &[u8]) {
+        let Some(p) = self.players.get(&id) else {
+            return;
+        };
+        let level = p.level.clone();
+        let rules = self.rules.clone();
+        let list = self.baddies.entry(level.clone()).or_default();
+        if list.iter().filter(|b| b.put).count() >= MAX_PUT_BADDIES {
+            return;
+        }
+        let Some(bid) = list
+            .iter()
+            .map(|b| b.id)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .filter(|&n| n <= 223)
+        else {
+            return;
+        };
+        let Some(b) = Baddy::put(bid, raw, |k| rules.baddy_start_mode(k)) else {
+            return;
+        };
+        for o in self.players.values() {
+            if o.level == level && o.profile.reads(PLO_BADDYPROPS) {
+                let _ = o.outbox.send(vec![b.message(o.version)]);
+            }
+        }
+        list.push(b);
+    }
+
     /// A hit on a baddy of the player's level, for the leader to apply.
     fn baddy_hurt(&mut self, id: u16, raw: &[u8]) {
         let Some(p) = self.players.get(&id) else {
@@ -2443,6 +2541,102 @@ impl WorldTask {
             if other != id && o.level == p.level && o.profile.reads(out) {
                 let _ = o.outbox.send(vec![m.clone()]);
             }
+        }
+    }
+
+    /// NPC Control's class and weapon requests, on the world's stores.
+    fn nc_store(&mut self, op: crate::nc::StoreOp) -> crate::nc::StoreAnswer {
+        use crate::nc::{StoreAnswer, StoreOp};
+        match op {
+            StoreOp::ClassNames => {
+                StoreAnswer::Names(self.classes.names().map(str::to_string).collect())
+            }
+            StoreOp::WeaponNames => {
+                StoreAnswer::Names(self.weapons.names().map(str::to_string).collect())
+            }
+            StoreOp::ClassGet(n) => {
+                StoreAnswer::Class(self.classes.get(&n).map(|c| c.source.clone()))
+            }
+            StoreOp::WeaponGet(n) => StoreAnswer::Weapon(
+                self.weapons
+                    .get(&n)
+                    .map(|w| (w.image.clone(), w.source.clone())),
+            ),
+            StoreOp::ClassSet(n, source) => match self.classes.set(&n, &source) {
+                Ok(()) => StoreAnswer::Done(true),
+                Err(e) => {
+                    eprintln!("class {n}: not saved: {e}");
+                    StoreAnswer::Done(false)
+                }
+            },
+            StoreOp::ClassDelete(n) => StoreAnswer::Done(self.classes.remove(&n)),
+            StoreOp::WeaponSet {
+                name,
+                image,
+                script,
+            } => {
+                if name.trim().is_empty() {
+                    return StoreAnswer::Done(false);
+                }
+                let w = crate::weapons::Weapon::new(name.trim(), image.trim(), &script);
+                match self.weapons.set(w) {
+                    Ok(()) => StoreAnswer::Done(true),
+                    Err(e) => {
+                        eprintln!("weapon {name}: not saved: {e}");
+                        StoreAnswer::Done(false)
+                    }
+                }
+            }
+            StoreOp::WeaponDelete(n) => StoreAnswer::Done(self.weapons.remove(&n)),
+        }
+    }
+
+    /// A shot to the others in the level, in the form each reads
+    /// (`shoot.rs`). A body too short to read goes nowhere.
+    fn shoot(&self, id: u16, two: bool, raw: &[u8]) {
+        let Some(p) = self.players.get(&id) else {
+            return;
+        };
+        let min = if two {
+            crate::shoot::MIN_SHOOT2
+        } else {
+            crate::shoot::MIN_SHOOT
+        };
+        if raw.len() < min {
+            return;
+        }
+        let cell = p.gmap.as_ref().map_or((0, 0), |g| g.cell);
+        let (same, other) = if two {
+            (crate::wire::ids::PLO_SHOOT2, crate::wire::ids::PLO_SHOOT)
+        } else {
+            (crate::wire::ids::PLO_SHOOT, crate::wire::ids::PLO_SHOOT2)
+        };
+        let mut converted: Option<Option<Vec<u8>>> = None;
+        for (&o_id, o) in &self.players {
+            if o_id == id || o.level != p.level {
+                continue;
+            }
+            let (out, body) = if o.profile.reads(same) {
+                (same, raw.to_vec())
+            } else if o.profile.reads(other) {
+                let c = converted.get_or_insert_with(|| {
+                    if two {
+                        crate::shoot::shoot2_to_shoot(raw)
+                    } else {
+                        crate::shoot::shoot_to_shoot2(raw, (cell.0 as i32, cell.1 as i32))
+                    }
+                });
+                match c {
+                    Some(b) => (other, b.clone()),
+                    None => continue,
+                }
+            } else {
+                continue;
+            };
+            let mut m = Vec::with_capacity(body.len() + 2);
+            crate::wire::gshort(id, &mut m);
+            m.extend(body);
+            let _ = o.outbox.send(vec![crate::wire::msg(out, &m)]);
         }
     }
 
@@ -2737,11 +2931,13 @@ impl WorldTask {
             for b in list.iter_mut() {
                 if b.dead_at.is_some_and(|t| t <= now) {
                     out.push((level.clone(), b.id, Some(b.die(now, respawn))));
-                } else if b.back_at.is_some_and(|t| t <= now) {
+                } else if b.back_at.is_some_and(|t| t <= now) && !b.put {
                     b.respawn();
                     out.push((level.clone(), b.id, None));
                 }
             }
+            // A put baddy is gone once its minute dead is over.
+            list.retain(|b| !(b.put && b.back_at.is_some_and(|t| t <= now)));
         }
         for (level, bid, changed) in out {
             let Some(b) = self

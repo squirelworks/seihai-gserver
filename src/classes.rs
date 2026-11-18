@@ -27,7 +27,7 @@ use crate::wire::ids::PLO_UNKNOWN133;
 use crate::wire::{gchar, latin1, raw_block};
 use seihai_core::scripting::delivery::Delivery;
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// One class of the world.
 #[derive(Debug, Clone)]
@@ -99,9 +99,26 @@ pub fn empty_message(name: &str, to: impl Into<ClientProfile>) -> Option<Vec<u8>
     Class::new(name, "").bytecode_message(to)
 }
 
+/// A class name NPC Control may write: printable ASCII, no path
+/// separators, not starting with a dot, at most 64 bytes.
+pub fn valid_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && !name.starts_with('.')
+        && name.bytes().all(|b| {
+            b.is_ascii_graphic()
+                && !matches!(
+                    b,
+                    b'/' | b'\\' | b':' | b'*' | b'?' | b'"' | b'<' | b'>' | b'|'
+                )
+        })
+}
+
 /// The world's classes, by lower-case name.
 #[derive(Debug, Default)]
 pub struct Classes {
+    /// `scripts/`, where NPC Control's changes are written.
+    dir: Option<PathBuf>,
     by_name: BTreeMap<String, Class>,
 }
 
@@ -109,7 +126,10 @@ impl Classes {
     /// Every `.txt` in `dir` (a missing folder is an empty list). The file
     /// stem is the class name; the body is the script.
     pub fn load(dir: &Path) -> Classes {
-        let mut c = Classes::default();
+        let mut c = Classes {
+            dir: Some(dir.to_path_buf()),
+            ..Classes::default()
+        };
         let Ok(entries) = std::fs::read_dir(dir) else {
             return c;
         };
@@ -147,6 +167,47 @@ impl Classes {
 
     pub fn get(&self, name: &str) -> Option<&Class> {
         self.by_name.get(&name.to_ascii_lowercase())
+    }
+
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.by_name.values().map(|c| c.name.as_str())
+    }
+
+    /// NPC Control's class save: the class gets `source` and its file is
+    /// written (`scripts/<name>.txt`). An existing class keeps its file
+    /// name's case. `Err` for a name that is not a plain file name, or a
+    /// file that cannot be written.
+    pub fn set(&mut self, name: &str, source: &str) -> std::io::Result<()> {
+        let name = self
+            .get(name)
+            .map_or_else(|| name.to_string(), |c| c.name.clone());
+        let Some(dir) = self.dir.as_ref().filter(|_| valid_name(&name)) else {
+            return Err(std::io::Error::other("not a class name"));
+        };
+        std::fs::create_dir_all(dir)?;
+        std::fs::write(dir.join(format!("{name}.txt")), latin1(source))?;
+        self.by_name
+            .insert(name.to_ascii_lowercase(), Class::new(&name, source));
+        Ok(())
+    }
+
+    /// NPC Control's class delete: the class and its file go. False when
+    /// the world had no such class.
+    pub fn remove(&mut self, name: &str) -> bool {
+        let Some(class) = self.by_name.remove(&name.to_ascii_lowercase()) else {
+            return false;
+        };
+        if let Some(dir) = &self.dir {
+            let path = dir.join(format!("{}.txt", class.name));
+            if let Err(e) = std::fs::remove_file(&path) {
+                eprintln!(
+                    "class {}: could not remove {}: {e}",
+                    class.name,
+                    path.display()
+                );
+            }
+        }
+        true
     }
 
     /// Answer `PLI_UPDATECLASS`: `crc` is the client's `GINT5`, `name` the
