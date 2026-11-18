@@ -15,7 +15,8 @@ use seihai_gserver::wire::{gchar, gint3, tokenize};
 use seihai_npcserver::scripts::Scripts;
 use seihai_npcserver::session::{self, Timing};
 use seihai_rc::nc::{
-    npc_delete_message, npc_get_message, npc_script_get_message, NcEvent, NcSession,
+    npc_delete_message, npc_get_message, npc_reset_message, npc_script_get_message,
+    npc_warp_message, NcEvent, NcSession,
 };
 use seihai_rc::rc::{npc_server_query, Event, LoginParams, RcKind, Session};
 use std::path::{Path, PathBuf};
@@ -191,6 +192,22 @@ fn an_nc_lists_reads_sets_and_deletes_npcs() {
         file.contains("if (created) {\n  message dong, dong; }\n"),
         "{file}"
     );
+
+    // Reset: 29 for that NPC; the NPC-server starts it again.
+    nc.send(&[npc_reset_message(1).unwrap()]).unwrap();
+    wait_for(&mut nc, "the reset", |e| *e == NcEvent::NpcReset(1));
+    // Warp: the NPC-server writes the new place into the file.
+    nc.send(&[npc_warp_message(1, 12.5, 7.0, "house.nw").unwrap()])
+        .unwrap();
+    let end = Instant::now() + T;
+    loop {
+        let file = std::fs::read_to_string(w.join("npcs/bell.txt")).unwrap();
+        if file.starts_with("LEVEL house.nw\nX 12.5\nY 7\n") {
+            break;
+        }
+        assert!(Instant::now() < end, "not warped: {file}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
 
     // Deleted: 159 comes back once the file is put aside.
     nc.send(&[npc_delete_message(1).unwrap()]).unwrap();

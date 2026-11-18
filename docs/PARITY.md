@@ -55,7 +55,7 @@ test) and the lab notes.
 | Horses (`PLI_HORSEADD`, `HORSEDEL`) | tests | `original_rules.rs`, `horses.rs` | As the 1999 servers keep them (`ORIGINAL-SERVERS.md`): shown to arrivals, gone after `horse_lifetime` |
 | `PLI_ENTERLEVEL` (newer builds' level entry) | no | | |
 | NPC movement blocking (GServer-v2 beta4 option 32) | no | | New in upstream beta4 (fork sync, seihai-gserver-v2#102). Its behaviour is to be written up from a lab run on the fork before this server takes it |
-| NPCs' real x and y when a move queue ends | no | | Upstream beta4 sends an NPC's real position once its queued moves finish (seihai-gserver-v2#102); this server has no NPC move queue yet |
+| NPCs' real x and y when a move queue ends | yes (by design) | `seihai-npcserver` `effects.rs` tests | Upstream beta4 sends an NPC's real position once its queued moves end (seihai-gserver-v2#102). Here a script's `move` has no server-side queue: the NPC-server sets the end position at once and sends it as the NPC's x and y, so the clients always have the real position |
 | Level groups (`gr.setlevelgroup`) | no | | |
 
 ## Players and combat
@@ -133,7 +133,7 @@ What the original servers do (`ORIGINAL-SERVERS.md`) and where this server stand
 | RC accounts, rights, comments, bans | tests | `rc_accounts.rs` | |
 | RC file browser | tests | `rc_files.rs` | Move, delete and rename are not captured from a real RC |
 | Server options, folder config, server flags from RC | partial | `rc_server.rs`; `lab/rc-options-2026-11-12.md` | Real RC2 2.05 reads all three. Its save dialogs crash under Wine, so saving is shown with seihai-rc only |
-| NC: NPC Control | lab | `nc.rs`, `nc_scripts.rs`; `lab/nc-2026-11-12.md` | NPC list, attributes, scripts and delete: lab. Classes (`scripts/`) and weapons (`weapons/`): list, get, save and delete, tests only. NPC reset, warp, flags, add, local NPCs and the level list are not answered |
+| NC: NPC Control | lab | `nc.rs`, `nc_scripts.rs`; `lab/nc-2026-11-12.md` | NPC list, attributes, scripts and delete: lab. Classes (`scripts/`) and weapons (`weapons/`): list, get, save and delete; NPC reset (29 back) and warp, through the NPC-server's `NC_NPC_RESET`/`NC_NPC_WARP`: tests only. NPC flags, add, local NPCs and the level list are not answered |
 | `PLI_PROCESSLIST` | no | | |
 
 ## Anti-cheat
