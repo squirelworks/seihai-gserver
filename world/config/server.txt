@@ -112,6 +112,10 @@ listserver_key =
 # accounts' hashes. The local account file still keeps the player's state
 # and is made, with no password, on the first login.
 listserver_accounts = false
+# The address the listserver should list for this server. Empty: AUTO, the
+# address the link comes from. Set it behind NAT or a port forward; the
+# listserver uses it only with gserver_ip = "sent".
+listserver_ip =
 
 # Anti-cheat (src/anticheat.rs). Off by default: a check can only guess,
 # and a wrong guess hurts honest players. Turned on, each check only logs

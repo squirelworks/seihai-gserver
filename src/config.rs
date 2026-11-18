@@ -110,6 +110,11 @@ pub struct Config {
     /// Check account passwords with the listserver (`VERIACC2`) in place
     /// of the local accounts' hashes. Off by default.
     pub listserver_accounts: bool,
+    /// The address the gserver tells the listserver to list (NEWSERVER and
+    /// SETIP). Empty (the default): `AUTO`, so the listserver lists the
+    /// address the link comes from. Set it when that address is not the
+    /// one players reach, e.g. behind NAT or a port forward.
+    pub listserver_ip: String,
     /// The anti-cheat checks and what they do (`anticheat`,
     /// `anticheat_log`, `anticheat_rate`, `anticheat.<check>`).
     pub anticheat: crate::anticheat::Policy,
@@ -169,6 +174,7 @@ impl Config {
             listserver_secure: true,
             listserver_key: String::new(),
             listserver_accounts: false,
+            listserver_ip: String::new(),
             anticheat: crate::anticheat::Policy::default(),
             gpaks: Vec::new(),
             rules: crate::rules::Rules::default(),
@@ -287,6 +293,7 @@ impl Config {
             "listserver_secure" => self.listserver_secure = flag(v)?,
             "listserver_key" => self.listserver_key = v.to_string(),
             "listserver_accounts" => self.listserver_accounts = flag(v)?,
+            "listserver_ip" => self.listserver_ip = v.to_string(),
             "gpaks" => {
                 self.gpaks = v
                     .split(',')
