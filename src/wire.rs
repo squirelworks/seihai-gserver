@@ -245,9 +245,6 @@ pub mod ids {
     /// `GCHAR` lengths (`shoot-5007.md`). Passed on as [`PLO_SHOOT`] or
     /// [`PLO_SHOOT2`] (`shoot.rs`).
     pub const PLI_SHOOT: u8 = 40;
-    /// `GINT5` CRC-32 of the client's copy, then a file name: the file is
-    /// sent when the server's differs.
-    pub const PLI_VERIFYWANTSEND: u8 = 47;
     /// A shot from 5.12 on, with pixel positions, the gmap cell and a
     /// two-byte gravity (`shoot-5007.md`).
     pub const PLI_SHOOT2: u8 = 48;
@@ -357,6 +354,9 @@ pub mod ids {
     /// keep filter until stock re-read + lab say so
     /// (Graal_analysis `protocol/plo-194-resetclient.md`). 4.04r2 to 6.03r7.
     /// Seihai name until 2026-11-11: `PLO_CLEARWEAPONS`.
+    /// The gserver is linked to the listserver (gs2lib `PLO_SERVERLISTCONNECTED`).
+    /// Real Windows 6.03r7 keeps its "Connecting to ..." box until it gets it.
+    pub const PLO_SERVERLISTCONNECTED: u8 = 190;
     pub const PLO_RESETCLIENT: u8 = 194;
     /// Use the cached script: the same DES key as [`PLO_NPCWEAPONSCRIPT`] and
     /// the CRC32 of the plain body. Confirmed. No body in this message.
@@ -459,6 +459,10 @@ pub mod ids {
     pub const PLI_PROCESSLIST: u8 = 44;
     /// Entered a level. Confirmed: read and not answered.
     pub const PLI_ENTERLEVEL: u8 = 46;
+    /// GINT5 CRC-32 of the client's copy, then the name: send the file if the
+    /// server's differs (gs2lib `PLI_VERIFYWANTSEND`; 5.x and 6.x ask for
+    /// `basepackage.gupd` this way on the game server).
+    pub const PLI_VERIFYWANTSEND: u8 = 47;
     /// A GINT5 checksum of the GANI the client has (0 for none), then the
     /// name without `.gani`. Confirmed: real 5.24r4 and 6.03r7 send
     /// `idle` after the login (lab, 2026-11-12, #45), next to a

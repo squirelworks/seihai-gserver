@@ -105,3 +105,28 @@ fn the_warp_text_has_no_commas_in_its_fields() {
     };
     assert_eq!(w.payload(), b"0,Lab  Game,127.0.0.1,14802");
 }
+
+/// 5.x and 6.x log in as `guest`: each plays under its own `pc:<n>`, so two
+/// are online at once (GServer-v2 does the same), and none is saved.
+#[test]
+fn two_guests_are_online_at_once() {
+    let w = world(
+        "guests", "*
+",
+    );
+    let (_lobby, game, _server) = start_with_lobby(&w);
+    let mut held = Vec::new();
+    for v in [ClientVersion::V603R7, ClientVersion::V524R4] {
+        let mut sess = login_gserver(&game, v, random_key(), "guest", "anything", false)
+            .unwrap_or_else(|e| panic!("{v:?}: {e}"));
+        let rx = sess.conn.spawn_reader().unwrap();
+        let mut st = SessionState::for_version(v);
+        read_until(&rx, &mut st, Duration::from_secs(10), |s| s.board.is_some())
+            .unwrap_or_else(|e| panic!("{v:?}: {e}"));
+        assert!(st.disconnect_message.is_none(), "{v:?}");
+        held.push((sess, rx));
+    }
+    drop(held);
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(!w.join("accounts/guest.txt").exists());
+}

@@ -28,6 +28,13 @@ use tokio::net::{TcpListener, TcpStream};
 /// is dropped: past that the two iterators are out of step for good.
 const MAX_BAD_IN_A_ROW: u32 = 3;
 
+/// The Login lobby's file hold before the server warp (`Conn::lobby_files`):
+/// how long to wait for the first file request, the quiet gap after the
+/// last answer that ends the hold, and the most the hold may take.
+const LOBBY_FILES_FIRST: Duration = Duration::from_secs(5);
+const LOBBY_FILES_QUIET: Duration = Duration::from_millis(2000);
+const LOBBY_FILES_MAX: Duration = Duration::from_secs(30);
+
 pub struct Server {
     pub cfg: Config,
     pub allow: AllowList,
@@ -55,6 +62,8 @@ pub struct Server {
     login_rate: crate::ratelimit::LoginRate,
     /// The cap on password checks at once (`password_checks`).
     password_checks: crate::ratelimit::PasswordChecks,
+    /// The last guest number given (`guest_name`).
+    guests: std::sync::atomic::AtomicU32,
     /// `config/wordfilter.txt` (`wordfilter`).
     pub wordfilter: crate::wordfilter::WordFilter,
 }
@@ -95,6 +104,10 @@ impl Server {
         // A player who logs out is written back to their account file.
         let saving = store.clone();
         world.set_saver(Box::new(move |l: crate::world::Leaving| {
+            // Guests (`pc:<number>`) are load-only.
+            if l.account.starts_with("pc:") {
+                return;
+            }
             let saved = saving.load(&l.account).and_then(|a| match a {
                 Some(mut a) => {
                     l.apply_to(&mut a);
@@ -130,6 +143,7 @@ impl Server {
             anticheat,
             login_rate,
             password_checks,
+            guests: std::sync::atomic::AtomicU32::new(0),
             cfg,
             allow,
             extra_tokens,
@@ -143,6 +157,16 @@ impl Server {
     }
 
     /// The most password checks that ran at once since the start.
+    /// A new guest's load-only account name, `pc:<number>` as GServer-v2
+    /// names them; never the same twice while the server runs.
+    pub fn guest_name(&self) -> String {
+        let n = self
+            .guests
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1;
+        format!("pc:{n}")
+    }
+
     pub fn peak_password_checks(&self) -> usize {
         self.password_checks.peak()
     }
@@ -508,11 +532,26 @@ impl Conn {
                 )
                 .await;
         }
-        let mut account = match self.check_account(&login, true).await? {
-            Ok(a) => a,
-            Err(why) => {
-                self.server.log(&self.peer, &format!("{who}: {why}"));
-                return self.refuse(&mut codec, why).await;
+        // 5.x and 6.x builds log in as `guest` before any account form
+        // (Login lobby and game server alike). As GServer-v2 does, each
+        // guest plays under its own load-only name `pc:<number>`, so two
+        // guests can be online at once and none is saved.
+        let guest = login.account.eq_ignore_ascii_case("guest")
+            && version.profile().protocol.lobby.is_some();
+        let mut account = if guest {
+            Account::new(
+                &self.server.guest_name(),
+                &cfg.start_level,
+                cfg.start_x,
+                cfg.start_y,
+            )
+        } else {
+            match self.check_account(&login, true).await? {
+                Ok(a) => a,
+                Err(why) => {
+                    self.server.log(&self.peer, &format!("{who}: {why}"));
+                    return self.refuse(&mut codec, why).await;
+                }
             }
         };
         // Banned by account, or (not for staff) by address or machine.
@@ -543,7 +582,7 @@ impl Conn {
         if self.server.cfg.revive_dead {
             account.revive();
         }
-        let key = login.account.to_ascii_lowercase();
+        let key = account.name.to_ascii_lowercase();
         // What the world sends this player; framed and sent below.
         let (outbox, mut from_world) = tokio::sync::mpsc::unbounded_channel();
         let start = if account.level.is_empty() {
@@ -650,6 +689,7 @@ impl Conn {
         // not turned away as already online; then the client closes.
         if let Some(warp) = self.lobby.clone() {
             if version.profile().protocol.lobby.is_some() {
+                self.lobby_files(&mut codec, &mut inbuf, version).await?;
                 if let Some(id) = self.player.take() {
                     self.server.world.left(id);
                     if let Some(l) = &self.server.listlink {
@@ -1412,6 +1452,125 @@ impl Conn {
         self.stream.write_all(&frame).await
     }
 
+    /// The Login lobby answers a 4.x to 6.x build's first file requests
+    /// before the server warp. These builds ask for `pics1.png` and the
+    /// player art once, on the Login server, and never ask the game server
+    /// again, so a warp sent before the transfer ends leaves the tiles
+    /// black (Graal_analysis `client-internals/v5v6-expiry-and-black-screen.md`).
+    /// Only file requests are answered here; anything else is read and
+    /// dropped. The hold ends when no request has come for
+    /// `LOBBY_FILES_QUIET` (or `LOBBY_FILES_FIRST` before the first one),
+    /// and never runs past `LOBBY_FILES_MAX`.
+    async fn lobby_files(
+        &mut self,
+        codec: &mut Codec,
+        inbuf: &mut InBuf,
+        version: ClientVersion,
+    ) -> io::Result<()> {
+        let profile = crate::profile::ClientProfile::of(version);
+        let start = Instant::now();
+        let mut last: Option<Instant> = None;
+        let mut answered = 0usize;
+        loop {
+            let wait = match last {
+                Some(t) => LOBBY_FILES_QUIET.saturating_sub(t.elapsed()),
+                None => LOBBY_FILES_FIRST.saturating_sub(start.elapsed()),
+            }
+            .min(LOBBY_FILES_MAX.saturating_sub(start.elapsed()));
+            if wait.is_zero() {
+                break;
+            }
+            match tokio::time::timeout(wait, fill(&mut self.stream, inbuf)).await {
+                Err(_) => break,
+                Ok(r) => r?,
+            }
+            let mut reply: Vec<Vec<u8>> = Vec::new();
+            while let Some(frame) = inbuf.take_frame()? {
+                let body = codec.decode(&frame)?;
+                for m in codec.messages(&body) {
+                    let Some((&id, rest)) = m.split_first() else {
+                        continue;
+                    };
+                    let id = id.wrapping_sub(0x20);
+                    let payload = rest.strip_suffix(b"\n").unwrap_or(rest);
+                    if id == PLI_VERIFYWANTSEND {
+                        let Some((crc, rest)) = payload.split_at_checked(5) else {
+                            continue;
+                        };
+                        let raw = crate::files::verify_name(rest);
+                        let name = seihai_core::protocol::latin1(raw);
+                        let found = self.server.files.find(&name);
+                        let key = self.server.files.package_key(&name);
+                        let crc = crate::wire::read_gint5(crc) as u32;
+                        reply.extend(crate::files::verify(
+                            profile,
+                            raw,
+                            &name,
+                            found.as_ref(),
+                            crc,
+                            key,
+                        ));
+                        answered += 1;
+                        last = Some(Instant::now());
+                        continue;
+                    }
+                    let (since, raw) = match id {
+                        PLI_WANTFILE => (None, payload),
+                        PLI_UPDATEFILE => match payload.split_at_checked(5) {
+                            Some((t, name)) => (Some(crate::wire::read_gint5(t)), name),
+                            None => continue,
+                        },
+                        _ => continue,
+                    };
+                    let asked = if id == PLI_WANTFILE {
+                        crate::files::wanted_name(profile, raw)
+                    } else {
+                        std::borrow::Cow::Borrowed(raw)
+                    };
+                    let name = seihai_core::protocol::latin1(&asked);
+                    let found = self.server.files.find(&name);
+                    let key = self.server.files.package_key(&name);
+                    reply.extend(crate::files::offer(
+                        profile,
+                        &asked,
+                        &name,
+                        found.as_ref(),
+                        since,
+                        key,
+                    ));
+                    answered += 1;
+                    if self.server.verbose {
+                        let what = if found.is_some() {
+                            "found"
+                        } else {
+                            "not found"
+                        };
+                        self.server
+                            .log(&self.peer, &format!("lobby file {name}: {what}"));
+                    }
+                    last = Some(Instant::now());
+                }
+            }
+            // The quiet gap counts from the end of the transfer.
+            if !reply.is_empty() {
+                for f in reply {
+                    self.send(codec, &f).await?;
+                }
+                last = Some(Instant::now());
+            }
+        }
+        if self.server.verbose {
+            self.server.log(
+                &self.peer,
+                &format!(
+                    "lobby: answered {answered} file requests in {} ms before the warp",
+                    start.elapsed().as_millis()
+                ),
+            );
+        }
+        Ok(())
+    }
+
     /// Tell the client why and close.
     async fn refuse(&mut self, codec: &mut Codec, why: &str) -> io::Result<()> {
         let _ = self
@@ -1507,7 +1666,9 @@ impl Session {
             let id = id.wrapping_sub(0x20);
             // File checks are left out: a client checks its whole cache at
             // login, hundreds at once, and each answer is cheap.
-            if !matches!(id, PLI_WANTFILE | PLI_UPDATEFILE) && self.over_rate(server) {
+            if !matches!(id, PLI_WANTFILE | PLI_UPDATEFILE | PLI_VERIFYWANTSEND)
+                && self.over_rate(server)
+            {
                 if self.kicked {
                     break;
                 }
@@ -1572,8 +1733,6 @@ impl Session {
                         server.log(peer, &format!("file {name}: {what}"));
                     }
                 }
-                // `GINT5` CRC-32 and a file name: the file when the
-                // client's copy differs (`files::verify`).
                 PLI_VERIFYWANTSEND => {
                     let Some((crc, rest)) = payload.split_at_checked(5) else {
                         continue;
@@ -1585,15 +1744,20 @@ impl Session {
                     let key = server.files.package_key(&name);
                     let sent =
                         crate::files::verify(self.profile, raw, &name, found.as_ref(), crc, key);
-                    for f in sent {
-                        if f.len() > crate::files::CHUNK && !reply.is_empty() {
-                            frames.push(std::mem::take(&mut reply));
-                        }
-                        if f.len() > crate::files::CHUNK {
-                            frames.push(f);
+                    if !reply.is_empty() && sent.len() > 1 {
+                        frames.push(std::mem::take(&mut reply));
+                    }
+                    match sent.len() {
+                        1 => reply.extend_from_slice(&sent[0]),
+                        _ => frames.extend(sent),
+                    }
+                    if server.verbose {
+                        let what = if found.is_some() {
+                            "checked"
                         } else {
-                            reply.extend_from_slice(&f);
-                        }
+                            "not found"
+                        };
+                        server.log(peer, &format!("file {name} (crc check): {what}"));
                     }
                 }
                 PLI_NPCPROPS => server.world.npc_props(self.id, payload),

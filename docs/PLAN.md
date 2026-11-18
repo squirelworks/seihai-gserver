@@ -118,9 +118,12 @@ behaviour against, never a code source (see `00-rules.md`).
    game port. Real 5.24r4 and 6.03r7 reached the game port that way in
    `docs/lab/five-clients-2026-11-12.md` and the 2026-11-14 rerun. Players in
    the start level may see the lobby login arrive and leave. GS2 bytecode
-   goes to level NPCs per build (#45; #120/#121). **Still open on #56:** an
-   on-screen Stage 6 check on a setup that draws (Wine needs the base
-   asset set; prefer a rendering Windows guest for 5.x/6.x).
+   goes to level NPCs per build (#45; #120/#121). **Lab-run on real Windows** (`docs/lab/stage6-win10-2026-11-18.md`): real
+   4.20r8, 5.00r7, 5.12, 5.24r4 and 6.03r7 came through the lobby and drew the
+   level, the player and the HUD with Seihai's own art pack. The lobby answers
+   the first file requests before the warp; guests play as `pc:<n>`; builds
+   with a lobby get `ONLINEMODE` and `SERVERLISTCONNECTED` and no
+   `LISTPROCESSES` (which crashed real Windows 6.03r7).
 7. Server-side anti-cheat (see "Milestone: server-side anti-cheat" below).
    **Done** (issue #54 closed): items, hearts, gralats, hurt range, policy
    bans and the staff exemption, plus machine/address bans (#64, #88, #96,

@@ -123,6 +123,13 @@ pub fn login_burst(
     }
 
     out.put(PLO_SIGNATURE, &[gchar(73)]);
+    // "Logged in": real Windows 6.03r7 keeps its "Connecting to <server>"
+    // box over the level until it gets this (GServer-v2 sends it right
+    // after the signature; docs/lab/stage6-win10-2026-11-18.md).
+    out.put(PLO_ONLINEMODE, b"");
+    if !cfg.listserver.is_empty() {
+        out.put(PLO_SERVERLISTCONNECTED, b"");
+    }
     if !cfg.start_message.is_empty() {
         out.put(PLO_STARTMESSAGE, &latin1(&cfg.start_message));
     }
@@ -156,7 +163,13 @@ pub fn login_burst(
     let mut t = Vec::new();
     gint4(world_time, &mut t);
     out.put(PLO_NEWWORLDTIME, &t);
-    out.put(PLO_LISTPROCESSES, b"");
+    // Not to 4.x and later (the builds with a Login lobby): real Windows
+    // 6.03r7 on Windows 10 crashes in ntdll about 13 s after a login burst
+    // that ends with it, before it opens its window
+    // (docs/lab/stage6-win10-2026-11-18.md). GServer-v2 does not send it.
+    if version.core.protocol.lobby.is_none() {
+        out.put(PLO_LISTPROCESSES, b"");
+    }
     vec![out.body]
 }
 
@@ -638,6 +651,42 @@ mod tests {
         );
         assert_eq!(frames[1][0], gchar(PLO_BOARDPACKET));
         assert_eq!(frames[2][0], gchar(PLO_LEVELNAME));
+    }
+
+    /// Real Windows 6.03r7 on Windows 10 crashes on `LISTPROCESSES` (182)
+    /// and keeps its "Connecting to ..." box until `ONLINEMODE` (168) and
+    /// `SERVERLISTCONNECTED` (190) (docs/lab/stage6-win10-2026-11-18.md).
+    #[test]
+    fn lobby_builds_get_168_and_190_and_no_182() {
+        let mut cfg = Config::defaults(Path::new("w"));
+        cfg.listserver = "127.0.0.1:14900".into();
+        let a = account();
+        for v in [
+            ClientVersion::V420R8,
+            ClientVersion::V524R4,
+            ClientVersion::V603R7,
+        ] {
+            let f = login_burst(
+                &cfg,
+                v,
+                EncryptionGen::Gen5,
+                &Player {
+                    id: 1,
+                    account: &a,
+                    leader: true,
+                },
+                &Level::blank("start.nw", 0, 0),
+                None,
+                0,
+            );
+            let ids: Vec<u8> = seihai_core::protocol::split_messages(&f[0])
+                .iter()
+                .map(|m| m.id)
+                .collect();
+            assert!(!ids.contains(&PLO_LISTPROCESSES), "{v:?}");
+            assert!(ids.contains(&PLO_ONLINEMODE), "{v:?}");
+            assert!(ids.contains(&PLO_SERVERLISTCONNECTED), "{v:?}");
+        }
     }
 
     #[test]

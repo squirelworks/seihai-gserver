@@ -143,6 +143,9 @@ impl Npc {
 
     fn new(id: u32, image: &str, source: &str, x2: u8, y2: u8) -> Self {
         let mut props = BTreeMap::new();
+        // `NPC - x y` in a level file: no image. Sent as `-`, every real
+        // build from 1.39 to 6.03r7 asked for `-.gif` (lab 2026-11-18).
+        let image = if image == "-" { "" } else { image };
         let mut image = latin1(image);
         image.truncate(223);
         let mut v = vec![gchar(image.len() as u8)];

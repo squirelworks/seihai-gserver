@@ -139,7 +139,7 @@ fn verify_want_send_compares_crcs() {
         b.extend_from_slice(b"v.png");
         b
     };
-    // Same CRC: up to date (45). Missing: failed (30).
+    // Same CRC: up to date (45). Missing: no answer (GServer-v2's rule).
     amy.send(47, &ask(crc));
     amy.until("45", |m| has(m, 45, b"v.png"));
     // A stale copy: the file. 4.20r8 gets it inside `PLO_RAWDATA`, which
@@ -161,11 +161,15 @@ fn verify_want_send_compares_crcs() {
         sent.concat().windows(9).any(|w| w == b"verify me"),
         "{sent:?}"
     );
-    let mut miss = Vec::new();
-    seihai_gserver::wire::gint5(1, &mut miss);
-    miss.extend_from_slice(b"none.png");
-    amy.send(47, &miss);
-    amy.until("30", |m| has(m, 30, b"none.png"));
+    assert!(seihai_gserver::files::verify(
+        ClientVersion::V420R8,
+        b"none.png",
+        "none.png",
+        None,
+        1,
+        None
+    )
+    .is_empty());
     let _ = std::fs::remove_dir_all(&w);
 }
 

@@ -355,10 +355,10 @@ pub fn verify_name(rest: &[u8]) -> &[u8] {
     }
 }
 
-/// The answer to `PLI_VERIFYWANTSEND`: the file when the client's
-/// CRC-32 differs from the server's copy, "up to date" when it matches,
-/// "failed" when the world has no such file. Packages go through
-/// [`offer`] as a fresh request when stale.
+/// The answer to `PLI_VERIFYWANTSEND` (47): the client's copy has CRC-32
+/// `crc`. As GServer-v2 answers it: an update package (`.gupd`) is always
+/// sent; a file the world lacks gets no answer; a file whose CRC-32 matches
+/// is "up to date" (after its key, for a `.gpake`); any other is sent.
 pub fn verify(
     version: impl Into<ClientProfile>,
     asked: &[u8],
@@ -368,11 +368,14 @@ pub fn verify(
     key: Option<[u8; 8]>,
 ) -> Vec<Vec<u8>> {
     let version = version.into();
-    match found {
-        Some(f) if crc32(&f.data) == crc => one(up_to_date(version, asked)),
-        Some(_) => offer(version, asked, name, found, None, key),
-        None => one(failed(version, asked)),
+    let Some(f) = found else {
+        return Vec::new();
+    };
+    let package = name.to_ascii_lowercase().ends_with(".gupd");
+    if !package && crc32(&f.data) == crc {
+        return offer(version, asked, name, found, Some(u64::MAX), key);
     }
+    offer(version, asked, name, found, None, key)
 }
 
 /// CRC-32 (the zlib one) of `bytes`.
@@ -475,6 +478,40 @@ mod tests {
         s.index.lock().unwrap().scanned = None;
         assert!(s.find("new.wav").is_some());
         let _ = std::fs::remove_dir_all(&w);
+    }
+
+    /// `PLI_VERIFYWANTSEND` (47): a matching CRC-32 is "up to date", any
+    /// other is sent, an update package is always sent, and a file the world
+    /// lacks gets no answer (GServer-v2's rules).
+    #[test]
+    fn verify_want_send_follows_the_crc() {
+        let v = ClientVersion::V603R7;
+        let f = Found {
+            name: "pics1.png".into(),
+            data: b"PNGDATA".to_vec(),
+            mod_time: 1_700_000_000,
+        };
+        let crc = crc32(&f.data);
+        let same = verify(v, b"pics1.png", "pics1.png", Some(&f), crc, None);
+        assert_eq!(same.concat()[0], PLO_FILEUPTODATE + 32);
+        let other = verify(v, b"pics1.png", "pics1.png", Some(&f), crc ^ 1, None);
+        assert!(other.concat().windows(7).any(|w| w == b"PNGDATA"));
+        assert!(verify(v, b"x.png", "x.png", None, 0, None).is_empty());
+        let p = Found {
+            name: "basepackage.gupd".into(),
+            data: b"GRPKG001".to_vec(),
+            mod_time: 1_700_000_000,
+        };
+        let crc = crc32(&p.data);
+        let sent = verify(
+            v,
+            b"basepackage.gupd",
+            "basepackage.gupd",
+            Some(&p),
+            crc,
+            None,
+        );
+        assert!(sent.concat().windows(8).any(|w| w == b"GRPKG001"));
     }
 
     /// 2.05 gets the mod time and the closing line end, as 2.1 does; 2.04
