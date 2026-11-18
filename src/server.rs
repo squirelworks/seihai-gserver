@@ -574,6 +574,10 @@ impl Conn {
             staff: account.staff,
             weapons: account.weapons.clone(),
             machines: machines.clone(),
+            ip: match self.peer.ip() {
+                std::net::IpAddr::V4(v4) => Some(v4),
+                std::net::IpAddr::V6(v6) => v6.to_ipv4_mapped(),
+            },
         };
         let (id, level, gmap, leader) = match self.server.world.join(joining, outbox).await {
             Some(Ok(j)) => (j.id, j.level, j.gmap, j.leader),

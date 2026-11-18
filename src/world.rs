@@ -370,6 +370,9 @@ pub struct Joining {
     /// The machine ids from the login line, banned with the account when
     /// the anti-cheat bans it.
     pub machines: Vec<String>,
+    /// The IPv4 address the client connected from, sent to others as
+    /// prop 30 (1.28 beta 2 peer UDP, #132).
+    pub ip: Option<std::net::Ipv4Addr>,
 }
 
 /// The world's answer to a login it lets in.
@@ -1218,6 +1221,9 @@ impl WorldTask {
                         // Original 1.28 introductions carry nickname and
                         // level (#132); own_props does not emit prop 20.
                         p.props.set_level(&level.name);
+                        if let Some(ip) = who.ip {
+                            p.props.set_ipaddr(ip);
+                        }
                         p.gmap = gmap.clone();
                         if gmap.is_some() {
                             p.entered.insert(p.level.clone());
@@ -4128,6 +4134,7 @@ mod tests {
             staff: false,
             weapons: Vec::new(),
             machines: Vec::new(),
+            ip: None,
         }
     }
 
