@@ -345,6 +345,16 @@ pub fn offer(
     one(failed(version, asked))
 }
 
+/// The file name in a `PLI_VERIFYWANTSEND` after its `GINT5` CRC: a
+/// `GCHAR` length first when the byte matches the rest's length, else the
+/// rest as it is.
+pub fn verify_name(rest: &[u8]) -> &[u8] {
+    match rest.split_first() {
+        Some((&n, name)) if n >= 0x20 && (n - 0x20) as usize == name.len() => name,
+        _ => rest,
+    }
+}
+
 /// The answer to `PLI_VERIFYWANTSEND` (47): the client's copy has CRC-32
 /// `crc`. As GServer-v2 answers it: an update package (`.gupd`) is always
 /// sent; a file the world lacks gets no answer; a file whose CRC-32 matches
@@ -354,7 +364,7 @@ pub fn verify(
     asked: &[u8],
     name: &str,
     found: Option<&Found>,
-    crc: u64,
+    crc: u32,
     key: Option<[u8; 8]>,
 ) -> Vec<Vec<u8>> {
     let version = version.into();
@@ -362,10 +372,17 @@ pub fn verify(
         return Vec::new();
     };
     let package = name.to_ascii_lowercase().ends_with(".gupd");
-    if !package && u64::from(crc32fast::hash(&f.data)) == crc {
+    if !package && crc32(&f.data) == crc {
         return offer(version, asked, name, found, Some(u64::MAX), key);
     }
     offer(version, asked, name, found, None, key)
+}
+
+/// CRC-32 (the zlib one) of `bytes`.
+pub fn crc32(bytes: &[u8]) -> u32 {
+    let mut c = flate2::Crc::new();
+    c.update(bytes);
+    c.sum()
 }
 
 fn one(body: Vec<u8>) -> Vec<Vec<u8>> {
@@ -474,7 +491,7 @@ mod tests {
             data: b"PNGDATA".to_vec(),
             mod_time: 1_700_000_000,
         };
-        let crc = u64::from(crc32fast::hash(&f.data));
+        let crc = crc32(&f.data);
         let same = verify(v, b"pics1.png", "pics1.png", Some(&f), crc, None);
         assert_eq!(same.concat()[0], PLO_FILEUPTODATE + 32);
         let other = verify(v, b"pics1.png", "pics1.png", Some(&f), crc ^ 1, None);
@@ -485,7 +502,7 @@ mod tests {
             data: b"GRPKG001".to_vec(),
             mod_time: 1_700_000_000,
         };
-        let crc = u64::from(crc32fast::hash(&p.data));
+        let crc = crc32(&p.data);
         let sent = verify(
             v,
             b"basepackage.gupd",

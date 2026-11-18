@@ -42,8 +42,10 @@ pub mod relay;
 pub mod rules;
 pub mod secure;
 pub mod server;
+pub mod shoot;
 pub mod weapons;
 pub mod wire;
+pub mod wordfilter;
 pub mod world;
 
 use std::path::Path;

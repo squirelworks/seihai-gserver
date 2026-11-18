@@ -468,7 +468,7 @@ fn hello(cfg: &Config, players: &BTreeMap<u16, ListedPlayer>) -> io::Result<Vec<
         b"English",
         b"2.31",
         b"",
-        b"AUTO",
+        listed_ip(cfg),
         port.as_bytes(),
         b"",
     ] {
@@ -481,6 +481,16 @@ fn hello(cfg: &Config, players: &BTreeMap<u16, ListedPlayer>) -> io::Result<Vec<
     }
     out.extend(zframe(&body)?);
     Ok(out)
+}
+
+/// The address sent in NEWSERVER and SETIP: `listserver_ip`, or `AUTO`
+/// (the listserver uses the link's own address) when that is empty.
+fn listed_ip(cfg: &Config) -> &[u8] {
+    if cfg.listserver_ip.is_empty() {
+        b"AUTO"
+    } else {
+        cfg.listserver_ip.as_bytes()
+    }
 }
 
 /// `PLYRADD`: GSHORT id, GCHAR type 0 (a player; an RC login will send
@@ -1111,7 +1121,7 @@ fn run(
                     veriacc2(&account, &password, player, account_type)
                 }
                 Err(RecvTimeoutError::Timeout) if last.elapsed() >= KEEPALIVE => {
-                    message(svo::SETIP, b"AUTO")
+                    message(svo::SETIP, listed_ip(&cfg))
                 }
                 Err(RecvTimeoutError::Timeout) => continue,
                 Err(RecvTimeoutError::Disconnected) => return,
@@ -1168,6 +1178,14 @@ fn wait_or_apply(rx: &Receiver<Cmd>, state: &Mutex<State>, d: Duration) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn listed_ip_is_auto_unless_set() {
+        let mut cfg = Config::defaults(Path::new("w"));
+        assert_eq!(listed_ip(&cfg), b"AUTO");
+        assert!(cfg.apply("listserver_ip = 192.168.0.122\n").is_empty());
+        assert_eq!(listed_ip(&cfg), b"192.168.0.122");
+    }
 
     #[test]
     fn veriacc2_answers_reach_the_waiting_login() {
