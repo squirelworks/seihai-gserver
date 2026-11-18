@@ -1617,6 +1617,7 @@ impl Session {
                     None => {}
                 },
                 PLI_BADDYPROPS => server.world.baddy_props(self.id, payload),
+                PLI_BADDYADD => server.world.baddy_add(self.id, payload),
                 crate::horses::PLI_HORSEADD => server.world.horse(self.id, true, payload),
                 crate::horses::PLI_HORSEDEL => server.world.horse(self.id, false, payload),
                 PLI_TOALL => match server.wordfilter.apply(payload) {

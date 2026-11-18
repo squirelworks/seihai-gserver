@@ -403,6 +403,9 @@ pub mod ids {
     pub const PLI_BADDYPROPS: u8 = 15;
     /// A hurt baddy. Confirmed.
     pub const PLI_BADDYHURT: u8 = 16;
+    /// `GCHAR` x × 2, y × 2, type and power, then the image: a baddy the
+    /// client puts (`baddies::Baddy::put`).
+    pub const PLI_BADDYADD: u8 = 17;
     /// `name` or `name=value`. Confirmed.
     pub const PLI_FLAGSET: u8 = 18;
     /// A flag removed. Confirmed.

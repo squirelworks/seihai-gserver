@@ -87,6 +87,9 @@
 
 use crate::anticheat::{AntiCheat, Kind, Score, Walk, HURT_RANGE, LINK_SLACK};
 use crate::baddies::Baddy;
+
+/// Baddies clients may put in one level (`PLI_BADDYADD`).
+pub const MAX_PUT_BADDIES: usize = 50;
 use crate::coords::{GlobalPos, LocalPos};
 use crate::gmaps::{
     needs_gmap_file_before_warp, plays_gmaps, Gmaps, Place, GMAPLEVELX, GMAPLEVELY,
@@ -212,6 +215,8 @@ pub enum WorldIn {
     NpcProps { player: u16, raw: Vec<u8> },
     /// `PLI_BADDYPROPS` (15): a baddy id, then the props that changed.
     BaddyProps { player: u16, raw: Vec<u8> },
+    /// `PLI_BADDYADD` (17), as sent.
+    BaddyAdd { player: u16, raw: Vec<u8> },
     /// `PLI_BADDYHURT` (16): a follower's hit on a baddy, for the leader.
     BaddyHurt { player: u16, raw: Vec<u8> },
     /// `PLI_HURTPLAYER` (26): `GSHORT victim`, dx, dy, power.
@@ -551,6 +556,14 @@ impl World {
     }
 
     /// `PLI_BADDYPROPS`, as sent.
+    /// `PLI_BADDYADD` (17), as sent: a baddy the client puts.
+    pub fn baddy_add(&self, player: u16, raw: &[u8]) {
+        let _ = self.tx.send(WorldIn::BaddyAdd {
+            player,
+            raw: raw.to_vec(),
+        });
+    }
+
     pub fn baddy_props(&self, player: u16, raw: &[u8]) {
         let _ = self.tx.send(WorldIn::BaddyProps {
             player,
@@ -1301,6 +1314,7 @@ impl WorldTask {
             WorldIn::TriggerAction { player, raw } => self.trigger_action(player, &raw),
             WorldIn::NpcProps { player, raw } => self.npc_props(player, &raw),
             WorldIn::BaddyProps { player, raw } => self.baddy_props(player, &raw),
+            WorldIn::BaddyAdd { player, raw } => self.baddy_add(player, &raw),
             WorldIn::BaddyHurt { player, raw } => self.baddy_hurt(player, &raw),
             WorldIn::HurtPlayer { player, raw } => self.hurt_player(player, &raw),
             WorldIn::ClaimPker { player, raw } => self.claim_pker(player, &raw),
@@ -2409,6 +2423,40 @@ impl WorldTask {
         }
     }
 
+    /// A baddy a client puts in its level: the next free id, and the whole
+    /// baddy to everyone there, the sender too. At most [`MAX_PUT_BADDIES`]
+    /// put baddies a level; ids stop at 223.
+    fn baddy_add(&mut self, id: u16, raw: &[u8]) {
+        let Some(p) = self.players.get(&id) else {
+            return;
+        };
+        let level = p.level.clone();
+        let rules = self.rules.clone();
+        let list = self.baddies.entry(level.clone()).or_default();
+        if list.iter().filter(|b| b.put).count() >= MAX_PUT_BADDIES {
+            return;
+        }
+        let Some(bid) = list
+            .iter()
+            .map(|b| b.id)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .filter(|&n| n <= 223)
+        else {
+            return;
+        };
+        let Some(b) = Baddy::put(bid, raw, |k| rules.baddy_start_mode(k)) else {
+            return;
+        };
+        for o in self.players.values() {
+            if o.level == level && o.profile.reads(PLO_BADDYPROPS) {
+                let _ = o.outbox.send(vec![b.message(o.version)]);
+            }
+        }
+        list.push(b);
+    }
+
     /// A hit on a baddy of the player's level, for the leader to apply.
     fn baddy_hurt(&mut self, id: u16, raw: &[u8]) {
         let Some(p) = self.players.get(&id) else {
@@ -2883,11 +2931,13 @@ impl WorldTask {
             for b in list.iter_mut() {
                 if b.dead_at.is_some_and(|t| t <= now) {
                     out.push((level.clone(), b.id, Some(b.die(now, respawn))));
-                } else if b.back_at.is_some_and(|t| t <= now) {
+                } else if b.back_at.is_some_and(|t| t <= now) && !b.put {
                     b.respawn();
                     out.push((level.clone(), b.id, None));
                 }
             }
+            // A put baddy is gone once its minute dead is over.
+            list.retain(|b| !(b.put && b.back_at.is_some_and(|t| t <= now)));
         }
         for (level, bid, changed) in out {
             let Some(b) = self

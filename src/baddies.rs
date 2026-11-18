@@ -97,6 +97,9 @@ pub struct Baddy {
     pub dead_at: Option<Instant>,
     /// When it comes back.
     pub back_at: Option<Instant>,
+    /// Put by a client (`PLI_BADDYADD`): gone for good once dead, where a
+    /// level file's baddy comes back.
+    pub put: bool,
 }
 
 impl Baddy {
@@ -131,6 +134,48 @@ impl Baddy {
             props,
             dead_at: None,
             back_at: None,
+            put: false,
+        })
+    }
+
+    /// A baddy a client put (`PLI_BADDYADD`, 17): `GCHAR` x × 2, y × 2,
+    /// type and power, then the image (empty for the type's own). Layout
+    /// from Graal_analysis `protocol/packet-layouts.md` (2.05 and the
+    /// fork's reader). `None` when it is too short or the type is not 0
+    /// to 9.
+    pub fn put(id: u8, raw: &[u8], start_mode: impl Fn(u8) -> u8) -> Option<Self> {
+        let [x2, y2, kind, power, image @ ..] = raw else {
+            return None;
+        };
+        let kind = kind.checked_sub(0x20)?;
+        let (default_power, default_image) = *KINDS.get(usize::from(kind))?;
+        let power = match power.wrapping_sub(0x20) {
+            0 => default_power,
+            p => p.min(223),
+        };
+        let image = if image.is_empty() {
+            default_image.as_bytes()
+        } else {
+            &image[..image.len().min(223)]
+        };
+        let mut props = BTreeMap::new();
+        props.insert(X, vec![*x2]);
+        props.insert(Y, vec![*y2]);
+        props.insert(TYPE, vec![gchar(kind)]);
+        props.insert(POWER_IMAGE, power_image(power, image));
+        props.insert(MODE, vec![gchar(start_mode(kind))]);
+        props.insert(ANI, vec![gchar(0)]);
+        props.insert(DIR, vec![gchar(START_DIR)]);
+        for p in [VERSE_SIGHT, VERSE_HURT, VERSE_ATTACK] {
+            props.insert(p, vec![gchar(0)]);
+        }
+        Some(Baddy {
+            id,
+            spawn: props.clone(),
+            props,
+            dead_at: None,
+            back_at: None,
+            put: true,
         })
     }
 
@@ -293,6 +338,23 @@ fn half_tiles(t: f32) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_put_baddy_reads_its_record() {
+        let mut raw = vec![0x5c, 0x40, 0x20 + 2, 0x20];
+        let b = Baddy::put(4, &raw, |_| 0).unwrap();
+        assert!(b.put);
+        assert_eq!(b.props[&X], [0x5c]);
+        assert_eq!(b.props[&TYPE], [gchar(2)]);
+        // Power 0 is the type's own; no image is the type's own.
+        assert_eq!(b.props[&POWER_IMAGE], power_image(4, b"baddyred"));
+        raw[3] = 0x20 + 7;
+        raw.extend_from_slice(b"ghost.png");
+        let b = Baddy::put(5, &raw, |_| 0).unwrap();
+        assert_eq!(b.props[&POWER_IMAGE], power_image(7, b"ghost.png"));
+        assert!(Baddy::put(1, &raw[..3], |_| 0).is_none());
+        assert!(Baddy::put(1, &[0x20, 0x20, 0x20 + 10, 0x20], |_| 0).is_none());
+    }
 
     fn walk(_: u8) -> u8 {
         MODE_WALK

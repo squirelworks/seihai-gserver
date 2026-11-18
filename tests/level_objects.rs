@@ -195,3 +195,30 @@ fn a_dropped_weapon_leaves_the_account() {
     }
     let _ = std::fs::remove_dir_all(&w);
 }
+
+/// `PLI_BADDYADD` (17): the put baddy goes to everyone in the level, the
+/// sender too, as `PLO_BADDYPROPS` (2) with the next free id.
+#[test]
+fn a_put_baddy_reaches_the_level() {
+    let w = world("baddyadd", "*\n");
+    let (addr, _server) = start(&w);
+    let mut amy = RawClient::join(&addr, ClientVersion::V205, "amy", in_level);
+    let mut bob = RawClient::join(&addr, ClientVersion::V222, "bob", in_level);
+    amy.settle();
+    bob.settle();
+    // (30, 20), type 2, the type's own power and image.
+    amy.send(17, &[0x5c, 0x48, 0x22, 0x20]);
+    let put = |m: &Seen| {
+        m.iter().any(|(id, p)| {
+            *id == 2 && p.first() == Some(&0x21) && p.windows(8).any(|w| w == b"baddyred")
+        })
+    };
+    amy.until("the put baddy (sender)", put);
+    bob.until("the put baddy", put);
+    // A second one gets id 2.
+    amy.send(17, &[0x5c, 0x48, 0x25, 0x20]);
+    bob.until("the second baddy", |m| {
+        m.iter().any(|(id, p)| *id == 2 && p.first() == Some(&0x22))
+    });
+    let _ = std::fs::remove_dir_all(&w);
+}
