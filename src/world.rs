@@ -240,6 +240,20 @@ pub enum WorldIn {
     SetRules(crate::rules::Rules),
     /// A message passed on to the others in the player's level as `out`,
     /// with the player's id first when `named` (bombs, shots, blasts).
+    /// `PLI_SHOOT` (40) or, with `two`, `PLI_SHOOT2` (48), as sent
+    /// (`shoot.rs`).
+    Shoot {
+        player: u16,
+        two: bool,
+        raw: Vec<u8>,
+    },
+    /// NPC Control reading or changing the world's classes and weapons.
+    NcStore {
+        op: crate::nc::StoreOp,
+        reply: oneshot::Sender<crate::nc::StoreAnswer>,
+    },
+    /// `PLI_NPCWEAPONDEL`: the weapon is taken off the account.
+    NpcWeaponDel { player: u16, name: String },
     Relay {
         player: u16,
         out: u8,
@@ -558,6 +572,33 @@ impl World {
             named,
             raw: raw.to_vec(),
         });
+    }
+
+    /// NPC Control's class and weapon requests (`nc.rs`). `Done(false)`
+    /// when the world task is gone.
+    pub async fn nc_store(&self, op: crate::nc::StoreOp) -> crate::nc::StoreAnswer {
+        let (reply, answer) = oneshot::channel();
+        if self.tx.send(WorldIn::NcStore { op, reply }).is_err() {
+            return crate::nc::StoreAnswer::Done(false);
+        }
+        answer.await.unwrap_or(crate::nc::StoreAnswer::Done(false))
+    }
+
+    /// A shot, as sent (`shoot.rs`).
+    pub fn shoot(&self, player: u16, two: bool, raw: &[u8]) {
+        let _ = self.tx.send(WorldIn::Shoot {
+            player,
+            two,
+            raw: raw.to_vec(),
+        });
+    }
+
+    /// `PLI_NPCWEAPONDEL`: the rest is the weapon's name.
+    pub fn npc_weapon_del(&self, player: u16, raw: &[u8]) {
+        let name = latin1_text(raw).trim().to_string();
+        if !name.is_empty() {
+            let _ = self.tx.send(WorldIn::NpcWeaponDel { player, name });
+        }
     }
 
     /// `PLI_BOARDMODIFY` (1), as sent.
@@ -1269,6 +1310,15 @@ impl WorldTask {
                 named,
                 raw,
             } => self.relay(player, out, named, &raw),
+            WorldIn::Shoot { player, two, raw } => self.shoot(player, two, &raw),
+            WorldIn::NcStore { op, reply } => {
+                let _ = reply.send(self.nc_store(op));
+            }
+            WorldIn::NpcWeaponDel { player, name } => {
+                if let Some(p) = self.players.get_mut(&player) {
+                    p.weapons.retain(|w| !w.eq_ignore_ascii_case(&name));
+                }
+            }
             WorldIn::LevelWarp(w) => self.warp(w),
             WorldIn::BoardModify { player, raw } => self.board_modify(player, &raw),
             WorldIn::Horse { player, add, raw } => self.horse(player, add, &raw),
@@ -2443,6 +2493,102 @@ impl WorldTask {
             if other != id && o.level == p.level && o.profile.reads(out) {
                 let _ = o.outbox.send(vec![m.clone()]);
             }
+        }
+    }
+
+    /// NPC Control's class and weapon requests, on the world's stores.
+    fn nc_store(&mut self, op: crate::nc::StoreOp) -> crate::nc::StoreAnswer {
+        use crate::nc::{StoreAnswer, StoreOp};
+        match op {
+            StoreOp::ClassNames => {
+                StoreAnswer::Names(self.classes.names().map(str::to_string).collect())
+            }
+            StoreOp::WeaponNames => {
+                StoreAnswer::Names(self.weapons.names().map(str::to_string).collect())
+            }
+            StoreOp::ClassGet(n) => {
+                StoreAnswer::Class(self.classes.get(&n).map(|c| c.source.clone()))
+            }
+            StoreOp::WeaponGet(n) => StoreAnswer::Weapon(
+                self.weapons
+                    .get(&n)
+                    .map(|w| (w.image.clone(), w.source.clone())),
+            ),
+            StoreOp::ClassSet(n, source) => match self.classes.set(&n, &source) {
+                Ok(()) => StoreAnswer::Done(true),
+                Err(e) => {
+                    eprintln!("class {n}: not saved: {e}");
+                    StoreAnswer::Done(false)
+                }
+            },
+            StoreOp::ClassDelete(n) => StoreAnswer::Done(self.classes.remove(&n)),
+            StoreOp::WeaponSet {
+                name,
+                image,
+                script,
+            } => {
+                if name.trim().is_empty() {
+                    return StoreAnswer::Done(false);
+                }
+                let w = crate::weapons::Weapon::new(name.trim(), image.trim(), &script);
+                match self.weapons.set(w) {
+                    Ok(()) => StoreAnswer::Done(true),
+                    Err(e) => {
+                        eprintln!("weapon {name}: not saved: {e}");
+                        StoreAnswer::Done(false)
+                    }
+                }
+            }
+            StoreOp::WeaponDelete(n) => StoreAnswer::Done(self.weapons.remove(&n)),
+        }
+    }
+
+    /// A shot to the others in the level, in the form each reads
+    /// (`shoot.rs`). A body too short to read goes nowhere.
+    fn shoot(&self, id: u16, two: bool, raw: &[u8]) {
+        let Some(p) = self.players.get(&id) else {
+            return;
+        };
+        let min = if two {
+            crate::shoot::MIN_SHOOT2
+        } else {
+            crate::shoot::MIN_SHOOT
+        };
+        if raw.len() < min {
+            return;
+        }
+        let cell = p.gmap.as_ref().map_or((0, 0), |g| g.cell);
+        let (same, other) = if two {
+            (crate::wire::ids::PLO_SHOOT2, crate::wire::ids::PLO_SHOOT)
+        } else {
+            (crate::wire::ids::PLO_SHOOT, crate::wire::ids::PLO_SHOOT2)
+        };
+        let mut converted: Option<Option<Vec<u8>>> = None;
+        for (&o_id, o) in &self.players {
+            if o_id == id || o.level != p.level {
+                continue;
+            }
+            let (out, body) = if o.profile.reads(same) {
+                (same, raw.to_vec())
+            } else if o.profile.reads(other) {
+                let c = converted.get_or_insert_with(|| {
+                    if two {
+                        crate::shoot::shoot2_to_shoot(raw)
+                    } else {
+                        crate::shoot::shoot_to_shoot2(raw, (cell.0 as i32, cell.1 as i32))
+                    }
+                });
+                match c {
+                    Some(b) => (other, b.clone()),
+                    None => continue,
+                }
+            } else {
+                continue;
+            };
+            let mut m = Vec::with_capacity(body.len() + 2);
+            crate::wire::gshort(id, &mut m);
+            m.extend(body);
+            let _ = o.outbox.send(vec![crate::wire::msg(out, &m)]);
         }
     }
 

@@ -55,6 +55,8 @@ pub struct Server {
     login_rate: crate::ratelimit::LoginRate,
     /// The cap on password checks at once (`password_checks`).
     password_checks: crate::ratelimit::PasswordChecks,
+    /// `config/wordfilter.txt` (`wordfilter`).
+    pub wordfilter: crate::wordfilter::WordFilter,
 }
 
 impl Server {
@@ -118,7 +120,10 @@ impl Server {
         world.set_board_rules_file(cfg.world.join("config").join("boardrules.txt"));
         let login_rate = crate::ratelimit::LoginRate::new(cfg.login_rate, cfg.login_rate_loopback);
         let password_checks = crate::ratelimit::PasswordChecks::new(cfg.password_check_slots());
+        let wordfilter =
+            crate::wordfilter::WordFilter::new(cfg.world.join("config").join("wordfilter.txt"));
         Server {
+            wordfilter,
             files: crate::files::FileStore::new(&cfg.world),
             npc,
             world,
@@ -1153,6 +1158,17 @@ impl Conn {
         for (id, n) in &list {
             first.extend(crate::nc::npc_add(*id, n));
         }
+        // The class list: one 163 a class (seihai-rc `docs/PROTOCOL.md`).
+        if let crate::nc::StoreAnswer::Names(names) = self
+            .server
+            .world
+            .nc_store(crate::nc::StoreOp::ClassNames)
+            .await
+        {
+            for n in names {
+                first.extend(crate::nc::class_add(&n));
+            }
+        }
         if !first.is_empty() {
             self.send(&mut codec, &first).await?;
         }
@@ -1234,7 +1250,7 @@ impl Conn {
         account: &str,
         op: crate::nc::Op,
     ) -> Option<Vec<u8>> {
-        use crate::nc::Op;
+        use crate::nc::{Op, StoreAnswer, StoreOp};
         use seihai_npcserver::link::{nc_get, Message};
         let log = |what: String| self.server.log(&self.peer, &format!("NC {account} {what}"));
         match op {
@@ -1261,7 +1277,116 @@ impl Conn {
                 }
                 None
             }
-            Op::WeaponList => Some(crate::nc::no_weapons()),
+            Op::WeaponList => Some(self.nc_weapon_list().await),
+            Op::ClassGet(name) => match self
+                .server
+                .world
+                .nc_store(StoreOp::ClassGet(name.clone()))
+                .await
+            {
+                StoreAnswer::Class(script) => {
+                    Some(crate::nc::class_get(&name, &script.unwrap_or_default()))
+                }
+                _ => None,
+            },
+            Op::WeaponGet(name) => match self
+                .server
+                .world
+                .nc_store(StoreOp::WeaponGet(name.clone()))
+                .await
+            {
+                StoreAnswer::Weapon(Some((image, script))) => {
+                    Some(crate::nc::weapon(&name, &image, &script))
+                }
+                _ => Some(crate::nc::console_line(
+                    format!("error: no weapon {name}").as_bytes(),
+                )),
+            },
+            Op::ClassSet(name, script) => {
+                let done = self
+                    .server
+                    .world
+                    .nc_store(StoreOp::ClassSet(name.clone(), script))
+                    .await;
+                if done == StoreAnswer::Done(true) {
+                    log(format!("saves class {name}"));
+                    let mut r = crate::nc::class_add(&name);
+                    r.extend(crate::nc::console_line(
+                        format!("Script {name} updated by {account}").as_bytes(),
+                    ));
+                    Some(r)
+                } else {
+                    Some(crate::nc::console_line(
+                        format!("error: class {name} not saved").as_bytes(),
+                    ))
+                }
+            }
+            Op::ClassDelete(name) => {
+                let done = self
+                    .server
+                    .world
+                    .nc_store(StoreOp::ClassDelete(name.clone()))
+                    .await;
+                (done == StoreAnswer::Done(true)).then(|| {
+                    log(format!("deletes class {name}"));
+                    crate::nc::class_delete(&name)
+                })
+            }
+            Op::WeaponSet {
+                name,
+                image,
+                script,
+            } => {
+                let done = self
+                    .server
+                    .world
+                    .nc_store(StoreOp::WeaponSet {
+                        name: name.clone(),
+                        image,
+                        script,
+                    })
+                    .await;
+                let line = if done == StoreAnswer::Done(true) {
+                    log(format!("saves weapon {name}"));
+                    format!("Weapon {name} updated by {account}")
+                } else {
+                    format!("error: weapon {name} not saved")
+                };
+                let mut r = crate::nc::console_line(line.as_bytes());
+                r.extend(self.nc_weapon_list().await);
+                Some(r)
+            }
+            Op::WeaponDelete(name) => {
+                let done = self
+                    .server
+                    .world
+                    .nc_store(StoreOp::WeaponDelete(name.clone()))
+                    .await;
+                let line = if done == StoreAnswer::Done(true) {
+                    log(format!("deletes weapon {name}"));
+                    format!("Weapon {name} deleted by {account}")
+                } else {
+                    format!("error: no weapon {name}")
+                };
+                let mut r = crate::nc::console_line(line.as_bytes());
+                r.extend(self.nc_weapon_list().await);
+                Some(r)
+            }
+        }
+    }
+
+    /// 167 with the world's weapons.
+    async fn nc_weapon_list(&self) -> Vec<u8> {
+        match self
+            .server
+            .world
+            .nc_store(crate::nc::StoreOp::WeaponNames)
+            .await
+        {
+            crate::nc::StoreAnswer::Names(n) => {
+                crate::nc::weapon_list(n.iter().map(String::as_str))
+            }
+            _ => crate::nc::weapon_list([]),
         }
     }
 
@@ -1443,13 +1568,43 @@ impl Session {
                         server.log(peer, &format!("file {name}: {what}"));
                     }
                 }
+                // `GINT5` CRC-32 and a file name: the file when the
+                // client's copy differs (`files::verify`).
+                PLI_VERIFYWANTSEND => {
+                    let Some((crc, rest)) = payload.split_at_checked(5) else {
+                        continue;
+                    };
+                    let crc = crate::wire::read_gint5(crc) as u32;
+                    let raw = crate::files::verify_name(rest);
+                    let name = seihai_core::protocol::latin1(raw);
+                    let found = server.files.find(&name);
+                    let key = server.files.package_key(&name);
+                    let sent =
+                        crate::files::verify(self.profile, raw, &name, found.as_ref(), crc, key);
+                    for f in sent {
+                        if f.len() > crate::files::CHUNK && !reply.is_empty() {
+                            frames.push(std::mem::take(&mut reply));
+                        }
+                        if f.len() > crate::files::CHUNK {
+                            frames.push(f);
+                        } else {
+                            reply.extend_from_slice(&f);
+                        }
+                    }
+                }
                 PLI_NPCPROPS => server.world.npc_props(self.id, payload),
                 crate::board::PLI_BOARDMODIFY => server.world.board_modify(self.id, payload),
                 PLI_WEAPONADD => server.world.weapon_add(self.id, payload),
                 PLI_TOWEAPON => server.world.weapon_upload(self.id, payload),
                 PLI_UPDATESCRIPT => server.world.update_script(self.id, payload),
                 PLI_UPDATECLASS => server.world.update_class(self.id, payload),
-                PLI_PRIVATEMESSAGE => server.world.private_message(self.id, payload),
+                PLI_PRIVATEMESSAGE => {
+                    let one_byte = self.profile.server.one_byte_id;
+                    match filter_pm(&server.wordfilter, payload, one_byte) {
+                        Some(p) => server.world.private_message(self.id, &p),
+                        None => server.world.private_message(self.id, payload),
+                    }
+                }
                 PLI_TRIGGERACTION => server.world.trigger_action(self.id, payload),
                 PLI_REQUESTUPDATEBOARD => server.world.request_board(self.id, payload),
                 // A server warp: the listserver says where that server
@@ -1464,7 +1619,10 @@ impl Session {
                 PLI_BADDYPROPS => server.world.baddy_props(self.id, payload),
                 crate::horses::PLI_HORSEADD => server.world.horse(self.id, true, payload),
                 crate::horses::PLI_HORSEDEL => server.world.horse(self.id, false, payload),
-                PLI_TOALL => server.world.toall(self.id, payload),
+                PLI_TOALL => match server.wordfilter.apply(payload) {
+                    Some(p) => server.world.toall(self.id, &p),
+                    None => server.world.toall(self.id, payload),
+                },
                 // `putnpc` (`putnpc.rs`): the script file is read here,
                 // like a file the client asks for.
                 crate::putnpc::PLI_PUTNPC if server.cfg.rules.put_npcs() => {
@@ -1504,8 +1662,19 @@ impl Session {
                 PLI_ARROWADD => server.world.relay(self.id, PLO_ARROWADD, true, payload),
                 PLI_FIRESPY => server.world.relay(self.id, PLO_FIRESPY, true, payload),
                 PLI_EXPLOSION => server.world.relay(self.id, PLO_EXPLOSION, true, payload),
+                PLI_HITOBJECTS => server.world.relay(self.id, PLO_HITOBJECTS, true, payload),
+                PLI_SHOWIMG => server.world.relay(self.id, PLO_SHOWIMG, true, payload),
+                PLI_THROWCARRIED => server.world.relay(self.id, PLO_THROWCARRIED, true, b""),
+                PLI_SHOOT => server.world.shoot(self.id, false, payload),
+                PLI_SHOOT2 => server.world.shoot(self.id, true, payload),
+                PLI_NPCWEAPONDEL => server.world.npc_weapon_del(self.id, payload),
                 PLI_PLAYERPROPS => {
                     let bow = self.profile.server.prop10_bow;
+                    let filtered = server.wordfilter.filter_props(payload, bow);
+                    if filtered.is_some() && server.verbose {
+                        server.log(peer, "chat filtered");
+                    }
+                    let payload = filtered.as_deref().unwrap_or(payload);
                     server.world.props(self.id, payload);
                     let props = parse_player_props_with(payload, bow);
                     if let Some(nick) = props.iter().find(|p| p.id == 0) {
@@ -1749,4 +1918,26 @@ async fn sleep_opt(d: Option<Duration>) {
         Some(d) => tokio::time::sleep(d).await,
         None => std::future::pending().await,
     }
+}
+
+/// A player's `PLI_PRIVATEMESSAGE` with its text through the word filter,
+/// or `None` when it is unchanged or too short to read. The count and the
+/// ids are one `GCHAR` each from `one_byte` builds, else `GSHORT`s.
+fn filter_pm(
+    filter: &crate::wordfilter::WordFilter,
+    raw: &[u8],
+    one_byte: bool,
+) -> Option<Vec<u8>> {
+    let w = if one_byte { 1 } else { 2 };
+    let count = if one_byte {
+        raw.first()?.wrapping_sub(0x20) as usize
+    } else {
+        seihai_core::protocol::read_gshort(raw.get(..2)?)? as usize
+    };
+    let head = w + count * w;
+    let text = raw.get(head..)?;
+    let new = filter.apply(text)?;
+    let mut out = raw[..head].to_vec();
+    out.extend(new);
+    Some(out)
 }

@@ -15,7 +15,8 @@ fn line(id: u8) -> Vec<u8> {
     vec![id.wrapping_add(0x20), b'\n']
 }
 
-/// Log in, send `probe` (an id stage 1 does not handle) and `quiet` in one
+/// Log in, send `probe` (an id this server does not handle; 17,
+/// `PLI_BADDYADD`) and `quiet` in one
 /// frame with a file request, and wait until the probe is recorded. The
 /// file request is the sync: the reply is written after that frame is
 /// handled, so the quiet id has been seen too.
@@ -67,13 +68,13 @@ fn seen_probe(version: ClientVersion, account: &str, quiet: u8, probe: u8) {
 
 #[test]
 fn upload_25_and_add_33_are_not_unhandled() {
-    seen_probe(ClientVersion::V133, "w133", ids::PLI_TOWEAPON, 11);
-    seen_probe(ClientVersion::V139, "w139", ids::PLI_WEAPONADD, 11);
+    seen_probe(ClientVersion::V133, "w133", ids::PLI_TOWEAPON, 17);
+    seen_probe(ClientVersion::V139, "w139", ids::PLI_WEAPONADD, 17);
 }
 
 /// Real 5.24r4 and 6.03r7 send 157 `idle` after the login (lab,
 /// 2026-11-12, #45).
 #[test]
 fn update_gani_157_is_not_unhandled() {
-    seen_probe(ClientVersion::V524R4, "w524", ids::PLI_UPDATEGANI, 11);
+    seen_probe(ClientVersion::V524R4, "w524", ids::PLI_UPDATEGANI, 17);
 }

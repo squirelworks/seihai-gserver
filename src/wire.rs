@@ -232,6 +232,25 @@ pub mod ids {
     pub const PLO_PRIVATEMESSAGE: u8 = 37;
     /// GINT5 modification time. Confirmed.
     pub const PLO_LEVELMODTIME: u8 = 39;
+    /// Empty: the player threw what they carried (2.05 read,
+    /// `packet-layouts.md`). Passed on as [`PLO_THROWCARRIED`].
+    pub const PLI_THROWCARRIED: u8 = 11;
+    /// The rest is a weapon name the player dropped. Taken off the account.
+    pub const PLI_NPCWEAPONDEL: u8 = 29;
+    /// `GCHAR` power×2, x×2, y×2 and an optional `GINT3` npc. Passed on
+    /// as [`PLO_HITOBJECTS`].
+    pub const PLI_HITOBJECTS: u8 = 36;
+    /// A shot (5.00r7's GS2 `shoot`): `GINT3` shooter, `GCHAR` x×2, y×2,
+    /// z+50, angle, zangle, power, then gani and shoot params with
+    /// `GCHAR` lengths (`shoot-5007.md`). Passed on as [`PLO_SHOOT`] or
+    /// [`PLO_SHOOT2`] (`shoot.rs`).
+    pub const PLI_SHOOT: u8 = 40;
+    /// `GINT5` CRC-32 of the client's copy, then a file name: the file is
+    /// sent when the server's differs.
+    pub const PLI_VERIFYWANTSEND: u8 = 47;
+    /// A shot from 5.12 on, with pixel positions, the gmap cell and a
+    /// two-byte gravity (`shoot-5007.md`).
+    pub const PLI_SHOOT2: u8 = 48;
     /// A hurt player. Confirmed.
     pub const PLO_HURTPLAYER: u8 = 40;
     /// The start message. Confirmed.
@@ -343,6 +362,20 @@ pub mod ids {
     /// the CRC32 of the plain body. Confirmed. No body in this message.
     pub const PLO_LOADSCRIPT: u8 = 197;
 
+    /// `GSHORT` thrower id, nothing else: another player threw what they
+    /// carried. 2.05 reads it as [srv][2.05] (`packet-layouts.md`).
+    pub const PLO_THROWCARRIED: u8 = 21;
+    /// `GSHORT` sender id, then the sender's [`PLI_SHOWIMG`] as sent
+    /// (stock server, lab capture).
+    pub const PLO_SHOWIMG: u8 = 32;
+    /// `GSHORT` sender id, then the sender's [`PLI_HITOBJECTS`] as sent.
+    /// 2.01 on.
+    pub const PLO_HITOBJECTS: u8 = 46;
+    /// `GSHORT` shooter id, then a [`PLI_SHOOT`] body. 2.17 to 6.00r4.
+    pub const PLO_SHOOT: u8 = 175;
+    /// `GSHORT` shooter id, then a [`PLI_SHOOT2`] body. 4.04r2 on.
+    pub const PLO_SHOOT2: u8 = 191;
+
     // Client to server.
     /// Half-tile warp: GCHAR x*2, y*2, level name. Confirmed.
     pub const PLI_LEVELWARP: u8 = 0;
@@ -378,7 +411,7 @@ pub mod ids {
     pub const PLI_OPENCHEST: u8 = 20;
     /// A file name. Confirmed.
     pub const PLI_WANTFILE: u8 = 23;
-    /// An image update. Confirmed: read and not answered.
+    /// An image update. Confirmed. Passed on as [`PLO_SHOWIMG`].
     pub const PLI_SHOWIMG: u8 = 24;
     /// `{25}{name}{image}{script}`, same shape as a weapon add from the server.
     /// Confirmed: 1.21 to 1.37 send this for every weapon they hold. The
@@ -458,7 +491,6 @@ pub mod ids {
                 | PLI_WEAPONADD
                 | PLI_TAMPERCHECK
                 | PLI_PROCESSLIST
-                | PLI_SHOWIMG
                 | PLI_ENTERLEVEL
                 | PLI_UPDATEGANI
         )
