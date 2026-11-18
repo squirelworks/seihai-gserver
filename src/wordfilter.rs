@@ -52,7 +52,7 @@ impl Rules {
             });
         }
         // Longer patterns first, so "badword" wins over "bad".
-        entries.sort_by(|a, b| b.pattern.len().cmp(&a.pattern.len()));
+        entries.sort_by_key(|e| std::cmp::Reverse(e.pattern.len()));
         Self { entries }
     }
 
