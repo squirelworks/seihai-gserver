@@ -1041,7 +1041,6 @@ mod tests {
                 }
             }
             // The whole payload is props the build reads: nothing is cut.
-            let prof = v.profile();
             let props = seihai_core::protocol::parse_player_props_in(
                 &m[1 + id_len..m.len() - 1],
                 bow_prop10(v),
