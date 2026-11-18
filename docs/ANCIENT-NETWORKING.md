@@ -81,10 +81,11 @@ Historical original 1.21 and 1.28 beta 2 pair captures exist. Their Wine input
 fixes, the 1.28 UDP receive fix and imported levels must remain attached to
 those results. A synthetic login matrix is not an original-client test.
 Issue [#132](https://github.com/squirelworks/seihai-gserver/issues/132)
-tracks invisible early players. Same-level introductions now keep prop 20
-(`CURLEVEL`) on retained other-player props (original 1.28 carried nickname
-and level). Relaying `IPADDR`/`UDPPORT` for 1.28b2 UDP peers, and a
-confirming lab on existing installs, are still open. Relay support does not
+tracked invisible early players, fixed and lab-confirmed on 2026-11-18: builds
+before 1.33 read other players with their own-prop parser, so they get props
+up to their last one plus 50/51, with 50 first, and the server fills
+`IPADDR` (30) from the connection (`docs/lab/early-otherplprops-2026-11-18.md`).
+Peer UDP between two 1.28 beta 2 on this server is not yet lab-run. Relay support does not
 resolve that issue or establish original peer UDP compatibility.
 
 ## Validation boundary

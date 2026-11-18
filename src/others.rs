@@ -22,7 +22,7 @@ use crate::profile::{ClientProfile, ServerProfile};
 use crate::wire::{gchar, gshort, ids::PLO_OTHERPLPROPS, msg};
 use seihai_core::protocol::{
     decode_pos_precise, encode_pos_precise, parse_player_props_with, read_gint3, read_gshort,
-    ClientVersion,
+    ClientVersion, IdSet,
 };
 use std::collections::BTreeMap;
 
@@ -58,6 +58,12 @@ pub const PCONNECTED: u8 = 51;
 /// it, real 1.27 / 1.28b2 clients get `PLO_OTHERPLPROPS` but draw nobody
 /// (issue #132).
 pub const CURLEVEL: u8 = 20;
+/// The player's address (`PLPROP_IPADDR`), a GINT5 of the IPv4 address
+/// read as a little-endian u32 (GServer 1.28 sends `20 28 20 20 9f` for
+/// 127.0.0.1). The server fills it in; a client's own 30 is ignored.
+/// 1.28 beta 2 sends gameplay straight to this address and the UDP port
+/// (31), and draws only the players it has both for (#132).
+pub const IPADDR: u8 = 30;
 const SWORD: u8 = 8;
 const SHIELD: u8 = 9;
 const HEAD: u8 = 11;
@@ -358,7 +364,7 @@ impl Props {
                 X2 => c.x = read_gshort(&p.raw).map(decode_pos_precise),
                 Y2 => c.y = read_gshort(&p.raw).map(decode_pos_precise),
                 10 if bow => {}
-                14 | JOINLEAVELVL | PCONNECTED => {}
+                14 | IPADDR | JOINLEAVELVL | PCONNECTED => {}
                 id => {
                     if self.values.get(&id) != Some(&p.raw) {
                         c.values.insert(id, p.raw.clone());
@@ -544,6 +550,13 @@ impl Props {
         self.values.insert(CURLEVEL, v);
     }
 
+    /// Keep the address the player connected from as prop [`IPADDR`].
+    pub fn set_ipaddr(&mut self, ip: std::net::Ipv4Addr) {
+        let mut v = Vec::new();
+        crate::wire::gint5(u64::from(u32::from_le_bytes(ip.octets())), &mut v);
+        self.values.insert(IPADDR, v);
+    }
+
     /// Everything kept, as a change.
     pub fn all(&self) -> Change {
         Change {
@@ -552,6 +565,36 @@ impl Props {
             y: self.y,
             status_swims: self.status_swims,
         }
+    }
+}
+
+/// 1.21 to 1.32: no separate parser for other players' props.
+fn early_parser(v: ClientVersion) -> bool {
+    matches!(
+        v,
+        ClientVersion::V121
+            | ClientVersion::V128B2
+            | ClientVersion::V13T
+            | ClientVersion::V131
+            | ClientVersion::V132
+    )
+}
+
+/// The other-player props `receiver` reads. 1.21 to 1.32 have no
+/// separate parser for other players: they read message 8 with the
+/// own-prop parser, plus join/leave (50) and gone (51), and stop at the
+/// first id past it. GServer 1.28 sends a 1.28 beta 2 props 0 to 31 and
+/// 50; a 1.33-shaped stream (prop 32 before the position) ends the parse
+/// before x, y and 50, and the player is never drawn (#132).
+pub fn other_props(receiver: &ClientProfile) -> IdSet {
+    if early_parser(receiver.version) {
+        receiver
+            .core
+            .props
+            .own
+            .with_all(&[JOINLEAVELVL, PCONNECTED])
+    } else {
+        receiver.core.props.other
     }
 }
 
@@ -569,7 +612,7 @@ pub fn message(
     if !receiver.reads(PLO_OTHERPLPROPS) {
         return None;
     }
-    let other = &receiver.core.props.other;
+    let other = &other_props(&receiver);
     let mut body = Vec::new();
     let mut put = |pid: u8, v: &[u8]| {
         if other.contains(pid) && !(pid == 10 && receiver.server.prop10_bow) {
@@ -577,6 +620,14 @@ pub fn message(
             body.extend_from_slice(&for_receiver(&receiver, pid, v, change.status_swims));
         }
     };
+    // GServer 1.28 puts join/leave first: a 1.28 beta 2 that reads 50
+    // after the props starts the player over and never draws it (#132).
+    let tail_first = early_parser(receiver.version);
+    if tail_first {
+        for (pid, v) in tail {
+            put(*pid, v);
+        }
+    }
     for (&pid, v) in &change.values {
         put(pid, v);
     }
@@ -592,8 +643,10 @@ pub fn message(
             }
         }
     }
-    for (pid, v) in tail {
-        put(*pid, v);
+    if !tail_first {
+        for (pid, v) in tail {
+            put(*pid, v);
+        }
     }
     if body.is_empty() {
         return None;
@@ -732,7 +785,7 @@ mod tests {
     /// with a two-byte id (parsed with the receiver's own prop set).
     fn prop_in(m: &[u8], to: ClientVersion, pid: u8) -> Option<Vec<u8>> {
         let bow = bow_prop10(to);
-        let other = to.profile().props.other;
+        let other = other_props(&ClientProfile::of(to));
         let body = &m[1 + if one_byte_id(to) { 1 } else { 2 }..];
         seihai_core::protocol::parse_player_props_in(body, bow, Some(&other))
             .into_iter()
@@ -916,6 +969,46 @@ mod tests {
         }
     }
 
+    /// 1.28 beta 2 reads other players with its own-prop parser (0 to 31)
+    /// plus 50 and 51, and needs join (50) first, as GServer 1.28 sends it:
+    /// lab 2026-11-18, a real 1.28 beta 2 draws a real 1.35 only then (#132).
+    #[test]
+    fn early_builds_get_join_first_and_no_prop_past_their_parser() {
+        let mut p = alice();
+        p.set_level("onlinestartlocal.graal");
+        p.set_ipaddr(std::net::Ipv4Addr::new(127, 0, 0, 1));
+        let m = message(ClientVersion::V128B2, 7, &p.all(), &JOINED).unwrap();
+        // id 8, one-byte player id, then 50 = 1 straight away.
+        assert_eq!(&m[..4], &[0x28, 0x27, 0x52, 0x21]);
+        let ids: Vec<u8> = parse_player_props_with(&m[2..m.len() - 1], false)
+            .into_iter()
+            .map(|p| p.id)
+            .collect();
+        assert!(ids.iter().all(|&i| i <= 31 || i == JOINLEAVELVL), "{ids:?}");
+        assert_eq!(
+            prop_in(&m, ClientVersion::V128B2, IPADDR),
+            Some(vec![0x20, 0x28, 0x20, 0x20, 0x9f])
+        );
+        // 1.35 has its own parser: the tail stays last.
+        let m = message(ClientVersion::V135, 7, &p.all(), &JOINED).unwrap();
+        assert_eq!(&m[m.len() - 3..m.len() - 1], &[0x52, 0x21]);
+    }
+
+    /// The server fills in prop 30; a client cannot set it.
+    #[test]
+    fn client_sent_ipaddr_is_ignored() {
+        let mut p = alice();
+        p.set_ipaddr(std::net::Ipv4Addr::new(10, 1, 2, 3));
+        let c = p.apply(
+            &[0x20 + IPADDR, 0x20, 0x20, 0x20, 0x20, 0x21],
+            ClientVersion::V135,
+        );
+        assert!(!c.values.contains_key(&IPADDR));
+        let mut want = Vec::new();
+        crate::wire::gint5(u64::from(u32::from_le_bytes([10, 1, 2, 3])), &mut want);
+        assert_eq!(p.all().values.get(&IPADDR), Some(&want));
+    }
+
     /// Every build reads the whole message, and sees the nickname and the
     /// position where it reads them.
     #[test]
@@ -952,7 +1045,7 @@ mod tests {
             let props = seihai_core::protocol::parse_player_props_in(
                 &m[1 + id_len..m.len() - 1],
                 bow_prop10(v),
-                Some(&prof.props.other),
+                Some(&other_props(&ClientProfile::of(v))),
             );
             let len: usize = props.iter().map(|p| 1 + p.raw.len()).sum();
             assert_eq!(len, m.len() - 2 - id_len, "{v:?}");

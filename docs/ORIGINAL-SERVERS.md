@@ -123,8 +123,12 @@ A captured 1.28 login with a second player already in the level sends
 `PLO_OTHERPLPROPS` (8) for that player with nickname and level (prop 20)
 before the warp (`live-trace-early.md`). This server keeps prop 20 on
 retained other-player props when a player joins or changes level so those
-introductions match that shape (issue #132). IP and UDP port (30/31) for
-1.28 peer draw are still open.
+introductions match that shape (issue #132). A 2026-11-18 control run of
+GServer 1.28 with two 1.28 beta 2 clients showed the rest: the full
+introduction starts with 50 (joined) and carries 30 (the IPv4 address as a
+GINT5 of the little-endian u32) and 31 (UDP port) before the position. This
+server now sends builds before 1.33 their own-prop set plus 50/51, 50 first,
+and fills 30 from the connection (`docs/lab/early-otherplprops-2026-11-18.md`).
 
 ## The player-killer flag (before 1.3)
 

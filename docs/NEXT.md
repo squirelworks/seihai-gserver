@@ -18,16 +18,15 @@ merges. Lab items stay open until a real-client write-up lands under
 - **Dependencies:** direct `seihai-core` is `v0.4.0`; the temporary
   `[patch]` is gone (#151). NPC-server and RC pins already sit on that core
   (seihai-core#79).
-- **Early OTHERPLPROPS (#132):** prop 20 (`CURLEVEL`) on same-level
-  introductions is in (#152). `IPADDR`/`UDPPORT` (30/31) and a confirming
-  lab are still open; see below.
+- **Early OTHERPLPROPS (#132):** done. Builds before 1.33 get their
+  own-prop set plus 50/51, with join (50) first, and prop 30 comes from the
+  connection. A real 1.28 beta 2 draws a real 1.35 (lab 2026-11-18,
+  `docs/lab/early-otherplprops-2026-11-18.md`).
 
 ## Open checkboxes
 
 ### Code / docs (non-lab)
 
-- [ ] **#132 remainder:** relay `IPADDR`/`UDPPORT` (30/31) for 1.28b2 UDP
-      peer draw (`docs/ANCIENT-NETWORKING.md`, `docs/ORIGINAL-SERVERS.md`).
 - [ ] **Parity rows:** work through `docs/PARITY.md` `no` and `partial`
       entries (code or docs per row), then differential runs against the
       fork with seihai's `tools/difftest`.
