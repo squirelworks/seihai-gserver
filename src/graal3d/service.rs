@@ -850,9 +850,10 @@ impl Service {
             }
         }
         log(&format!(
-            "{}: link from {} closed ({reason})",
+            "{}: link from {} closed ({reason}), {} moves received",
             s.account,
-            at.ip()
+            at.ip(),
+            s.conn.moves_received()
         ));
     }
 

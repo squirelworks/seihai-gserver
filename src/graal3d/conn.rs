@@ -396,7 +396,15 @@ impl Connection {
         if moved {
             self.control_moved = true;
         }
+        let before = self.moves_received;
         self.moves_received += (next - from) as usize;
+        // A move count in the log, for lab runs: the first move, then every
+        // hundredth.
+        if before == 0 {
+            self.log("first move received");
+        } else if before / 100 != self.moves_received / 100 {
+            self.log(format!("{} moves received", self.moves_received));
+        }
         self.last_move_ack = next;
         self.ack_owed = true;
         true
@@ -1435,7 +1443,11 @@ pub(crate) mod tests {
         assert_eq!(c.moves_received(), 10);
         // Its packet data goes out with the ack.
         c.update(2100);
-        assert_eq!(sends(&c.take_out()).len(), 1);
+        let out = c.take_out();
+        assert_eq!(sends(&out).len(), 1);
+        assert!(out
+            .iter()
+            .any(|o| matches!(o, Out::Log(t) if t == "first move received")));
     }
 
     #[test]

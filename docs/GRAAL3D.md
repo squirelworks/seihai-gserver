@@ -86,8 +86,23 @@ each move is acked.
 - No TerrainBlock, and no movetype on GameObjects.
 - 3.153 has been seen to crash on the first frame in the C++ fork; the cause
   is unknown.
-- No lab run with a real client yet; checked against recorded 5.12 packets
-  and a loopback test (`tests/graal3d.rs`).
+- 5.12 links and gets its control object, but stays on the "Starting 3D
+  mode..." box, as it does with the C++ fork: the switch to the 3D view after
+  the control object is still unknown.
+- 3.151, 3.153 and 4.20r8 have not been run against this server.
+
+## Lab runs
+
+2026-11-19, in a headless VM:
+
+| Client | Result |
+|---|---|
+| 4.04r2, native Linux (protocol 19) | 3 of 3 runs: linked, datablocks loaded, Sky and Player ghosts, mission start done, control object delivered. The client logged "Initial Control Object" and "Graal3D has been activated!". The link held 96 s. |
+| 4.04r2, Windows under Wine | Crashes while starting 3D, before sending anything (a Wine limit). |
+| 5.12, Windows under Wine (protocol 24) | Linked, assets downloaded, ghosts and mission start done, control object delivered, link held 97 s. Stays on "Starting 3D mode...", the same as the C++ fork. In 2 of 5 runs the client never opened TCP to the 3D server after the lobby warp (a client-side race; holding the lobby link open 20 s avoided it for 4.x). |
+
+The log counts moves: `first move received`, then every hundredth, and the
+total when the link closes.
 
 ## Code
 
