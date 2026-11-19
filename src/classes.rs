@@ -242,13 +242,7 @@ mod tests {
     #[test]
     fn a_gs2_build_gets_133_with_the_bytecode() {
         let class = Class::new("fixture", SOURCE);
-        let code = class
-            .script
-            .as_ref()
-            .unwrap()
-            .prepared()
-            .bytecode()
-            .unwrap();
+        let code = class.script.as_ref().unwrap().bytecode().unwrap();
         assert!(code.ends_with(b"\n"));
         for v in [
             ClientVersion::V404R2,

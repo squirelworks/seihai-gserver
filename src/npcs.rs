@@ -86,6 +86,12 @@ pub struct Script(Arc<ScriptInner>);
 #[derive(Debug)]
 struct ScriptInner {
     prepared: Prepared,
+    /// The bytecode as it goes on the wire: core's file (which since core
+    /// 0.4.4 has no trailing `0x0A`) with one `\n` after it. GServer-v2
+    /// sends that byte, the 193/197 CRCs cover it, and without it a real
+    /// 4.20r8 asked for its weapons again on every login (lab 2026-11-13;
+    /// 140 to 5.24r4 and 6.03r7 carried it too, lab 2026-11-19).
+    wire: Option<Vec<u8>>,
     stub_logged: Mutex<HashSet<ClientVersion>>,
 }
 
@@ -98,8 +104,17 @@ impl PartialEq for Script {
 impl Script {
     /// Compile `source` (GS1 of `era`) once.
     pub fn gs1(source: &str, era: Era) -> Script {
+        let prepared = Prepared::gs1(source, era);
+        let wire = prepared.bytecode().map(|b| {
+            let mut w = b.to_vec();
+            if w.last() != Some(&b'\n') {
+                w.push(b'\n');
+            }
+            w
+        });
         Script(Arc::new(ScriptInner {
-            prepared: Prepared::gs1(source, era),
+            prepared,
+            wire,
             stub_logged: Mutex::new(HashSet::new()),
         }))
     }
@@ -108,17 +123,30 @@ impl Script {
         &self.0.prepared
     }
 
+    /// The bytecode as sent ([`ScriptInner::wire`]).
+    pub fn bytecode(&self) -> Option<&[u8]> {
+        self.0.wire.as_deref()
+    }
+
+    /// Core's choice, with the bytecode in its wire form.
+    fn wire_delivery<'a>(&'a self, d: Delivery<'a>) -> Delivery<'a> {
+        match (d, self.0.wire.as_deref()) {
+            (Delivery::Gs2Bytecode(_), Some(w)) => Delivery::Gs2Bytecode(w),
+            (d, _) => d,
+        }
+    }
+
     /// What `to` is sent, without logging.
     pub fn delivery(&self, to: impl Into<ClientProfile>) -> Delivery<'_> {
         let to = to.into();
-        self.0.prepared.for_client(to.version).delivery
+        self.wire_delivery(self.0.prepared.for_client(to.version).delivery)
     }
 
     /// What `to` is sent. A stub is logged the first time each build gets
     /// it, so a server owner can see which builds go without the script.
     fn for_client(&self, npc: u32, to: impl Into<ClientProfile>) -> Delivery<'_> {
         let to = to.into();
-        let d = self.0.prepared.for_client(to.version).delivery;
+        let d = self.wire_delivery(self.0.prepared.for_client(to.version).delivery);
         if let Delivery::Stub(why) = d {
             let mut logged = self.0.stub_logged.lock().unwrap_or_else(|e| e.into_inner());
             if logged.insert(to.version) {
@@ -546,14 +574,7 @@ if (timeout) {\n  this.open = 0;\n  setimg door.png;\n}\n";
     #[test]
     fn gs2_builds_get_bytecode_after_the_props_and_no_text() {
         let n = door();
-        let code = n
-            .script
-            .as_ref()
-            .unwrap()
-            .prepared()
-            .bytecode()
-            .unwrap()
-            .to_vec();
+        let code = n.script.as_ref().unwrap().bytecode().unwrap().to_vec();
         for v in [
             ClientVersion::V3153,
             ClientVersion::V524R4,
