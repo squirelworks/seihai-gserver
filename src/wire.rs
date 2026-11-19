@@ -75,8 +75,9 @@ pub fn raw_block(id: u8, payload: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Lines as Graal tokenizes them: each quoted, `"` doubled, joined with
-/// commas (as `seihai_core::net::gtokenize`, on Latin-1 bytes).
+/// Lines as Graal tokenizes them: each quoted, `\` and `"` doubled inside
+/// the quotes, joined with commas. Real RCs, GServer-v2 and gs2lib's
+/// `gtokenize` double both, and their readers undouble both (#160).
 pub fn tokenize(lines: &[Vec<u8>]) -> Vec<u8> {
     let mut out = Vec::new();
     for (i, l) in lines.iter().enumerate() {
@@ -85,8 +86,8 @@ pub fn tokenize(lines: &[Vec<u8>]) -> Vec<u8> {
         }
         out.push(b'"');
         for &c in l {
-            if c == b'"' {
-                out.push(b'"');
+            if c == b'"' || c == b'\\' {
+                out.push(c);
             }
             out.push(c);
         }
@@ -96,7 +97,8 @@ pub fn tokenize(lines: &[Vec<u8>]) -> Vec<u8> {
 }
 
 /// Tokenized text back into lines. A quoted item runs to its closing
-/// quote (`""` inside is one `"`); an unquoted one to the next comma, as
+/// quote (`""` inside is one `"`, `\\` one `\`, as real RCs write a
+/// script; a lone `\` stays); an unquoted one to the next comma, as
 /// the fork once sent folder rights. Spaces around an item are dropped.
 pub fn detokenize(t: &[u8]) -> Vec<Vec<u8>> {
     let mut out = Vec::new();
@@ -120,6 +122,10 @@ pub fn detokenize(t: &[u8]) -> Vec<Vec<u8>> {
                     (b'"', _) => {
                         i += 1;
                         break;
+                    }
+                    (b'\\', Some(b'\\')) => {
+                        item.push(b'\\');
+                        i += 2;
                     }
                     (c, _) => {
                         item.push(c);
@@ -514,11 +520,21 @@ mod tests {
         let lines = vec![b"rw levels/*".to_vec(), b"say \"hi\", ok".to_vec()];
         let t = tokenize(&lines);
         assert_eq!(t, b"\"rw levels/*\",\"say \"\"hi\"\", ok\"");
-        assert_eq!(
-            String::from_utf8(t.clone()).unwrap(),
-            seihai_core::net::gtokenize("rw levels/*\nsay \"hi\", ok")
-        );
         assert_eq!(detokenize(&t), lines);
+        // #160: `\` doubles inside quotes, as real RCs and gs2lib write it.
+        let lines = vec![br#"message "a\nb";"#.to_vec(), br"c:\x\\y".to_vec()];
+        let t = tokenize(&lines);
+        assert_eq!(t, br#""message ""a\\nb"";","c:\\x\\\\y""#);
+        assert_eq!(detokenize(&t), lines);
+        // A real RC's save; a lone backslash in quotes and bare ones stay.
+        assert_eq!(
+            detokenize(br#""say ""a\\nb"";",x\y,"q\z""#),
+            [
+                br#"say "a\nb";"#.to_vec(),
+                br"x\y".to_vec(),
+                br"q\z".to_vec()
+            ]
+        );
         // Unquoted, as the fork once sent folder rights.
         assert_eq!(
             detokenize(b"rw levels/* , r a"),
