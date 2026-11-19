@@ -153,6 +153,15 @@ pub const STAND_INS: &[(&str, EncryptionGen, ClientVersion)] = &[
     ("GNW15053", EncryptionGen::Gen5, ClientVersion::V217),
     ("GNW28063", EncryptionGen::Gen5, ClientVersion::V217),
     ("GNW01113", EncryptionGen::Gen5, ClientVersion::V217),
+    // 3.0beta (`G3D16053`) and 3.01 (`G3D27063`): Linux Torque builds
+    // whose tokens were read from their binaries; served as 3.04, the
+    // nearest build with a profile (graal-client-repro's rebuilds log in
+    // with the 3.04 line). 3.151 (`G3D27015`, Linux) as 3.153, its
+    // nearest sibling of the 3.15 line. Not yet seen on the wire against
+    // the real clients.
+    ("G3D16053", EncryptionGen::Gen5, ClientVersion::V304),
+    ("G3D27063", EncryptionGen::Gen5, ClientVersion::V304),
+    ("G3D27015", EncryptionGen::Gen5, ClientVersion::V3153),
 ];
 
 /// The first known build for `token` and `gen`. Several builds share a
@@ -376,6 +385,26 @@ mod tests {
             )
         );
         assert!(is_gen4(l.client_type));
+        // 3.151 (type 5, as graal-client-repro's rebuild logs in), served as
+        // 3.153; 3.0beta and 3.01 (type 4) as 3.04
+        let l = parse(b"%7G3D27015#acc\"pw\n", &[]).unwrap();
+        assert_eq!(
+            (l.client_type, l.gen, l.token.as_str(), l.version),
+            (
+                5,
+                EncryptionGen::Gen5,
+                "G3D27015",
+                Some(ClientVersion::V3153)
+            )
+        );
+        for tok in ["G3D16053", "G3D27063"] {
+            let line = format!("$7{tok}#acc\"pw\n");
+            let l = parse(line.as_bytes(), &[]).unwrap();
+            assert_eq!(
+                (l.client_type, l.gen, l.token.as_str(), l.version),
+                (4, EncryptionGen::Gen5, tok, Some(ClientVersion::V304))
+            );
+        }
         // a stand-in never hides a real profile
         for &(t, g, _) in STAND_INS {
             assert!(versions_for(t, g).next().is_none(), "{t} now has a profile");
