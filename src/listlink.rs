@@ -462,8 +462,9 @@ fn hello(cfg: &Config, players: &BTreeMap<u16, ListedPlayer>) -> io::Result<Vec<
     );
     let mut p = Vec::new();
     let port = cfg.port.to_string();
+    let name = listed_name(cfg);
     for f in [
-        cfg.name.as_bytes(),
+        name.as_bytes(),
         cfg.description.as_bytes(),
         b"English",
         b"2.31",
@@ -481,6 +482,16 @@ fn hello(cfg: &Config, players: &BTreeMap<u16, ListedPlayer>) -> io::Result<Vec<
     }
     out.extend(zframe(&body)?);
     Ok(out)
+}
+
+/// The listed name. A 3D server's starts with `3 `: the 3.153 to 5.x
+/// clients open the 3D link on that alone (the client strips it to show).
+fn listed_name(cfg: &Config) -> String {
+    if cfg.graal3d && !cfg.name.starts_with("3 ") {
+        format!("3 {}", cfg.name)
+    } else {
+        cfg.name.clone()
+    }
 }
 
 /// The address sent in NEWSERVER and SETIP: `listserver_ip`, or `AUTO`

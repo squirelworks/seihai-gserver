@@ -75,4 +75,5 @@ close #132.
 ## Not in this repo
 
 Graal3D hosting (G3D-9) is a separate host next to `seihai-g3d`, not a
-stage of this binary.
+stage of this binary. The Torque 3D path of 3.153 to 6.x clients is hosted
+here (`GRAAL3D.md`); its open items are listed there.

@@ -127,7 +127,9 @@ pub fn login_burst(
     // box over the level until it gets this (GServer-v2 sends it right
     // after the signature; docs/lab/stage6-win10-2026-11-18.md).
     out.put(PLO_ONLINEMODE, b"");
-    if !cfg.listserver.is_empty() {
+    // A 3D client's "Connecting..." window stays over the 3D view until
+    // this comes, listserver or not (Graal_analysis torque/udp-session.md §1).
+    if !cfg.listserver.is_empty() || (cfg.graal3d && crate::graal3d::has_graal3d(version.version)) {
         out.put(PLO_SERVERLISTCONNECTED, b"");
     }
     if !cfg.start_message.is_empty() {

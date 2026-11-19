@@ -139,8 +139,11 @@ NPC / WANTFILE game). Hosting it is **G3D-9** in Seihai's
 `documentation/plannedmilestones.md`: a sibling Rust host next to
 `seihai-g3d`, ported from Graal_analysis `graal3d/reference-server/`. Do not
 fold it into stages 1–7. Worlds are DirectX `.x` + local BMPs, not `.nw` /
-`.graal`. The Torque 3D path of 3.x–5.x clients is also separate (held as
-Ato Stage 4 until a capture exists).
+`.graal`.
+
+The Torque 3D path of 3.153 to 6.x clients is different: it rides on a normal
+TCP login and is hosted here, off by default (`graal3d = true`, see
+`GRAAL3D.md`).
 
 ## Behaviour to match (from lab findings)
 

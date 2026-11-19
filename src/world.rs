@@ -303,6 +303,8 @@ pub enum WorldIn {
     FromNpc(Message),
     /// `PLI_WEAPONADD`.
     WeaponAdd { player: u16, raw: Vec<u8> },
+    /// A weapon by name, for a 3D client's getweapon (`graal3d`).
+    GiveWeapon { player: u16, name: Vec<u8> },
     /// `PLI_TOWEAPON`.
     ToWeapon { player: u16, raw: Vec<u8> },
     /// `PLI_UPDATESCRIPT`.
@@ -829,6 +831,14 @@ impl World {
         let _ = self.tx.send(WorldIn::WeaponAdd {
             player,
             raw: raw.to_vec(),
+        });
+    }
+
+    /// A weapon by name: a 3D client's getweapon (`graal3d`).
+    pub fn give_weapon(&self, player: u16, name: &[u8]) {
+        let _ = self.tx.send(WorldIn::GiveWeapon {
+            player,
+            name: name.to_vec(),
         });
     }
 
@@ -1438,6 +1448,7 @@ impl WorldTask {
             }
             WorldIn::FromNpc(m) => self.apply_npc(m),
             WorldIn::WeaponAdd { player, raw } => self.weapon_add(player, &raw),
+            WorldIn::GiveWeapon { player, name } => self.add_weapon(player, &name),
             WorldIn::ToWeapon { player, raw } => self.weapon_upload(player, &raw),
             WorldIn::UpdateScript { player, raw } => self.update_script(player, &raw),
             WorldIn::UpdateClass { player, raw } => self.update_class(player, &raw),
