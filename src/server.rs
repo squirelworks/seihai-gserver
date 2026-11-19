@@ -1335,6 +1335,34 @@ impl Conn {
                 }
                 None
             }
+            Op::Reset(id) => {
+                log(format!("resets NPC {id}"));
+                if !hub.nc_send(Message::NcNpcReset { npc_id: id }) {
+                    log("no NPC-server connected".into());
+                    return Some(crate::nc::console_line(b"error: no NPC-server connected"));
+                }
+                let mut r = crate::nc::npc_reset(id);
+                r.extend(crate::nc::console_line(
+                    format!("NPC {id} reset by {account}").as_bytes(),
+                ));
+                Some(r)
+            }
+            Op::Warp(id, level, x, y) => {
+                log(format!(
+                    "warps NPC {id} to {} {}",
+                    seihai_core::protocol::latin1(&level),
+                    format_args!("{},{}", f32::from(x) / 2.0, f32::from(y) / 2.0)
+                ));
+                if !hub.nc_send(Message::NcNpcWarp {
+                    npc_id: id,
+                    level,
+                    x,
+                    y,
+                }) {
+                    log("no NPC-server connected".into());
+                }
+                None
+            }
             Op::WeaponList => Some(self.nc_weapon_list().await),
             Op::ClassGet(name) => match self
                 .server

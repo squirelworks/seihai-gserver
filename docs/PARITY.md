@@ -54,8 +54,8 @@ test) and the lab notes.
 | Board changes (`PLI_BOARDMODIFY`, `PLI_REQUESTUPDATEBOARD`, `PLO_BOARDMODIFY2`) | partial | `board_changes.rs` | `PLI_BOARDMODIFY` is passed on to the level and sent to later arrivals; 2x2 changes grow back after 15 s (`rules = 1999`: 7.5 to 12.5 s). On a gmap, players in that cell or next to it get 186 with the cell, arrivals and neighbour loads included. `PLI_REQUESTUPDATEBOARD` (130) gets the kept changes in its rectangle; no server's answer to 130 is known, so this is this server's choice. A level keeps at most 256 changes (#106). The board check (`anticheat.board`, off by default) refuses blocks that match none of the world's `config/boardrules.txt` (#107); the bush cut is captured from 2.05 and 2.22 (the sample world has the 2.22 line); pushing a stone on 2.22 sends no board change, and dug holes are not captured, so a world with them needs its own lines |
 | Horses (`PLI_HORSEADD`, `HORSEDEL`) | tests | `original_rules.rs`, `horses.rs` | As the 1999 servers keep them (`ORIGINAL-SERVERS.md`): shown to arrivals, gone after `horse_lifetime` |
 | `PLI_ENTERLEVEL` (newer builds' level entry) | no | | |
-| NPC movement blocking (GServer-v2 beta4 option 32) | no | | New in upstream beta4 (fork sync, seihai-gserver-v2#102). Its behaviour is to be written up from a lab run on the fork before this server takes it |
-| NPCs' real x and y when a move queue ends | no | | Upstream beta4 sends an NPC's real position once its queued moves finish (seihai-gserver-v2#102); this server has no NPC move queue yet |
+| NPC movement blocking (GServer-v2 beta4 option 32) | partial | seihai-core `move_option_32_stops_before_a_wall` | The fork's own `move` option (seihai-gserver-v2#102): a move stops before a wall in its path. Built in the GS1 engine (squirelworks/seihai-core#102), where the level's walls are known. The NPC-server does not load level walls yet, so on this server the option does nothing until it does |
+| NPCs' real x and y when a move queue ends | yes (by design) | `seihai-npcserver` `effects.rs` tests | Upstream beta4 sends an NPC's real position once its queued moves end (seihai-gserver-v2#102). Here a script's `move` has no server-side queue: the NPC-server sets the end position at once and sends it as the NPC's x and y, so the clients always have the real position |
 | Level groups (`gr.setlevelgroup`) | no | | |
 
 ## Players and combat
@@ -63,7 +63,7 @@ test) and the lab notes.
 | Area | Status | Shown by | Notes |
 |---|---|---|---|
 | Own and other players' props, per receiver's build | lab | `other_players.rs`; `lab/five-clients-2026-11-12.md` | 1.39 draws others with no body (that lab note) |
-| The classic bow (prop 10 before 2.1, 2.05 rev 2 aside) | partial | `others.rs` | Not kept from bow-slot senders and not sent to bow-slot receivers. Upstream beta4 sends the classic bow form with preset 1 as the default (seihai-gserver-v2#102); not here yet |
+| The classic bow (prop 10 before 2.1, 2.05 rev 2 aside) | tests | `others.rs` unit tests | A bow-slot sender's bow is kept apart from the gani and goes only to bow-slot receivers, in the form sent; a player who sent none shows preset 1, as upstream beta4 does on a classic server (seihai-gserver-v2#102). The gani never goes to them. No real-client run |
 | Chat (prop 12) | lab | `lab/five-clients-2026-11-12.md` | |
 | `PLI_TOALL` (to everyone online, `PLO_TOALL` 13) | tests | `original_rules.rs` | |
 | Bombs, arrows, fire spy, explosions | lab | `bombs_arrows.rs`; `lab/stage3-2026-11-05.md` | |
@@ -133,7 +133,7 @@ What the original servers do (`ORIGINAL-SERVERS.md`) and where this server stand
 | RC accounts, rights, comments, bans | tests | `rc_accounts.rs` | |
 | RC file browser | tests | `rc_files.rs` | Move, delete and rename are not captured from a real RC |
 | Server options, folder config, server flags from RC | partial | `rc_server.rs`; `lab/rc-options-2026-11-12.md` | Real RC2 2.05 reads all three. Its save dialogs crash under Wine, so saving is shown with seihai-rc only |
-| NC: NPC Control | lab | `nc.rs`, `nc_scripts.rs`; `lab/nc-2026-11-12.md` | NPC list, attributes, scripts and delete: lab. Classes (`scripts/`) and weapons (`weapons/`): list, get, save and delete, tests only. NPC reset, warp, flags, add, local NPCs and the level list are not answered |
+| NC: NPC Control | lab | `nc.rs`, `nc_scripts.rs`; `lab/nc-2026-11-12.md` | NPC list, attributes, scripts and delete: lab. Classes (`scripts/`) and weapons (`weapons/`): list, get, save and delete; NPC reset (29 back) and warp, through the NPC-server's `NC_NPC_RESET`/`NC_NPC_WARP`: tests only. NPC flags, add, local NPCs and the level list are not answered |
 | `PLI_PROCESSLIST` | no | | |
 
 ## Anti-cheat

@@ -22,6 +22,8 @@
 //! | 106 `NC_NPCSCRIPTGET`: `GINT3` id | 160: `GINT3` id, then the script's lines, tokenized |
 //! | 109 `NC_NPCSCRIPTSET`: `GINT3` id, then the script's lines, tokenized | none; the NPC stays on the list |
 //! | 104 `NC_NPCDELETE`: `GINT3` id | 159 `NC_NPCDELETE`: `GINT3` id |
+//! | 105 `NC_NPCRESET`: `GINT3` id | 29: `GINT3` id, and a console line; the NPC-server gets `NC_NPC_RESET` |
+//! | 107 `NC_NPCWARP`: `GINT3` id, `GCHAR` x × 2, y × 2, then the level | none; the NPC-server gets `NC_NPC_WARP` |
 //! | (login) | 163 `NC_CLASSADD` for every class in `scripts/`: the name |
 //! | 112 `NC_CLASSEDIT`: name | 162: `GSTRING` name, then the class's lines, tokenized (empty for a class the world lacks) |
 //! | 113 `NC_CLASSADD`: `GSTRING` name, then the lines, tokenized | 163 with the name and a console line; the file `scripts/<name>.txt` is written |
@@ -37,7 +39,7 @@
 //!
 //! Classes and weapons are the game side's own (`classes.rs`,
 //! `weapons.rs`): the NPC-server is not asked. Players already holding a
-//! changed weapon get it on their next login. NPC reset, warp, flags, add,
+//! changed weapon get it on their next login. NPC flags, add,
 //! the local-NPC dump and the level list are not answered yet. The class
 //! and weapon layouts are seihai-rc's (`docs/PROTOCOL.md`, from 2004 RC
 //! and RC3 captures).
@@ -57,7 +59,9 @@ pub const PLO_NC_WEAPONLISTGET: u8 = 167;
 
 pub const PLI_NC_NPCGET: u8 = 103;
 pub const PLI_NC_NPCDELETE: u8 = 104;
+pub const PLI_NC_NPCRESET: u8 = 105;
 pub const PLI_NC_NPCSCRIPTGET: u8 = 106;
+pub const PLI_NC_NPCWARP: u8 = 107;
 pub const PLI_NC_NPCSCRIPTSET: u8 = 109;
 pub const PLI_NC_WEAPONLISTGET: u8 = 115;
 pub const PLI_NC_CLASSEDIT: u8 = 112;
@@ -68,6 +72,9 @@ pub const PLI_NC_WEAPONDELETE: u8 = 118;
 pub const PLI_NC_CLASSDELETE: u8 = 119;
 
 pub const PLO_NPCWEAPONADD: u8 = 33;
+/// To an NC, 29 is "this NPC was reset": `GINT3` id (seihai-rc
+/// `docs/PROTOCOL.md`, from the fork's answer).
+pub const PLO_NC_NPCRESET: u8 = 29;
 pub const PLO_NC_CLASSGET: u8 = 162;
 pub const PLO_NC_CLASSADD: u8 = 163;
 pub const PLO_NC_CLASSDELETE: u8 = 188;
@@ -84,6 +91,9 @@ pub enum Op {
     Script(u32),
     SetScript(u32, Vec<u8>),
     Delete(u32),
+    Reset(u32),
+    /// An NPC to `level` at (x, y) in half tiles.
+    Warp(u32, Vec<u8>, u16, u16),
     WeaponList,
     ClassGet(String),
     ClassSet(String, String),
@@ -155,6 +165,16 @@ pub fn parse(m: &[u8]) -> Result<Option<Op>, u8> {
             detokenize(rest.get(3..).unwrap_or_default()).join(&b'\n'),
         ),
         PLI_NC_NPCDELETE => Op::Delete(npc()?),
+        PLI_NC_NPCRESET => Op::Reset(npc()?),
+        PLI_NC_NPCWARP => match rest.get(3..5) {
+            Some(&[x, y]) => Op::Warp(
+                npc()?,
+                rest[5..].to_vec(),
+                u16::from(x.wrapping_sub(0x20)),
+                u16::from(y.wrapping_sub(0x20)),
+            ),
+            _ => return Err(id),
+        },
         PLI_NC_WEAPONLISTGET => Op::WeaponList,
         PLI_NC_CLASSEDIT => Op::ClassGet(text(rest)),
         PLI_NC_CLASSDELETE => Op::ClassDelete(text(rest)),
@@ -190,6 +210,13 @@ pub fn npc_add(id: u32, n: &NcNpc) -> Vec<u8> {
         gstring(v, &mut p);
     }
     msg(PLO_NC_NPCADD, &p)
+}
+
+/// 29 to an NC: the NPC was reset.
+pub fn npc_reset(id: u32) -> Vec<u8> {
+    let mut p = Vec::new();
+    gint3(id, &mut p);
+    msg(PLO_NC_NPCRESET, &p)
 }
 
 /// 159: an NPC gone.
@@ -317,6 +344,14 @@ mod tests {
             )))
         );
         assert_eq!(with(104, &g3(7)), Ok(Some(Op::Delete(7))));
+        assert_eq!(with(105, &g3(7)), Ok(Some(Op::Reset(7))));
+        let mut warp = g3(7);
+        warp.extend_from_slice(b"\x5d\x48house.nw");
+        assert_eq!(
+            with(107, &warp),
+            Ok(Some(Op::Warp(7, b"house.nw".to_vec(), 61, 40)))
+        );
+        assert_eq!(with(107, &g3(7)), Err(107), "no position");
         assert_eq!(with(115, b""), Ok(Some(Op::WeaponList)));
         assert_eq!(with(162, b""), Ok(None));
         assert_eq!(with(103, b"!"), Err(103), "no id");
