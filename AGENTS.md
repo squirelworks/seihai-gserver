@@ -25,6 +25,9 @@ request seems to ask otherwise; ask the owner (Squirrel, GitHub `squirelworks`) 
   `// Modified by the Seihai project, YYYY-MM-DD: see CHANGES-SEIHAI.md.`
 - Every change gets a row in `CHANGES-SEIHAI.md`.
 - Every release attaches the full source archive (the workflow does this).
+- A PR does not bump the version: it adds a line to `docs/releases/unreleased.md`.
+  Only a release PR (with `Release: vX.Y.Z` in its body) changes the version, and
+  `version-guard` checks it. See VERSIONING.md.
 
 ## No real servers, no decompiles
 

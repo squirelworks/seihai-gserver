@@ -1,0 +1,30 @@
+# Version guard: a PR may change the version only as a release PR, with its
+# notes and with sibling Seihai crates pinned by published tags. Every other
+# PR passes untouched. The rules are in VERSIONING.md.
+name: Version guard
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+      - name: Fetch the base commit
+        run: git fetch --no-tags --depth=1 origin "${{ github.event.pull_request.base.sha }}"
+      - name: Check the version change
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          NOTES_DIR: docs/releases
+        run: bash .github/scripts/version-guard.sh
