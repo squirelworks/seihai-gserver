@@ -1904,6 +1904,8 @@ impl Session {
                 PLI_NPCWEAPONDEL => server.world.npc_weapon_del(self.id, payload),
                 PLI_PLAYERPROPS => {
                     let bow = self.profile.server.prop10_bow;
+                    // From here on COLORS is 5 bytes whatever the build sent.
+                    let payload = &*crate::others::colors_to_five(payload, &self.profile);
                     let filtered = server.wordfilter.filter_props(payload, bow);
                     if filtered.is_some() && server.verbose {
                         server.log(peer, "chat filtered");
