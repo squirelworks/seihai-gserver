@@ -96,6 +96,37 @@ pub fn tokenize(lines: &[Vec<u8>]) -> Vec<u8> {
     out
 }
 
+/// Items joined by commas the way gs2lib's `gtokenize` writes them: an
+/// item is quoted only when it starts with `"`, is nothing but spaces, or holds a byte outside 33..126, a comma or a slash; inside
+/// quotes `\` and `"` are doubled. GServer-v2's 197 and 140 headers are
+/// written this way (lab 2026-11-19).
+pub fn gtokenize_items(items: &[&[u8]]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for (i, item) in items.iter().enumerate() {
+        if i > 0 {
+            out.push(b',');
+        }
+        let complex = item.first() == Some(&b'"')
+            || (!item.is_empty() && item.iter().all(|&c| c == b' '))
+            || item
+                .iter()
+                .any(|&c| !(33..=126).contains(&c) || c == b',' || c == b'/');
+        if !complex {
+            out.extend_from_slice(item);
+            continue;
+        }
+        out.push(b'"');
+        for &c in item.iter() {
+            if c == b'"' || c == b'\\' {
+                out.push(c);
+            }
+            out.push(c);
+        }
+        out.push(b'"');
+    }
+    out
+}
+
 /// Tokenized text back into lines. A quoted item runs to its closing
 /// quote (`""` inside is one `"`, `\\` one `\`, as real RCs write a
 /// script; a lone `\` stays); an unquoted one to the next comma, as

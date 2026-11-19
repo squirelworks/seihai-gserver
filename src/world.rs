@@ -1058,8 +1058,14 @@ impl Leaving {
         if let Some(v) = byte(2) {
             a.hp = f32::from(v) / 2.0;
         }
+        // Prop 3 holds 2,097,151 at most, so a count at that cap may be a
+        // bigger one cut short for the client: keep the account's then,
+        // or a session would save the cap over it (#163).
         if let Some(v) = self.props.get(&3) {
-            a.rupees = seihai_core::protocol::read_gint3(v).map_or(0, |r| r as u32);
+            let r = seihai_core::protocol::read_gint3(v).map_or(0, |r| r as u32);
+            if !(r == crate::burst::MAX_GRALATS_3 && a.rupees > r) {
+                a.rupees = r;
+            }
         }
         if let Some(v) = byte(4) {
             a.arrows = v;
@@ -4163,6 +4169,55 @@ mod tests {
         }
         assert!(st.ignored.is_empty(), "{v:?}");
         st
+    }
+
+    /// A 2.x session holds prop 3 at 2,097,151; leaving must not write
+    /// that over a bigger count (lab 2026-11-19, #163).
+    #[test]
+    fn leaving_keeps_gralats_past_the_prop_3_cap() {
+        let mut was = crate::accounts::Account::new("cora", "start.nw", 30.0, 30.0);
+        was.rupees = 3_000_000;
+        let mut p = Props::default();
+        p.apply(
+            &crate::burst::own_props(
+                ClientVersion::V222,
+                &crate::burst::Player {
+                    id: 1,
+                    account: &was,
+                    leader: false,
+                },
+            ),
+            ClientVersion::V222,
+        );
+        let mut a = was.clone();
+        Leaving {
+            props: p.values().clone(),
+            ..Default::default()
+        }
+        .apply_to(&mut a);
+        assert_eq!(a.rupees, 3_000_000);
+        // Below the cap, the session's count is saved as before.
+        was.rupees = 100;
+        let mut b = was.clone();
+        b.rupees = 50;
+        let mut q = Props::default();
+        q.apply(
+            &crate::burst::own_props(
+                ClientVersion::V222,
+                &crate::burst::Player {
+                    id: 1,
+                    account: &was,
+                    leader: false,
+                },
+            ),
+            ClientVersion::V222,
+        );
+        Leaving {
+            props: q.values().clone(),
+            ..Default::default()
+        }
+        .apply_to(&mut b);
+        assert_eq!(b.rupees, 100);
     }
 
     #[test]

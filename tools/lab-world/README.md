@@ -1,0 +1,11 @@
+# Lab world extras
+
+Files to copy into a lab world, not a world of their own.
+
+- `weapons/-LabChat.txt`: a chat line for 5.x and 6.x, which have no chat
+  bar unless the server sends one (#45, #163). Type, then Enter says the
+  line; Backspace deletes, Escape clears. 5.x and 6.x come in through the
+  lobby as guests, so give it with `WEAPON -LabChat` in
+  `accounts/guest.txt` only; 1.x and 2.x keep their own chat bar and would
+  get it as GS1 text. It is GS1, compiled to GS2 for 5.24 on and sent by
+  197 and 140. Not yet run on a real client.

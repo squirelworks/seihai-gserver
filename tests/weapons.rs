@@ -106,8 +106,9 @@ fn a_weapon_from_an_npc_is_kept() {
     drop(rx);
     drop(sess);
 
-    // A 5.24r4 runs no GS1 and is sent no GS1 weapon. It still gets its
-    // default weapons.
+    // A 5.24r4 runs no GS1: it gets the weapon's name and image in 33,
+    // then the GS2 bytecode by 197 and 140, never the GS1 text. It still
+    // gets its default weapons.
     let end = Instant::now() + Duration::from_secs(10);
     let v = ClientVersion::V524R4;
     let (mut sess, rx) = loop {
@@ -129,8 +130,12 @@ fn a_weapon_from_an_npc_is_kept() {
         s.default_weapons.contains(&12)
     })
     .unwrap();
-    let _ = read_until(&rx, &mut st, Duration::from_millis(500), |_| false);
-    assert!(st.weapons.is_empty(), "{:?}", st.weapons);
+    read_until(&rx, &mut st, Duration::from_secs(10), |s| {
+        s.weapons.iter().any(|w| w.name == "Lantern")
+    })
+    .unwrap();
+    let lantern = st.weapons.iter().find(|w| w.name == "Lantern").unwrap();
+    assert!(lantern.script.is_none(), "{lantern:?}");
     let _ = &mut sess;
 }
 

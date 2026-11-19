@@ -1,0 +1,24 @@
+GRAWP001
+REALNAME -LabChat
+IMAGE
+SCRIPT
+// Lab chat for 5.x/6.x, which have no chat bar of their own: type a
+// line and press Enter to say it; Backspace deletes, Escape clears.
+if (created || playerenters) {
+  setstring this.line,;
+  showtext 200,8,screenheight-24,Arial,b,> ;
+}
+if (keypressed) {
+  if (strequals(#p(1),13)) {
+    setplayerprop #c,#s(this.line);
+    setstring this.line,;
+  } else if (strequals(#p(1),8)) {
+    setstring this.line,#e(0,strlen(#s(this.line))-1,#s(this.line));
+  } else if (strequals(#p(1),27)) {
+    setstring this.line,;
+  } else if (strlen(#p(2)) == 1) {
+    setstring this.line,#s(this.line)#p(2);
+  }
+  showtext 200,8,screenheight-24,Arial,b,> #s(this.line);
+}
+SCRIPTEND
