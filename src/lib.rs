@@ -20,6 +20,7 @@ pub mod coords;
 pub mod files;
 pub mod gmaps;
 pub mod gpak;
+pub mod graal3d;
 pub mod horses;
 pub mod import;
 pub mod levels;
@@ -119,6 +120,36 @@ pub fn start_listlink(server: &mut server::Server) {
     }
 }
 
+/// Opens the 3D side (`graal3d`) on UDP `port` with the world's
+/// `config/graal3dworld.txt`, and prints the lines it did not take.
+pub async fn start_graal3d(
+    server: &Arc<server::Server>,
+    g: &Arc<graal3d::Graal3d>,
+    port: u16,
+) -> std::io::Result<std::net::SocketAddr> {
+    let path = server.cfg.world.join("config").join("graal3dworld.txt");
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!("Graal3D: no config/graal3dworld.txt; the 3D world is empty");
+            String::new()
+        }
+        Err(e) => return Err(e),
+    };
+    let (scene, errors) = graal3d::scene::Scene::parse(&text);
+    for e in errors {
+        eprintln!("Graal3D: graal3dworld.txt {e} (not understood)");
+    }
+    let addr = std::net::SocketAddr::new(server.cfg.bind, port);
+    g.start(
+        addr,
+        scene,
+        server.cfg.world.clone(),
+        Box::new(graal3d::service::ServerWorld(server.clone())),
+    )
+    .await
+}
+
 /// Bind and serve until the listener fails.
 pub async fn run(server: Arc<server::Server>) -> std::io::Result<()> {
     let addr = std::net::SocketAddr::new(server.cfg.bind, server.cfg.port);
@@ -152,6 +183,14 @@ pub async fn run(server: Arc<server::Server>) -> std::io::Result<()> {
                 server.npc.token().to_vec(),
             ));
         }
+    }
+    if let Some(g) = &server.graal3d {
+        let port = match server.cfg.graal3d_port {
+            0 => listener.local_addr()?.port().wrapping_add(1),
+            p => p,
+        };
+        let at = start_graal3d(&server, g, port).await?;
+        eprintln!("Graal3D: listening on UDP {at}");
     }
     if server.cfg.lobby_port != 0 {
         let lobby_addr = std::net::SocketAddr::new(server.cfg.bind, server.cfg.lobby_port);

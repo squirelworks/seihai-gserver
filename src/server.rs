@@ -66,6 +66,8 @@ pub struct Server {
     guests: std::sync::atomic::AtomicU32,
     /// `config/wordfilter.txt` (`wordfilter`).
     pub wordfilter: crate::wordfilter::WordFilter,
+    /// The 3D side (`graal3d`), when `graal3d = true`. Started by `run`.
+    pub graal3d: Option<Arc<crate::graal3d::Graal3d>>,
 }
 
 impl Server {
@@ -135,7 +137,11 @@ impl Server {
         let password_checks = crate::ratelimit::PasswordChecks::new(cfg.password_check_slots());
         let wordfilter =
             crate::wordfilter::WordFilter::new(cfg.world.join("config").join("wordfilter.txt"));
+        let graal3d = cfg
+            .graal3d
+            .then(|| Arc::new(crate::graal3d::Graal3d::new()));
         Server {
+            graal3d,
             wordfilter,
             files: crate::files::FileStore::new(&cfg.world),
             npc,
@@ -284,6 +290,9 @@ async fn serve_on(
             let result = conn.run().await;
             if let Some(id) = conn.player.take() {
                 s.world.left(id);
+                if let Some(g) = &s.graal3d {
+                    g.tcp_left(id);
+                }
                 if let Some(l) = &s.listlink {
                     l.player_removed(id);
                 }
@@ -645,7 +654,7 @@ impl Conn {
                     .await
             }
         };
-        self.account = Some(key);
+        self.account = Some(key.clone());
         self.player = Some(id);
         {
             let level = level.name.as_str();
@@ -663,6 +672,21 @@ impl Conn {
         }
         self.server
             .log(&self.peer, &format!("{who} logged in as player {id}"));
+        // A 3.153 to 5.x client on a 3D server opens the UDP side beside
+        // this login; that side links to it by account and address.
+        let graal3d_client = self.server.graal3d.is_some() && crate::graal3d::has_graal3d(version);
+        if let (Some(g), true) = (&self.server.graal3d, graal3d_client) {
+            g.tcp_joined(
+                id,
+                crate::graal3d::TcpPlayer {
+                    account: key.clone(),
+                    guest: key.starts_with("pc:"),
+                    ip: self.peer.ip(),
+                    nickname: crate::wire::latin1(&account.nick),
+                    flags: account.flags.clone(),
+                },
+            );
+        }
 
         // Whatever came behind the login line in its frame: the language,
         // and for some builds the tamper check or file checks.
@@ -704,6 +728,9 @@ impl Conn {
                 self.lobby_files(&mut codec, &mut inbuf, version).await?;
                 if let Some(id) = self.player.take() {
                     self.server.world.left(id);
+                    if let Some(g) = &self.server.graal3d {
+                        g.tcp_left(id);
+                    }
                     if let Some(l) = &self.server.listlink {
                         l.player_removed(id);
                     }
@@ -754,6 +781,7 @@ impl Conn {
             kicked: false,
             ping: (!cfg.ping.is_zero() && crate::profile::ServerProfile::of(version).ping)
                 .then(crate::ping::Pinger::default),
+            graal3d: graal3d_client,
         };
         for f in session.handle(&self.server, &self.peer, &early) {
             self.send(&mut codec, &f).await?;
@@ -837,6 +865,13 @@ impl Conn {
                     // The world decides the frames (gen 2 needs the board
                     // in a frame of its own), and an item's frames go out
                     // together: no reply of this task's lands between.
+                    // A client in 3D mode ignores TCP flag packets: they go
+                    // to its 3D link as well.
+                    if graal3d_client {
+                        if let Some(g) = &self.server.graal3d {
+                            g.mirror(id, &frames);
+                        }
+                    }
                     for f in frames {
                         self.send(&mut codec, &f).await?;
                     }
@@ -1665,6 +1700,10 @@ impl Conn {
 
 /// What one logged-in client has said, for the log.
 struct Session {
+    /// A 3D-capable client on a server with the 3D side on: its 3D login
+    /// waits for an answer to every file it asks for, and asks for Sky
+    /// textures with no extension.
+    graal3d: bool,
     id: u16,
     version: ClientVersion,
     /// What this connection's writes depend on, resolved at login.
@@ -1774,7 +1813,11 @@ impl Session {
                     };
                     let raw: &[u8] = &asked;
                     let name = seihai_core::protocol::latin1(raw);
-                    let found = server.files.find(&name);
+                    let found = server.files.find(&name).or_else(|| {
+                        self.graal3d
+                            .then(|| crate::graal3d::extensionless_texture(&server.files, &name))
+                            .flatten()
+                    });
                     let key = server.files.package_key(&name);
                     let newer = match (&found, since) {
                         (Some(f), Some(t)) => f.mod_time > t,
@@ -1807,8 +1850,12 @@ impl Session {
                     let name = seihai_core::protocol::latin1(raw);
                     let found = server.files.find(&name);
                     let key = server.files.package_key(&name);
-                    let sent =
+                    let mut sent =
                         crate::files::verify(self.profile, raw, &name, found.as_ref(), crc, key);
+                    // A 3D client's login waits on an answer to every file.
+                    if sent.is_empty() && self.graal3d {
+                        sent = crate::files::offer(self.profile, raw, &name, None, None, key);
+                    }
                     if !reply.is_empty() && sent.len() > 1 {
                         frames.push(std::mem::take(&mut reply));
                     }

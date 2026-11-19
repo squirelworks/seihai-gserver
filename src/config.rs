@@ -115,6 +115,12 @@ pub struct Config {
     /// address the link comes from. Set it when that address is not the
     /// one players reach, e.g. behind NAT or a port forward.
     pub listserver_ip: String,
+    /// The 3D mode (`graal3d.rs`, `docs/GRAAL3D.md`): a Torque UDP server
+    /// for the 3.153 to 5.x clients beside the TCP one, and the listing
+    /// name starts with `3 `. Off by default.
+    pub graal3d: bool,
+    /// Its UDP port; 0 (the default) is `port` + 1, the port the clients use.
+    pub graal3d_port: u16,
     /// The anti-cheat checks and what they do (`anticheat`,
     /// `anticheat_log`, `anticheat_rate`, `anticheat.<check>`).
     pub anticheat: crate::anticheat::Policy,
@@ -175,6 +181,8 @@ impl Config {
             listserver_key: String::new(),
             listserver_accounts: false,
             listserver_ip: String::new(),
+            graal3d: false,
+            graal3d_port: 0,
             anticheat: crate::anticheat::Policy::default(),
             gpaks: Vec::new(),
             rules: crate::rules::Rules::default(),
@@ -294,6 +302,8 @@ impl Config {
             "listserver_key" => self.listserver_key = v.to_string(),
             "listserver_accounts" => self.listserver_accounts = flag(v)?,
             "listserver_ip" => self.listserver_ip = v.to_string(),
+            "graal3d" => self.graal3d = flag(v)?,
+            "graal3d_port" => self.graal3d_port = num(v)?,
             "gpaks" => {
                 self.gpaks = v
                     .split(',')
@@ -317,6 +327,14 @@ impl Config {
         match self.password_checks {
             0 => std::thread::available_parallelism().map_or(2, |n| n.get()),
             n => n,
+        }
+    }
+
+    /// The 3D side's UDP port: `graal3d_port`, else `port` + 1.
+    pub fn graal3d_udp_port(&self) -> u16 {
+        match self.graal3d_port {
+            0 => self.port.wrapping_add(1),
+            p => p,
         }
     }
 

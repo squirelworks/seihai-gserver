@@ -147,7 +147,8 @@ What the original servers do (`ORIGINAL-SERVERS.md`) and where this server stand
 
 | Area | Status | Notes |
 |---|---|---|
-| Graal3D (`GR3DV002`) and the Torque 3D path | out | A separate host next to `seihai-g3d` (`PLAN.md`, "Out of band") |
+| Graal3D (`GR3DV002`) | out | A separate host next to `seihai-g3d` (`PLAN.md`, "Out of band") |
+| The Torque 3D path (protocols 19, 21, 24) | partial | `graal3d = true`; loopback-tested, no lab run yet; gaps in `GRAAL3D.md` |
 | The listserver itself | out | `seihai-listserver` |
 | Translations | out | No plan yet |
 
