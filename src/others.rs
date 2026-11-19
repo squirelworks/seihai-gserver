@@ -74,7 +74,7 @@ const SWORD: u8 = 8;
 const SHIELD: u8 = 9;
 const HEAD: u8 = 11;
 /// Colour indexes (`PLPROP_COLORS`): 5 bytes in every build but the
-/// NewWorld betas, which send 7 and read 8 (`Props::colors_sent`,
+/// NewWorld betas, which send and read 8 (`Props::colors_sent`,
 /// `Props::colors_read`). The server keeps 5.
 const COLORS: u8 = 13;
 const STATUS: u8 = 18;
@@ -299,8 +299,8 @@ pub fn for_receiver<'a>(
 }
 
 /// A prop stream as `sender`'s build writes it, with COLORS (13) cut to
-/// the 5 bytes the server keeps. The NewWorld betas send 7; the last two are
-/// not known and are dropped. Every other build's stream comes back as it
+/// the 5 bytes the server keeps. The NewWorld betas send 8 (lab, 2026-11-19);
+/// the last three are not known and are dropped. Every other build's stream comes back as it
 /// is. Bytes after the last prop the parser reads are kept as sent.
 pub fn colors_to_five<'a>(raw: &'a [u8], sender: &ClientProfile) -> std::borrow::Cow<'a, [u8]> {
     use std::borrow::Cow;
@@ -1080,13 +1080,13 @@ mod tests {
         assert_eq!(p.all().values.get(&IPADDR), Some(&want));
     }
 
-    /// A NewWorld beta sends COLORS as 7 bytes: the server keeps 5 and reads
+    /// A NewWorld beta sends COLORS as 8 bytes: the server keeps 5 and reads
     /// the props after it in place; it sends 8 back to a beta and 5 to 2.05.
     #[test]
     fn newworld_colors_are_kept_as_five() {
         let nw = ClientProfile::of(ClientVersion::NewWorldB1);
         let mut raw = vec![gchar(COLORS)];
-        raw.extend([1, 2, 3, 4, 5, 6, 7].map(gchar));
+        raw.extend([1, 2, 3, 4, 5, 6, 7, 8].map(gchar));
         raw.extend([gchar(X), gchar(60)]);
         let five = colors_to_five(&raw, &nw);
         let mut want = vec![gchar(COLORS)];
