@@ -271,6 +271,10 @@ pub fn class_delete(name: &str) -> Vec<u8> {
     msg(PLO_NC_CLASSDELETE, &crate::wire::latin1(name))
 }
 
+/// The first line an NC gets after its login: `Server: seihai-gserver
+/// VERSION`. seihai-rc takes its text profile from it (seihai-rc #56).
+pub const SERVER_LINE: &str = concat!("Server: seihai-gserver ", env!("CARGO_PKG_VERSION"));
+
 /// A console line for a logged-in NPC Control session.
 ///
 /// An NC client shows this as `PLO_RC_CHAT` (74): the same packet Remote

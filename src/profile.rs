@@ -110,6 +110,9 @@ pub struct ServerProfile {
     /// on. Another player's male bit would make the build draw that
     /// player as a swimmer, with no body (`others::for_receiver`).
     pub status_4_swims: bool,
+    /// Reads prop 83, a `GINT5` gralat count up to 999,999,999, for counts
+    /// past prop 3's 2,097,151 (`burst::own_props`).
+    pub gralats_83: bool,
 }
 
 /// Builds that read and write another player's id as one `GCHAR`: up to
@@ -159,6 +162,19 @@ const PING_BEFORE_SWITCH: &[ClientVersion] = &[
     ClientVersion::V603R7Linux,
 ];
 
+/// Builds that read own prop 83 as five bytes, the gralat count: the
+/// 6.03r7 probe (Graal_analysis `protocol/probe-targets-2026-11-18.md`). 2.22
+/// and 2.31 end the prop message at 83, and 4.20r8 and 5.24r4 skip it as one
+/// byte, so it goes to none of them. 6.015 and 6.034 take their id sets from
+/// the Linux 6.x builds, as for [`PING_BEFORE_SWITCH`]; 6.00r2 was not
+/// probed. Goes when `seihai-core`'s 6.x own-prop sets list 83.
+const GRALATS_83: &[ClientVersion] = &[
+    ClientVersion::V6015,
+    ClientVersion::V6034,
+    ClientVersion::V603R7,
+    ClientVersion::V603R7Linux,
+];
+
 impl ServerProfile {
     pub fn of(version: ClientVersion) -> ServerProfile {
         let core = version.profile();
@@ -178,6 +194,7 @@ impl ServerProfile {
             // bit was cleared (GServer-v2 fork lab, 2026-11-13, #27 rerun).
             // The 1.x line shares the status prop's layout.
             status_4_swims: version.label().starts_with("1."),
+            gralats_83: GRALATS_83.contains(&version),
         };
         if version == ClientVersion::V205 {
             // Real 2.05 rev 2 takes a file only with the mod time; sent

@@ -1198,7 +1198,9 @@ impl Conn {
         self.server.log(&self.peer, &format!("NC {who} logged in"));
         let hub = self.server.npc.clone();
         let (list, mut changes) = hub.nc_watch();
-        let mut first: Vec<u8> = Vec::new();
+        // The server names itself first, so seihai-rc writes and reads NC
+        // text the way this server does (backslashes as sent; seihai-rc #56).
+        let mut first: Vec<u8> = crate::nc::console_line(crate::nc::SERVER_LINE.as_bytes());
         for (id, n) in &list {
             first.extend(crate::nc::npc_add(*id, n));
         }

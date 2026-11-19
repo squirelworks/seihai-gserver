@@ -228,9 +228,18 @@ fn staff_log_in_through_the_secure_login_with_every_rc_type() {
     // to list, so ask for the weapon list (115) and get its 167. The ask
     // goes in the same write as the sealed login: it must be answered
     // without waiting for another packet.
+    // The first frame names the server (`Server: seihai-gserver VERSION`,
+    // seihai-rc #56).
     let ask = write_zlib_frame(&[115 + 0x20, b'\n']).unwrap();
     let mut s = secure_login_then(&addr, &key, &[3 + 0x20], "NCL11012", "boss", PASSWORD, &ask);
     let m = ids(&read_zlib_frame(&mut s).unwrap());
+    assert_eq!(m[0].0, 74, "{m:?}");
+    assert!(m[0].1.starts_with(b"Server: seihai-gserver "), "{m:?}");
+    let m = if m.len() > 1 {
+        m[1..].to_vec()
+    } else {
+        ids(&read_zlib_frame(&mut s).unwrap())
+    };
     assert_eq!(m[0].0, 167, "{m:?}");
 
     // Refusals come after the handshake, in each type's own framing.
