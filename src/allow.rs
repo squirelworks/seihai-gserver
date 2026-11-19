@@ -32,8 +32,9 @@ impl AllowList {
                 .iter()
                 .map(|v| v.token().to_string())
                 // The builds served as a near build (`login::STAND_INS`):
-                // 1.25, 1.27, 1.40 rev 1, 2.19 to 2.21. Without them `*`
-                // turned a real 1.27 away (lab round 3, 2026-11-14).
+                // every catalogued game token with no profile of its own.
+                // Without them `*` turned a real 1.27 away (lab round 3,
+                // 2026-11-14) and 3.151 too (2026-11-19).
                 .chain(
                     crate::login::STAND_INS
                         .iter()
