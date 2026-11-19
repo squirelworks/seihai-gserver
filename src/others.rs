@@ -303,8 +303,8 @@ pub fn for_receiver<'a>(
 pub const COLORS_LEN: usize = 5;
 
 /// A client's `PLI_PLAYERPROPS` with COLORS cut to [`COLORS_LEN`], for a
-/// build that sends more (the NewWorld betas send 7, `Props::colors_sent`).
-/// What bytes 6 and 7 mean is not known; they are dropped. `None` when the
+/// build that sends more (the NewWorld betas send 8, `Props::colors_sent`).
+/// What bytes 6 to 8 mean is not known; they are dropped. `None` when the
 /// build sends 5 or the stream has no COLORS.
 pub fn colors_in(sender: &ClientProfile, payload: &[u8]) -> Option<Vec<u8>> {
     let sent = usize::from(sender.core.props.colors_sent);
@@ -833,15 +833,16 @@ mod tests {
     use crate::burst::{own_props, Player};
     use seihai_core::protocol::SessionState;
 
-    /// The NewWorld betas send COLORS as 7 bytes and read 8: the world keeps
-    /// 5, cut from what they send and padded for what they read; nobody else
-    /// sees the difference.
+    /// The NewWorld betas send and read COLORS as 8 bytes (lab, 2026-11-19):
+    /// the world keeps 5, cut from what they send and padded for what they
+    /// read; nobody else sees the difference.
     #[test]
     fn newworld_colors_are_cut_and_padded() {
         let nw = ClientProfile::of(ClientVersion::NewWorldB1);
-        // NICK "ab", COLORS 7 bytes, SPRITE 2.
+        // NICK "ab", COLORS 8 bytes, SPRITE 2.
         let p = [
-            0x20, 0x22, b'a', b'b', 0x2d, 0x22, 0x25, 0x32, 0x25, 0x32, 0x21, 0x22, 0x31, 0x22,
+            0x20, 0x22, b'a', b'b', 0x2d, 0x22, 0x25, 0x32, 0x25, 0x32, 0x21, 0x22, 0x20, 0x31,
+            0x22,
         ];
         let cut = colors_in(&nw, &p).expect("cut");
         assert_eq!(
