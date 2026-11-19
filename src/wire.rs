@@ -529,7 +529,11 @@ mod tests {
         // A real RC's save; a lone backslash in quotes and bare ones stay.
         assert_eq!(
             detokenize(br#""say ""a\\nb"";",x\y,"q\z""#),
-            [br#"say "a\nb";"#.to_vec(), br"x\y".to_vec(), br"q\z".to_vec()]
+            [
+                br#"say "a\nb";"#.to_vec(),
+                br"x\y".to_vec(),
+                br"q\z".to_vec()
+            ]
         );
         // Unquoted, as the fork once sent folder rights.
         assert_eq!(
