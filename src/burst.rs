@@ -308,6 +308,13 @@ impl Out<'_> {
     }
 }
 
+/// Own prop 83: the gralat count past prop 3's limit, 6.x only.
+pub const GRALATS_83: u8 = 83;
+/// The most prop 3 (`GINT3`) holds.
+pub const MAX_GRALATS_3: u32 = (1 << 21) - 1;
+/// The most a 6.x client takes in prop 83.
+pub const MAX_GRALATS_83: u32 = 999_999_999;
+
 /// The player's own props, as `PLO_PLAYERPROPS` carries them.
 pub fn own_props(version: impl Into<ClientProfile>, p: &Player) -> Vec<u8> {
     let version = version.into();
@@ -332,6 +339,14 @@ pub fn own_props(version: impl Into<ClientProfile>, p: &Player) -> Vec<u8> {
     let mut r = Vec::new();
     gint3(a.rupees, &mut r);
     put(3, &r);
+    // Prop 3 holds 2,097,151 at most. A 6.x client takes the rest as prop 83,
+    // up to 999,999,999; it ignores a higher one, so the count is held there
+    // (#156). Sent only when prop 3 cannot carry the count.
+    let mut gralats_83 = Vec::new();
+    if version.server.gralats_83 && a.rupees > MAX_GRALATS_3 {
+        gralats_83.push(gchar(GRALATS_83));
+        gint5(u64::from(a.rupees.min(MAX_GRALATS_83)), &mut gralats_83);
+    }
     put(4, &[gchar(a.arrows)]);
     put(5, &[gchar(a.bombs)]);
     put(6, &[gchar(a.glove)]);
@@ -368,6 +383,7 @@ pub fn own_props(version: impl Into<ClientProfile>, p: &Player) -> Vec<u8> {
             put(pid, &w);
         }
     }
+    b.extend(gralats_83);
     b
 }
 
@@ -466,6 +482,50 @@ mod tests {
             assert_eq!(len, bytes.len(), "{v:?}: {parsed:?}");
             assert!(parsed.iter().any(|p| p.id == 0), "{v:?} gets its nickname");
         }
+    }
+
+    /// Gralats past prop 3's 2,097,151 go to a 6.x client as prop 83, held
+    /// at 999,999,999; nobody else gets 83, and prop 3 holds its maximum
+    /// (#156, the 6.03r7 probe).
+    #[test]
+    fn gralats_past_prop_3_go_as_prop_83_to_6x_only() {
+        let mut a = account();
+        for (rupees, want) in [(5_000_000u32, 5_000_000u64), (u32::MAX, 999_999_999)] {
+            a.rupees = rupees;
+            let p = Player {
+                id: 7,
+                account: &a,
+                leader: true,
+            };
+            let mut tail = vec![gchar(GRALATS_83)];
+            gint5(want, &mut tail);
+            let mut three = vec![gchar(3)];
+            gint3(MAX_GRALATS_3, &mut three);
+            for v in [ClientVersion::V603R7, ClientVersion::V603R7Linux] {
+                let bytes = own_props(v, &p);
+                assert!(bytes.ends_with(&tail), "{v:?}");
+                assert!(bytes.windows(4).any(|w| w == three), "{v:?}");
+            }
+            for v in [
+                ClientVersion::V222,
+                ClientVersion::V231,
+                ClientVersion::V420R8,
+                ClientVersion::V524R4,
+            ] {
+                let bytes = own_props(v, &p);
+                assert!(!bytes.ends_with(&tail), "{v:?}");
+            }
+        }
+        a.rupees = MAX_GRALATS_3;
+        let p = Player {
+            id: 7,
+            account: &a,
+            leader: true,
+        };
+        let bytes = own_props(ClientVersion::V603R7, &p);
+        let prof = ClientVersion::V603R7.profile();
+        let parsed = parse_player_props_in(&bytes, false, Some(&prof.props.own));
+        assert!(parsed.iter().all(|p| p.id != GRALATS_83));
     }
 
     /// Fed to the client's session state for its build, the burst gives the

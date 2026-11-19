@@ -141,13 +141,18 @@ impl Baddy {
     /// A baddy a client put (`PLI_BADDYADD`, 17): `GCHAR` x × 2, y × 2,
     /// type and power, then the image (empty for the type's own). Layout
     /// from Graal_analysis `protocol/packet-layouts.md` (2.05 and the
-    /// fork's reader). `None` when it is too short or the type is not 0
-    /// to 9.
+    /// fork's reader). `None` when it is too short, the type is not 0
+    /// to 9 or the tile is off the level. The GServer-v2 fork read an
+    /// empty one as type 224, which closed a 6.03r7 that saw it.
     pub fn put(id: u8, raw: &[u8], start_mode: impl Fn(u8) -> u8) -> Option<Self> {
         let [x2, y2, kind, power, image @ ..] = raw else {
             return None;
         };
         let kind = kind.checked_sub(0x20)?;
+        // A level is 64 tiles across: x and y × 2 stay under 128 (#156).
+        if x2.wrapping_sub(0x20) >= 128 || y2.wrapping_sub(0x20) >= 128 {
+            return None;
+        }
         let (default_power, default_image) = *KINDS.get(usize::from(kind))?;
         let power = match power.wrapping_sub(0x20) {
             0 => default_power,
@@ -354,6 +359,11 @@ mod tests {
         assert_eq!(b.props[&POWER_IMAGE], power_image(7, b"ghost.png"));
         assert!(Baddy::put(1, &raw[..3], |_| 0).is_none());
         assert!(Baddy::put(1, &[0x20, 0x20, 0x20 + 10, 0x20], |_| 0).is_none());
+        // Empty, and a tile off the 64-tile level (#156).
+        assert!(Baddy::put(1, &[], |_| 0).is_none());
+        assert!(Baddy::put(1, &[0x20 + 128, 0x20, 0x20, 0x20], |_| 0).is_none());
+        assert!(Baddy::put(1, &[0x20, 0x20 + 128, 0x20, 0x20], |_| 0).is_none());
+        assert!(Baddy::put(1, &[0x20 + 127, 0x20 + 127, 0x20, 0x20], |_| 0).is_some());
     }
 
     fn walk(_: u8) -> u8 {

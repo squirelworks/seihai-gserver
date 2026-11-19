@@ -36,6 +36,57 @@ pub const MAX_OUT_FRAME: usize = 0xFFF0;
 /// this only stops a peer from making us buffer much.
 pub const MAX_IN_FRAME: usize = 0xFFFF;
 
+/// Whether `version` stops reading a frame at a `00` byte. 2.22 and 2.31
+/// lose every message after one in the same frame, in an unknown id and a
+/// chat prop alike; 4.20r8 does not (Graal_analysis
+/// `protocol/probe-targets-2026-11-18.md`, #156). The 1.x builds are taken
+/// to do the same as 2.x; none was probed.
+pub fn nul_ends_frame(version: ClientVersion) -> bool {
+    let label = version.label();
+    label.starts_with("1.") || label.starts_with("2.")
+}
+
+/// `body` with every `00` byte outside a raw block turned into `?`. A raw
+/// block (the message after `PLO_RAWDATA` (100), whose `GINT3` gives its
+/// length) is a file or bytecode and goes as it is: such blocks reach 2.x
+/// clients whole. Every other `00` can only be in text (a `GCHAR` or
+/// `GINT` never is one), so the swap keeps every length right.
+///
+/// `raw_left` is how much of a raw block the previous frame left over; the
+/// second value is what this one leaves for the next.
+pub fn scrub_nul(body: &[u8], raw_left: usize) -> (std::borrow::Cow<'_, [u8]>, usize) {
+    use std::borrow::Cow;
+    let raw_id = crate::wire::ids::PLO_RAWDATA + 0x20;
+    let mut out: Option<Vec<u8>> = None;
+    let mut i = raw_left.min(body.len());
+    let mut left = raw_left - i;
+    while i < body.len() {
+        let end = body[i..]
+            .iter()
+            .position(|&b| b == b'\n')
+            .map_or(body.len(), |n| i + n);
+        let raw_len = (body[i] == raw_id)
+            .then(|| seihai_core::protocol::read_gint3(body.get(i + 1..end)?))
+            .flatten();
+        let text = (i + 1).min(end)..end;
+        if body[text.clone()].contains(&0) {
+            let o = out.get_or_insert_with(|| body.to_vec());
+            for b in &mut o[text] {
+                if *b == 0 {
+                    *b = b'?';
+                }
+            }
+        }
+        i = end + 1;
+        if let Some(n) = raw_len {
+            let here = n.min(body.len().saturating_sub(i));
+            left = n - here;
+            i += here;
+        }
+    }
+    (out.map_or(Cow::Borrowed(body), Cow::Owned), left)
+}
+
 /// The cipher state of one connection.
 pub struct Codec {
     gen: EncryptionGen,
@@ -49,6 +100,12 @@ pub struct Codec {
     gen4: bool,
     /// Gen-3 messages whose inserted byte did not check out, in a row.
     pub bad_in_a_row: u32,
+    /// A 1.x or 2.x client: no `00` byte goes out outside a raw block
+    /// ([`scrub_nul`]).
+    nul_free: bool,
+    /// Raw-block bytes still to come in the next frame: a file bigger than
+    /// one frame goes out in pieces (`files::frames_of`).
+    raw_left: usize,
 }
 
 impl Codec {
@@ -71,6 +128,8 @@ impl Codec {
             compress_all: round_down,
             gen4: false,
             bad_in_a_row: 0,
+            nul_free: version.is_some_and(nul_ends_frame),
+            raw_left: 0,
         }
     }
 
@@ -87,6 +146,15 @@ impl Codec {
 
     /// One whole frame to write for `body` (one or more messages).
     pub fn encode(&mut self, body: &[u8]) -> io::Result<Vec<u8>> {
+        let scrubbed;
+        let body = if self.nul_free {
+            let (out, left) = scrub_nul(body, self.raw_left);
+            self.raw_left = left;
+            scrubbed = out;
+            &scrubbed[..]
+        } else {
+            body
+        };
         let frame = match self.out5.as_mut() {
             Some(g) if self.gen4 => {
                 let packed = bz2_compress(body)?;
@@ -242,6 +310,44 @@ fn bad(what: &str) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// No `00` reaches a 2.x client outside a raw block (#156).
+    #[test]
+    fn nul_bytes_go_to_2x_only_in_raw_blocks() {
+        use crate::wire::{ids::PLO_RAWDATA, msg, raw_block};
+        let mut body = msg(20, b"chat\0here");
+        body.extend(raw_block(102, b"file\0\0data"));
+        body.extend(msg(21, b"\0next"));
+        let (out, left) = scrub_nul(&body, 0);
+        let mut want = msg(20, b"chat?here");
+        want.extend(raw_block(102, b"file\0\0data"));
+        want.extend(msg(21, b"?next"));
+        assert_eq!(&out[..], &want[..]);
+        assert_eq!(left, 0);
+        // Nothing to do: the body is not copied.
+        let clean = msg(PLO_RAWDATA, b"   ");
+        assert!(matches!(
+            scrub_nul(&clean, 0).0,
+            std::borrow::Cow::Borrowed(_)
+        ));
+        // A raw block cut over two frames keeps its bytes in both.
+        let block = raw_block(102, &[0u8; 40]);
+        let (first, rest) = block.split_at(20);
+        let (a, left) = scrub_nul(first, 0);
+        assert_eq!(&a[..], first);
+        assert_eq!(left, 40 + 2 - (20 - 5));
+        let mut second = rest.to_vec();
+        second.extend(msg(21, b"\0"));
+        let (b, left) = scrub_nul(&second, left);
+        assert_eq!(&b[..rest.len()], rest);
+        assert_eq!(&b[rest.len()..], &msg(21, b"?")[..]);
+        assert_eq!(left, 0);
+        assert!(nul_ends_frame(ClientVersion::V222));
+        assert!(nul_ends_frame(ClientVersion::V231));
+        assert!(nul_ends_frame(ClientVersion::V139));
+        assert!(!nul_ends_frame(ClientVersion::V420R8));
+        assert!(!nul_ends_frame(ClientVersion::V603R7));
+    }
     use seihai_core::protocol::{read_frame, read_zlib_frame, write_zlib_frame, zlib_compress};
 
     /// A big body (a busy level's tick) goes zlib, not bz2, and reads back.

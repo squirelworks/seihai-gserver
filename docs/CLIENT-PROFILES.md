@@ -64,6 +64,8 @@ The **Source** column says where the value comes from: `core` is
 | Packages | `.gpak` / `.gpake` | server `loads_gpak`, `loads_gpake` | `gpak.rs` | partial: a build list in `profile.rs` (`GPAKE`), not a core field. Move it to core `files` once the 4.20r8 lab result is recorded there |
 | Levels | which board form (GR-V1.0x, NW); gmaps as gmaps or as linked single levels | core `levels.*`, `GmapRules` | `levels.rs`, `gmaps.rs` | partial: `gmaps::plays_gmaps` reads `GmapRules`, not the profile row. Single-level gmap output for pre-gmap builds is not written yet |
 | Frames | gen 5 long frames, round-down | core `protocol.gen5_*` | `codec.rs`, `server.rs` | done |
+| NUL bytes | 2.22 and 2.31 drop the rest of a frame after a `00` byte, so no `00` goes to 1.x/2.x outside a raw block (#156) | server `codec::nul_ends_frame` (1.x and 2.x labels; 1.x inferred) | `codec.rs` (`scrub_nul`) | done |
+| Gralats past 2,097,151 | own prop 83, a `GINT5` up to 999,999,999, when prop 3 cannot carry the count (#156) | server `gralats_83` (6.015, 6.034, 6.03r7; until core's 6.x own sets list 83) | `burst.rs` | done |
 | Login burst | the burst per era, lobby or not | core `protocol.*`, `burst::shape_version` | `burst.rs`, `login.rs` | done |
 | **Scripts** | GS1 text, GS2 bytecode or a stub, per NPC | core `scripts` through `seihai_core::scripting::delivery` | `npcs.rs` (`Npc::message_on`) | done in code; the lab run is left (see below) |
 | Script packet era | classic 193/132/133 vs modern 197/140 | core `protocol.plo` via `ClientProfile::reads_classic_*` / `reads_modern_script_cache` | `weapons.rs`, `classes.rs` | done: hard guards pinned in `profile.rs` tests (never classic to 5.24+/v6; never modern to pure 4.x) |
