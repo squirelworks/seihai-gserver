@@ -73,6 +73,7 @@ pub const IPADDR: u8 = 30;
 const SWORD: u8 = 8;
 const SHIELD: u8 = 9;
 const HEAD: u8 = 11;
+const COLORS: u8 = 13;
 const STATUS: u8 = 18;
 const BODY: u8 = 35;
 const X: u8 = 15;
@@ -282,8 +283,57 @@ pub fn for_receiver<'a>(
         SWORD | SHIELD | HEAD | BODY if server.image_ext != ".png" => {
             image_for(server.image_ext, pid, v).map_or(Cow::Borrowed(v), Cow::Owned)
         }
+        // A build that reads more than 5 colour bytes (the NewWorld betas
+        // read 8) gets the rest as 0; one that reads 5 never gets more.
+        COLORS => {
+            let want = usize::from(receiver.core.props.colors_read);
+            if v.len() == want {
+                Cow::Borrowed(v)
+            } else {
+                let mut w: Vec<u8> = v.iter().copied().take(want).collect();
+                w.resize(want, gchar(0));
+                Cow::Owned(w)
+            }
+        }
         _ => Cow::Borrowed(v),
     }
+}
+
+/// The bytes of COLORS (13) the world keeps for every player.
+pub const COLORS_LEN: usize = 5;
+
+/// A client's `PLI_PLAYERPROPS` with COLORS cut to [`COLORS_LEN`], for a
+/// build that sends more (the NewWorld betas send 7, `Props::colors_sent`).
+/// What bytes 6 and 7 mean is not known; they are dropped. `None` when the
+/// build sends 5 or the stream has no COLORS.
+pub fn colors_in(sender: &ClientProfile, payload: &[u8]) -> Option<Vec<u8>> {
+    let sent = usize::from(sender.core.props.colors_sent);
+    if sent == COLORS_LEN {
+        return None;
+    }
+    let props = seihai_core::protocol::parse_player_props_sized(
+        payload,
+        sender.server.prop10_bow,
+        sent,
+        None,
+    );
+    if !props.iter().any(|p| p.id == COLORS) {
+        return None;
+    }
+    let mut out = Vec::with_capacity(payload.len());
+    let mut used = 0;
+    for p in &props {
+        used += 1 + p.raw.len();
+        out.push(gchar(p.id));
+        if p.id == COLORS {
+            out.extend(p.raw.iter().take(COLORS_LEN));
+        } else {
+            out.extend_from_slice(&p.raw);
+        }
+    }
+    // Anything the parse stopped at goes on as it came.
+    out.extend_from_slice(&payload[used..]);
+    Some(out)
 }
 
 /// [`for_receiver`]'s image rule; `None` when nothing changes.
@@ -783,6 +833,37 @@ mod tests {
     use crate::burst::{own_props, Player};
     use seihai_core::protocol::SessionState;
 
+    /// The NewWorld betas send COLORS as 7 bytes and read 8: the world keeps
+    /// 5, cut from what they send and padded for what they read; nobody else
+    /// sees the difference.
+    #[test]
+    fn newworld_colors_are_cut_and_padded() {
+        let nw = ClientProfile::of(ClientVersion::NewWorldB1);
+        // NICK "ab", COLORS 7 bytes, SPRITE 2.
+        let p = [
+            0x20, 0x22, b'a', b'b', 0x2d, 0x22, 0x25, 0x32, 0x25, 0x32, 0x21, 0x22, 0x31, 0x22,
+        ];
+        let cut = colors_in(&nw, &p).expect("cut");
+        assert_eq!(
+            cut,
+            [0x20, 0x22, b'a', b'b', 0x2d, 0x22, 0x25, 0x32, 0x25, 0x32, 0x31, 0x22]
+        );
+        let ids: Vec<u8> = parse_player_props_with(&cut, false)
+            .iter()
+            .map(|q| q.id)
+            .collect();
+        assert_eq!(ids, [0, 13, 17]);
+        // A 5-byte build is left alone.
+        assert_eq!(colors_in(&ClientProfile::of(ClientVersion::V205), &p), None);
+        let five = [0x22, 0x25, 0x32, 0x25, 0x32];
+        assert_eq!(
+            &*for_receiver(&nw, COLORS, &five, false),
+            &[0x22, 0x25, 0x32, 0x25, 0x32, 0x20, 0x20, 0x20]
+        );
+        let v205 = ClientProfile::of(ClientVersion::V205);
+        assert_eq!(&*for_receiver(&v205, COLORS, &five, false), &five);
+    }
+
     #[test]
     fn chest_items_raise_the_counted_props() {
         let mut p = alice();
@@ -1073,9 +1154,10 @@ mod tests {
                 }
             }
             // The whole payload is props the build reads: nothing is cut.
-            let props = seihai_core::protocol::parse_player_props_in(
+            let props = seihai_core::protocol::parse_player_props_sized(
                 &m[1 + id_len..m.len() - 1],
                 bow_prop10(v),
+                usize::from(v.profile().props.colors_read),
                 Some(&other_props(&ClientProfile::of(v))),
             );
             let len: usize = props.iter().map(|p| 1 + p.raw.len()).sum();

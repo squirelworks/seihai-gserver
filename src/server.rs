@@ -1904,6 +1904,10 @@ impl Session {
                 PLI_NPCWEAPONDEL => server.world.npc_weapon_del(self.id, payload),
                 PLI_PLAYERPROPS => {
                     let bow = self.profile.server.prop10_bow;
+                    // The NewWorld betas send COLORS as 7 bytes; the world
+                    // keeps every player's at 5.
+                    let sized = crate::others::colors_in(&self.profile, payload);
+                    let payload = sized.as_deref().unwrap_or(payload);
                     let filtered = server.wordfilter.filter_props(payload, bow);
                     if filtered.is_some() && server.verbose {
                         server.log(peer, "chat filtered");

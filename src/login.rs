@@ -200,7 +200,6 @@ pub const NOT_SERVED: &[(&str, &str)] = &[
     ("GSERV008", "no client build is known for it"),
     ("GSERV012", "no client build is known for it"),
     ("GSERV015", "no client build is known for it"),
-    ("G2N15041", "NewWorld line: no profile yet"),
     ("G2N29070", "NewWorld line: no profile yet"),
     ("G3D04048", "iPhone: mobile framing unread"),
     ("G3D0208A", "iPhone: mobile framing unread"),
@@ -375,6 +374,27 @@ pub fn valid_account_name(name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    /// Both NewWorld betas send `G2N15041` on the gen-3 login and can't be
+    /// told apart; they are served as beta 1, whose ids are a subset of
+    /// beta 2's.
+    #[test]
+    fn newworld_is_served_as_beta_1() {
+        use seihai_core::protocol::{ClientVersion, EncryptionGen};
+        assert_eq!(
+            super::version_for("G2N15041", EncryptionGen::Gen3),
+            Some(ClientVersion::NewWorldB1)
+        );
+        let (b1, b2) = (
+            ClientVersion::NewWorldB1.profile(),
+            ClientVersion::NewWorldB2.profile(),
+        );
+        assert!(b1
+            .protocol
+            .plo
+            .iter()
+            .all(|id| b2.protocol.plo.contains(id)));
+    }
 
     #[test]
     fn rc_logins_are_labelled_rc() {

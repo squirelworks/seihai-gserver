@@ -477,7 +477,12 @@ mod tests {
             let bytes = own_props(v, &p);
             let prof = v.profile();
             let bow = crate::profile::ServerProfile::of(v).prop10_bow;
-            let parsed = parse_player_props_in(&bytes, bow, Some(&prof.props.own));
+            let parsed = seihai_core::protocol::parse_player_props_sized(
+                &bytes,
+                bow,
+                usize::from(prof.props.colors_read),
+                Some(&prof.props.own),
+            );
             let len: usize = parsed.iter().map(|p| 1 + p.raw.len()).sum();
             assert_eq!(len, bytes.len(), "{v:?}: {parsed:?}");
             assert!(parsed.iter().any(|p| p.id == 0), "{v:?} gets its nickname");
