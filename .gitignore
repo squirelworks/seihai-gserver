@@ -2,3 +2,6 @@
 *.key
 *.pin
 /world/logs/
+
+# Local [patch] overrides for test builds (VERSIONING.md)
+/.cargo/config.toml
