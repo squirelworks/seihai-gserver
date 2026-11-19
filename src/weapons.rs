@@ -25,8 +25,18 @@
 //!   gets the bytecode in 132 behind `PLO_RAWDATA`. Hard guard: never
 //!   those ids to 5.24+ / v6; never 197/140 to pure 4.x
 //!   (`protocol/script-packet-guards.md`).
-//! - Builds that read neither classic form (5.24 on) are sent nothing for
-//!   a scripted weapon until 140 has a capture.
+//! - For a build that reads only the modern path (5.24 on:
+//!   `ClientProfile::reads_modern_script_cache` and not the classic one):
+//!   33 with the name and image, then `PLO_LOADSCRIPT` (197), the tokens
+//!   `weapon,NAME,1,KEY,CRC`. KEY is two GINT5 words, unpacked
+//!   little-endian into the 8-byte Graal DES key; CRC is the CRC-32 of the
+//!   bytecode as the client caches it (DES-ECB over whole blocks, the tail
+//!   left clear). A client without a matching cache asks with 158 and gets
+//!   `PLO_NPCWEAPONSCRIPT` (140) behind `PLO_RAWDATA`: a GSHORT header
+//!   length, the header `weapon,NAME,1,KEY`, then the plain bytecode. All
+//!   from GServer-v2 to real 5.24r4 and 6.03r7 (lab 2026-11-19); a cached
+//!   client sends no 158. Items are quoted only when they need it, `\`
+//!   and `"` doubled, as `gtokenize` writes them.
 //!
 //! `PLI_WEAPONADD` (33), from 1.38 on, is a client asking to keep a
 //! weapon: type 0 and a default weapon's item id, or type 1 and the
@@ -44,8 +54,11 @@
 
 use crate::npcs::{Script, LEVEL_ERA};
 use crate::profile::ClientProfile;
-use crate::wire::ids::{PLO_DEFAULTWEAPON, PLO_NPCWEAPONADD, PLO_UNKNOWN132, PLO_WEAPONHASH};
-use crate::wire::{gchar, gint5, gshort, latin1, msg, raw_block};
+use crate::wire::ids::{
+    PLO_DEFAULTWEAPON, PLO_LOADSCRIPT, PLO_NPCWEAPONADD, PLO_NPCWEAPONSCRIPT, PLO_UNKNOWN132,
+    PLO_WEAPONHASH,
+};
+use crate::wire::{gchar, gint5, gshort, gtokenize_items, latin1, msg, raw_block};
 use seihai_core::protocol::Runs;
 use seihai_core::scripting::delivery::Delivery;
 use std::collections::BTreeMap;
@@ -152,6 +165,14 @@ impl Weapon {
             None => None,
             Some(s) => match s.delivery(to) {
                 Delivery::Gs1Text(_) => Some(script_wire(&self.source)),
+                Delivery::Gs2Bytecode(code) if reads_modern(&to) => {
+                    let mut m = msg(PLO_NPCWEAPONADD, &self.head());
+                    let (key, crc) = cache_key_and_crc(&self.wire_name(), code);
+                    let mut c = Vec::new();
+                    gint5(crc as u64, &mut c);
+                    m.extend(msg(PLO_LOADSCRIPT, &self.modern_header(&key, Some(&c))));
+                    return Some(m);
+                }
                 Delivery::Gs2Bytecode(code) if reads_hash(&to) => {
                     let mut m = msg(PLO_NPCWEAPONADD, &self.head());
                     let mut h = Vec::new();
@@ -183,6 +204,18 @@ impl Weapon {
     /// not get this weapon as bytecode.
     pub fn bytecode_message(&self, to: impl Into<ClientProfile>) -> Option<Vec<u8>> {
         let to = to.into();
+        if reads_modern(&to) {
+            let Delivery::Gs2Bytecode(code) = self.script.as_ref()?.delivery(to) else {
+                return None;
+            };
+            let (key, _) = cache_key_and_crc(&self.wire_name(), code);
+            let head = self.modern_header(&key, None);
+            let mut b = Vec::new();
+            gshort(head.len() as u16, &mut b);
+            b.extend(head);
+            b.extend_from_slice(code);
+            return Some(raw_block(PLO_NPCWEAPONSCRIPT, &b));
+        }
         if !reads_hash(&to) {
             return None;
         }
@@ -197,6 +230,17 @@ impl Weapon {
         // the client keeps its cache (lab, 2026-11-13).
         b.extend_from_slice(code);
         Some(raw_block(PLO_UNKNOWN132, &b))
+    }
+
+    /// 197's tokens (`weapon,NAME,1,KEY,CRC`) or, without `crc`, 140's
+    /// header (`weapon,NAME,1,KEY`).
+    fn modern_header(&self, key: &[u8], crc: Option<&[u8]>) -> Vec<u8> {
+        let name = self.wire_name();
+        let mut items: Vec<&[u8]> = vec![b"weapon", &name, b"1", key];
+        if let Some(c) = crc {
+            items.push(c);
+        }
+        gtokenize_items(&items)
     }
 
     /// The name as the wire carries it: Latin-1, at most 223 bytes.
@@ -223,6 +267,43 @@ impl Weapon {
 /// `PLO_RAWDATA` (profile guards in `ClientProfile`).
 fn reads_hash(to: &ClientProfile) -> bool {
     to.reads(PLO_NPCWEAPONADD) && to.reads_classic_weapon_bytecode()
+}
+
+/// The build reads only the modern path: 33, 197, and 140 behind
+/// `PLO_RAWDATA`. 5.00r7 and 5.12 read 193 and 132 too and stay off this
+/// path. Core's tables do not list `PLO_RAWDATA` for 5.24 on, but real
+/// 5.24r4 and 6.03r7 read it: they took 140 behind it from GServer-v2 and
+/// cached the script (lab 2026-11-19), as they take large files behind it.
+fn reads_modern(to: &ClientProfile) -> bool {
+    to.reads(PLO_NPCWEAPONADD)
+        && to.reads_modern_script_cache()
+        && !to.reads(PLO_WEAPONHASH)
+        && !to.reads(PLO_UNKNOWN132)
+}
+
+/// A weapon's cache key, as 197 and 140 carry it (two GINT5 words), and
+/// the CRC-32 the client checks its `GRESCR01` copy against: the bytecode
+/// DES-ECB encrypted under that key, whole blocks only. The key is made
+/// from the name and the bytecode, so it stays the same over restarts and
+/// a client's cache keeps matching until the script changes.
+fn cache_key_and_crc(name: &[u8], code: &[u8]) -> (Vec<u8>, u32) {
+    let w1 = crc32(code);
+    let w2 = crc32(&[name, code].concat()) ^ 0x5345_4948;
+    let mut key = [0u8; 8];
+    key[..4].copy_from_slice(&w1.to_le_bytes());
+    key[4..].copy_from_slice(&w2.to_le_bytes());
+    let mut words = Vec::new();
+    gint5(w1 as u64, &mut words);
+    gint5(w2 as u64, &mut words);
+    (words, cache_crc(&key, code))
+}
+
+/// The CRC-32 of `code` as a client stores it under `key`: Graal DES-ECB
+/// over whole 8-byte blocks, a short tail in clear.
+fn cache_crc(key: &[u8; 8], code: &[u8]) -> u32 {
+    let mut body = code.to_vec();
+    seihai_core::graaldes::GraalDes::new(key).encrypt(&mut body);
+    crc32(&body)
 }
 
 /// CRC-32 (the zlib one) of `bytes`.
@@ -523,15 +604,81 @@ mod tests {
         assert_eq!(h, [0x2d, 0x41, 0x37, 0x4c, 0x5c]);
     }
 
+    /// 5.24r4 and 6.03r7 get 33, then 197; 158 gets 140 behind
+    /// `PLO_RAWDATA`. The layout is GServer-v2's to the real clients (lab
+    /// 2026-11-19).
+    #[test]
+    fn modern_builds_get_197_and_ask_for_140() {
+        let w = Weapon::parse(FILE).unwrap();
+        let code = w.script.as_ref().unwrap().prepared().bytecode().unwrap();
+        let (key, crc) = cache_key_and_crc(b"Lantern", code);
+        assert_eq!(key.len(), 10);
+        for v in [ClientVersion::V524R4, ClientVersion::V603R7] {
+            let m = w.message(v).unwrap_or_else(|| panic!("{v:?}"));
+            let mut want = msg(PLO_NPCWEAPONADD, b"'Lantern +lantern.png");
+            let mut c = Vec::new();
+            gint5(u64::from(crc), &mut c);
+            want.extend(msg(
+                PLO_LOADSCRIPT,
+                &gtokenize_items(&[b"weapon", b"Lantern", b"1", &key, &c]),
+            ));
+            assert_eq!(m, want, "{v:?}");
+            let b = w.bytecode_message(v).unwrap();
+            let head = gtokenize_items(&[b"weapon", b"Lantern", b"1", &key]);
+            let mut body = Vec::new();
+            gshort(head.len() as u16, &mut body);
+            body.extend(head);
+            body.extend_from_slice(code);
+            assert_eq!(b, raw_block(PLO_NPCWEAPONSCRIPT, &body), "{v:?}");
+        }
+        // The same key every time, so a client's cache keeps matching.
+        assert_eq!(cache_key_and_crc(b"Lantern", code), (key, crc));
+        // 4.x never gets 197 or 140.
+        let m = w.message(ClientVersion::V420R8).unwrap();
+        assert!(!m.windows(2).any(|p| p == [b'\n', gchar(PLO_LOADSCRIPT)]));
+    }
+
+    /// GServer-v2's 197 for `-LabChat` to real 5.24r4 and 6.03r7 (lab
+    /// 2026-11-19): the CRC is of the bytecode DES-encrypted under the key
+    /// (two GINT5 words, little-endian), and the tokens are quoted only
+    /// where they need it, a `\` doubled.
+    #[test]
+    fn the_cache_crc_and_197_match_the_lab_capture() {
+        let code = hex(concat!(
+            "00000001000000040000000000000002",
+            "0000000e000000016f6e4372656174656400",
+            "00000003000000086c61626368617400",
+            "000000040000001501f4000c17330ab416f0002314f3013214f30007070a",
+        ));
+        let words = hex("2b847f2b63252d72556a");
+        let w = |b: &[u8]| b.iter().fold(0u32, |a, &c| (a << 7) | u32::from(c - 32));
+        let mut key = [0u8; 8];
+        key[..4].copy_from_slice(&w(&words[..5]).to_le_bytes());
+        key[4..].copy_from_slice(&w(&words[5..]).to_le_bytes());
+        let crc = cache_crc(&key, &code);
+        let mut c = Vec::new();
+        gint5(u64::from(crc), &mut c);
+        assert_eq!(c, hex("25505c9776"));
+        let got = gtokenize_items(&[b"weapon", b"-LabChat", b"1", &words, &c]);
+        assert_eq!(
+            got,
+            hex("776561706f6e2c2d4c6162436861742c312c222b847f2b63252d72556a222c2225505c5c977622")
+        );
+    }
+
+    fn hex(s: &str) -> Vec<u8> {
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+            .collect()
+    }
+
     #[test]
     fn gs2_only_builds_get_nothing() {
         let w = Weapon::parse(FILE).unwrap();
-        for v in [
-            ClientVersion::V500R7,
-            ClientVersion::V512,
-            ClientVersion::V524R4,
-            ClientVersion::V603R7,
-        ] {
+        // 5.00r7 and 5.12 read 193 and 132 but no `PLO_RAWDATA`, and stay
+        // off both paths until a lab run says which one they take.
+        for v in [ClientVersion::V500R7, ClientVersion::V512] {
             assert!(w.message(v).is_none(), "{v:?}");
         }
         // A weapon without a script does not go to them either.
@@ -584,5 +731,21 @@ mod tests {
             "if (weaponfired) { shootball; }\n"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+/// The lab world's chat weapon for 5.x/6.x (`tools/lab-world`) compiles
+/// to GS2 and goes to 6.03r7 by 197.
+#[cfg(test)]
+mod lab_chat {
+    use seihai_core::protocol::ClientVersion;
+
+    #[test]
+    fn the_lab_chat_weapon_compiles_and_goes_to_6x() {
+        let t = include_str!("../tools/lab-world/weapons/-LabChat.txt");
+        let w = super::Weapon::parse(t).unwrap();
+        let p = w.script.as_ref().unwrap().prepared();
+        assert!(p.bytecode().is_some(), "{:?}", p.compile_errors());
+        assert!(w.message(ClientVersion::V603R7).is_some());
+        assert!(w.bytecode_message(ClientVersion::V603R7).is_some());
     }
 }

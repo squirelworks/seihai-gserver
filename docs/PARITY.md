@@ -86,7 +86,7 @@ test) and the lab notes.
 | Trigger actions (`PLI_TRIGGERACTION`, `gr.*` commands) | partial | `npc_messages.rs` | `PLI_TRIGGERACTION` (38) is a GINT3 npc id, two half-tile `GCHAR`s, then the action and an optional comma and parameter. The others in the level who read 48 get that body with the sender's id as a `GSHORT` in front. The NPC-server gets `TRIGGER_ACTION` with the name before the comma. A new non-empty chat line (prop 12) is `PM_TO_NPC`. A script's `NPC_TRIGGER_ACTION` is still not passed on to clients, and `gr.*` commands are not run here. No new real-client capture of 48 |
 | Weapons: `PLI_WEAPONADD`, `PLI_TOWEAPON` | partial | `weapons.rs`, `npc_messages.rs` | `PLI_WEAPONADD` gives default weapons and level-NPC weapons (`toweapons`), kept in `weapons/` and on the account. GS1 weapons go only to builds that run GS1. `PLI_TOWEAPON` (25, 1.21 to 1.37) keeps the weapon when the world has it or an NPC in the level gives it; the uploaded script is never used (`weapons.rs`) |
 | GS2 weapons and the weapon cache (`PLO_WEAPONHASH` 193, `PLI_UPDATESCRIPT` 158, 132) | lab | `weapons.rs`; `tests/weapons.rs`; lab comment on #120 | To builds that run GS2 and read 193 and 132 behind `PLO_RAWDATA` (4.04r2 to 4.20r8, the Mac 5.12): 33 with name and image, 193 with the CRC-32 of the bytecode; a 158 for a held weapon gets the bytecode in 132. Real 4.20r8 takes this server's 193 and 132, writes its cache and asks no more on the next login (lab, 2026-11-13). Not yet seen: the weapon running (the lab world had no stock art) |
-| `PLO_NPCWEAPONSCRIPT` (140) / `PLO_LOADSCRIPT` (197) | no | `profile.rs` guards | Modern cache path not sent yet. Profile helpers refuse 197/140 on pure 4.x and refuse 132/133/193 on 5.24+/v6 (`protocol/script-packet-guards.md`) |
+| `PLO_NPCWEAPONSCRIPT` (140) / `PLO_LOADSCRIPT` (197) | tests | `weapons.rs`; `tests/weapons.rs` | Weapons to 5.24 on: 33 (name, image), then 197 `weapon,NAME,1,KEY,CRC`; 158 gets 140 behind `PLO_RAWDATA` (GSHORT header length, `weapon,NAME,1,KEY`, bytecode). Layout and the CRC (of the bytecode Graal-DES-encrypted under KEY) from GServer-v2 to real 5.24r4 and 6.03r7, lab 2026-11-19; not yet run against this server. Classes still not sent this way. Profile helpers refuse 197/140 on pure 4.x and 132/133/193 on 5.24+/v6 (`protocol/script-packet-guards.md`) |
 | `PLI_NPCWEAPONDEL` | tests | `level_objects.rs` | The weapon is taken off the account. Nothing is sent back |
 | Classes (`PLI_UPDATECLASS` → 133) | tests | `classes.rs`; `tests/classes.rs` | v4 path (3.153–5.12, including 4.20r8): 161 with CRC (0 when cold) answers as raw 133 behind `PLO_RAWDATA` from `scripts/<name>.txt`; matching CRC silent; missing name → empty 133. Not yet: real-client lab; `UPDATEGANI`; 5.24+ 197 delivery |
 | GS2 script updates (`PLI_UPDATEGANI`) | no | | `PLI_UPDATESCRIPT` is answered for weapons (above) |
@@ -158,8 +158,8 @@ From the rows above, in the roadmap's order:
 1. **Lab runs** for the lobby, weapons and board changes, which are built
    and covered by loopback tests only.
 2. **Weapons:** a real 4.20r8 running a weapon from this server (the cache
-   check passed; the lab world lacked stock art). 140 for 5.24 on waits
-   for a capture of the fork sending it.
+   check passed; the lab world lacked stock art), and a real 5.24r4 and
+   6.03r7 taking 197 and 140 from it.
 3. **Board changes:** a lab capture of a dug hole, for the sample
    `boardrules.txt` (#107).
 4. **Trigger actions**, once `PLO_TRIGGERACTION` has a capture.
