@@ -130,3 +130,32 @@ fn two_guests_are_online_at_once() {
     std::thread::sleep(Duration::from_millis(300));
     assert!(!w.join("accounts/guest.txt").exists());
 }
+
+/// A guest starts from the world's `accounts/guest.txt`, as GServer-v2
+/// loads it (#163), still under its own `pc:<n>`, and the template is
+/// not written back.
+#[test]
+fn a_guest_starts_from_guest_txt() {
+    let w = world("guesttxt", "*\n");
+    std::fs::create_dir_all(w.join("accounts")).unwrap();
+    let template = "GRACC001\nRUPEES 3000000\n";
+    std::fs::write(w.join("accounts/guest.txt"), template).unwrap();
+    let (_lobby, game, _server) = start_with_lobby(&w);
+    let v = ClientVersion::V603R7;
+    let mut sess = login_gserver(&game, v, random_key(), "guest", "anything", false).unwrap();
+    let rx = sess.conn.spawn_reader().unwrap();
+    let mut st = SessionState::for_version(v);
+    read_until(&rx, &mut st, Duration::from_secs(10), |s| {
+        s.board.is_some() && s.own_rupees.is_some()
+    })
+    .unwrap();
+    assert!(st.disconnect_message.is_none());
+    // Prop 3 holds 2,097,151 at most; the rest goes in prop 83 (#156).
+    assert_eq!(st.own_rupees, Some(2_097_151));
+    drop((sess, rx));
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(
+        std::fs::read_to_string(w.join("accounts/guest.txt")).unwrap(),
+        template
+    );
+}

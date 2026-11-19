@@ -381,6 +381,40 @@ fn unhex(s: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
+/// A guest's account: `template` (the world's `accounts/guest.txt`, as
+/// GServer-v2 loads it) under the load-only name `name`, or a new account
+/// at the world's start when there is none. The template's password,
+/// staff rights and comments are not carried over, and a template without
+/// a level starts at the world's start.
+pub fn guest_account(
+    template: Option<Account>,
+    name: &str,
+    start_level: &str,
+    start_x: f32,
+    start_y: f32,
+) -> Account {
+    let Some(mut a) = template else {
+        return Account::new(name, start_level, start_x, start_y);
+    };
+    a.name = name.to_string();
+    a.nick = name.to_string();
+    a.password.clear();
+    a.staff = false;
+    a.ip_ranges.clear();
+    a.folder_rights.clear();
+    a.rc_rights = 0;
+    a.admin_level = 0;
+    a.admin_worlds.clear();
+    a.comments.clear();
+    a.email.clear();
+    if a.level.is_empty() {
+        a.level = start_level.to_string();
+        a.x = start_x;
+        a.y = start_y;
+    }
+    a
+}
+
 /// The accounts folder.
 #[derive(Debug, Clone)]
 pub struct Store {
@@ -454,6 +488,32 @@ impl Store {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_guest_starts_from_guest_txt_without_its_rights() {
+        let t = Account::parse(
+            "guest",
+            "GRACC001\nRUPEES 3000000\nLEVEL lab.nw\nX 30\nY 31\nLOCALRIGHTS 1\nCOMMENTS x\n",
+        );
+        let a = guest_account(Some(t), "pc:7", "start.nw", 1.0, 2.0);
+        assert_eq!(a.name, "pc:7");
+        assert_eq!(a.rupees, 3_000_000);
+        assert_eq!((a.level.as_str(), a.x, a.y), ("lab.nw", 30.0, 31.0));
+        assert!(!a.staff && a.comments.is_empty() && a.password.is_empty());
+        let none = guest_account(None, "pc:8", "start.nw", 1.0, 2.0);
+        assert_eq!(
+            (none.name.as_str(), none.level.as_str(), none.rupees),
+            ("pc:8", "start.nw", 0)
+        );
+        let no_level = guest_account(
+            Some(Account::parse("guest", "GRACC001\n")),
+            "pc:9",
+            "start.nw",
+            1.0,
+            2.0,
+        );
+        assert_eq!((no_level.level.as_str(), no_level.x), ("start.nw", 1.0));
+    }
     use super::*;
 
     #[test]
