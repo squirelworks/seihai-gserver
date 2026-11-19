@@ -565,7 +565,7 @@ mod tests {
     #[test]
     fn gs2_builds_with_193_get_the_hash_and_ask_for_the_bytecode() {
         let w = Weapon::parse(FILE).unwrap();
-        let code = w.script.as_ref().unwrap().prepared().bytecode().unwrap();
+        let code = w.script.as_ref().unwrap().bytecode().unwrap();
         assert!(code.ends_with(b"\n"));
         for v in [
             ClientVersion::V404R2,
@@ -610,7 +610,7 @@ mod tests {
     #[test]
     fn modern_builds_get_197_and_ask_for_140() {
         let w = Weapon::parse(FILE).unwrap();
-        let code = w.script.as_ref().unwrap().prepared().bytecode().unwrap();
+        let code = w.script.as_ref().unwrap().bytecode().unwrap();
         let (key, crc) = cache_key_and_crc(b"Lantern", code);
         assert_eq!(key.len(), 10);
         for v in [ClientVersion::V524R4, ClientVersion::V603R7] {

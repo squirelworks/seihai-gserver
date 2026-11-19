@@ -13,6 +13,7 @@ use seihai_rc::nc::{
     class_delete_message, class_get_message, class_set_message, weapon_delete_message,
     weapon_get_message, weapon_list_message, weapon_set_message, NcEvent, NcSession,
 };
+use seihai_rc::wire::ServerTextProfile;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -97,7 +98,12 @@ fn an_nc_edits_classes_and_weapons() {
     );
 
     // A new class: 163, the file, and the same text back.
-    nc.send(&[class_set_message("door", "if (created) {\n  this.open = 0;\n}").unwrap()])
+    nc.send(&[class_set_message(
+        ServerTextProfile::SeihaiGserver,
+        "door",
+        "if (created) {\n  this.open = 0;\n}",
+    )
+    .unwrap()])
         .unwrap();
     wait_for(&mut nc, "163 door", |e| *e == NcEvent::Class("door".into()));
     let file = std::fs::read_to_string(w.join("scripts/door.txt")).unwrap();
@@ -109,7 +115,8 @@ fn an_nc_edits_classes_and_weapons() {
         |e| matches!(e, NcEvent::ClassScript { name, script } if name == "door" && script.contains("this.open")),
     );
     // A path is not a class name.
-    nc.send(&[class_set_message("../x", "y").unwrap()]).unwrap();
+    nc.send(&[class_set_message(ServerTextProfile::SeihaiGserver, "../x", "y").unwrap()])
+        .unwrap();
     wait_for(
         &mut nc,
         "the refusal",
