@@ -231,7 +231,13 @@ fn a_gs2_build_gets_the_weapon_hash_and_the_bytecode_it_asks_for() {
             continue;
         }
         if !text.lines().any(|l| l == "WEAPON Lantern") {
-            std::fs::write(&account, format!("{text}WEAPON Lantern\n")).unwrap();
+            // Through a temporary file and a rename, as the server saves:
+            // a plain write empties the file first, and a leaving session
+            // that loads it then saves an account with no password, so
+            // every later login is turned away (seen on Windows CI).
+            let tmp = account.with_extension("txt.test");
+            std::fs::write(&tmp, format!("{text}WEAPON Lantern\n")).unwrap();
+            std::fs::rename(&tmp, &account).unwrap();
         }
         // The last session may still be leaving.
         match std::panic::catch_unwind(|| RawClient::join(&addr, v, "gs2", ready)) {
