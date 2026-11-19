@@ -182,8 +182,8 @@ impl GameObject {
         if !self.chat.is_empty() {
             m |= CHAT;
         }
-        for i in 0..8 {
-            if !self.attr[i].is_empty() {
+        for (i, a) in self.attr.iter().enumerate() {
+            if !a.is_empty() {
                 m |= ATTR1 << i;
             }
         }
@@ -221,9 +221,9 @@ impl GameObject {
         }
         w.flag(false); // 10 script classes
         if w.flag(mask & ATTRS != 0) {
-            for i in 0..8 {
+            for (i, a) in self.attr.iter().enumerate() {
                 if w.flag(mask & (ATTR1 << i) != 0) {
-                    w.pstring_alone(&self.attr[i]);
+                    w.pstring_alone(a);
                 }
             }
         }
@@ -294,9 +294,9 @@ impl GameObject {
             m |= CLASSES;
         }
         if r.flag()? {
-            for i in 0..8 {
+            for (i, a) in self.attr.iter_mut().enumerate() {
                 if r.flag()? {
-                    self.attr[i] = r.pstring()?;
+                    *a = r.pstring()?;
                     m |= ATTR1 << i;
                 }
             }
