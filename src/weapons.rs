@@ -744,7 +744,11 @@ mod lab_chat {
         let t = include_str!("../tools/lab-world/weapons/-LabChat.txt");
         let w = super::Weapon::parse(t).unwrap();
         let p = w.script.as_ref().unwrap().prepared();
-        assert!(p.bytecode().is_some(), "{:?}", p.compile_errors());
+        let code = p.bytecode();
+        assert!(code.is_some(), "{:?}", p.compile_errors());
+        // 5.x/6.x call the key handler by this name (6.03r7 lab, 2026-11-19).
+        let code = code.unwrap();
+        assert!(code.windows(13).any(|w| w == b"onKeyPressed\0"));
         assert!(w.message(ClientVersion::V603R7).is_some());
         assert!(w.bytecode_message(ClientVersion::V603R7).is_some());
     }
