@@ -134,25 +134,82 @@ pub fn versions_for(token: &str, gen: EncryptionGen) -> impl Iterator<Item = Cli
 }
 
 /// Builds `seihai-core` has no profile for yet, served as the nearest build
-/// with the same login line and wire. Each token was read from its binary
-/// and seen on the wire against the real client (graal-client-repro lab,
-/// 2026-11-13):
-///
-/// - 1.25 (`GSERV009`) and 1.27 (`GSERV011`): gen 2, the 1.21 login line,
-///   and a one-byte player id in `PLO_OTHERPLPROPS`, as 1.21;
-/// - 1.40 rev 1 (`GNW23090`): gen 3 with the key byte and no language
-///   packet, as 1.41 rev 1.
-pub const STAND_INS: &[(&str, EncryptionGen, ClientVersion)] = &[
-    ("GSERV009", EncryptionGen::Gen2, ClientVersion::V121),
-    ("GSERV011", EncryptionGen::Gen2, ClientVersion::V121),
-    ("GNW23090", EncryptionGen::Gen3, ClientVersion::V141),
-    // 2.19, 2.2, 2.21 (type 4, read as the gen-5 line, gen-4 frames): no
-    // binary of these builds is held. graal-client-repro's inferred clients
-    // are 2.17.1 with these tokens on the gen-4 link, which for them is
-    // INVENTED, not observed (Squirrel, 2026-11-13); served as 2.17.1.
-    ("GNW15053", EncryptionGen::Gen5, ClientVersion::V217),
-    ("GNW28063", EncryptionGen::Gen5, ClientVersion::V217),
-    ("GNW01113", EncryptionGen::Gen5, ClientVersion::V217),
+/// on the same generation. This is the same list as seihai-core's
+/// `protocol::STAND_INS` (squirelworks/seihai-core#122); once a core release
+/// carries it, this table should read from there. The generation is always
+/// the stand-in profile's own (a test checks it), except 2.19 to 2.21. Seen on the wire against
+/// the real client: 1.25, 1.27 and 1.40 rev 1 (graal-client-repro lab,
+/// 2026-11-13). The rest are nearest-build guesses until each build is read
+/// or captured.
+pub const STAND_INS: &[(&str, EncryptionGen, ClientVersion)] = {
+    use ClientVersion as V;
+    use EncryptionGen::{Gen2, Gen3, Gen5};
+    &[
+        // 1.25 and 1.27: gen 2, the 1.21 login line, one-byte player ids.
+        ("GSERV009", Gen2, V::V121),
+        ("GSERV011", Gen2, V::V121),
+        // Server-table revisions with no executable: their release's profile.
+        ("GNW28020", Gen2, V::V133),
+        ("GNW27030", Gen2, V::V134),
+        ("GNW02070", Gen2, V::V138),
+        // 1.391 (gs2lib only); 1.40 rev 1 (gen 3, key byte, no language
+        // packet) as 1.41 rev 1.
+        ("GNW12080", Gen2, V::V139),
+        ("GNW23090", Gen3, V::V141),
+        // 2.15.1/2.15.2 as 2.15.0, 2.18 as 2.17.1. 2.19 to 2.21 (type 4,
+        // read as the gen-5 line, gen-4 frames): no binary held; graal-client-repro's inferred
+        // clients are 2.17.1 with these tokens on the gen-4 link, which for
+        // them is INVENTED, not observed (Squirrel, 2026-11-13).
+        ("GNW20052", Gen3, V::V215),
+        ("GNW21033", Gen3, V::V217),
+        ("GNW15053", Gen5, V::V217),
+        ("GNW28063", Gen5, V::V217),
+        ("GNW01113", Gen5, V::V217),
+        // 3.0beta and 3.01 Linux as 3.04; 3.151 Linux as 3.153.
+        ("G3D16053", Gen5, V::V304),
+        ("G3D27063", Gen5, V::V304),
+        ("G3D27015", Gen5, V::V3153),
+        // 4.02.11 to 4.04r2 Linux as 4.04r2.
+        ("G3D28095", Gen5, V::V404R2),
+        ("G3D11125", Gen5, V::V404R2),
+        ("G3D09125", Gen5, V::V404R2),
+        ("G3D19026", Gen5, V::V404R2),
+        // 4.10r2/4.11 Windows and Linux as the 4.10r2-era Mac build.
+        ("G3D28076", Gen5, V::V420R6),
+        ("G3D26076", Gen5, V::V420R6),
+        // The real 4.20r6 Mac and the 4.20r6/r8 Linux builds as 4.20r8.
+        ("G3D21126", Gen5, V::V420R8),
+        ("G3D22126", Gen5, V::V420R8),
+        // 6.00 beta 1 as 5.24r4 (6.00 beta 2's token); the 2011 Mac and Linux
+        // betas as 6.00r4; 6.015 Mac and 6.01r1 Linux as 6.0.1.5.
+        ("G3D03048", Gen5, V::V524R4),
+        ("G3D27090", Gen5, V::V600R4),
+        ("G3D28090", Gen5, V::V600R4),
+        ("G3D3107A", Gen5, V::V6015),
+        ("G3D0108A", Gen5, V::V6015),
+        // 6.1.1.3 / 6.11r1: the original logs in through a connector script;
+        // a rebuild that sends the token directly is served as 6.03r7.
+        ("GNP1905C", Gen5, V::V603R7),
+    ]
+};
+
+/// Catalogued game tokens this server does not serve, and why. With the
+/// profiles and [`STAND_INS`], every game token in seihai-core's
+/// `KNOWN_TOKENS` is accounted for (a test fails otherwise).
+pub const NOT_SERVED: &[(&str, &str)] = &[
+    ("GSERV008", "no client build is known for it"),
+    ("GSERV012", "no client build is known for it"),
+    ("GSERV015", "no client build is known for it"),
+    ("G2N15041", "NewWorld line: no profile yet"),
+    ("G2N29070", "NewWorld line: no profile yet"),
+    ("G3D04048", "iPhone: mobile framing unread"),
+    ("G3D0208A", "iPhone: mobile framing unread"),
+    ("G3D18010", "iPhone: mobile framing unread"),
+    ("G3D29090", "iPhone: mobile framing unread"),
+    ("G3D2504D", "iPhone: mobile framing unread"),
+    ("G3D2204D", "Worlds (v7): connector-script login only"),
+    ("G3D2304D", "connector-script constant with no known client"),
+    ("G3D2404D", "connector-script constant with no known client"),
 ];
 
 /// The first known build for `token` and `gen`. Several builds share a
@@ -376,9 +433,41 @@ mod tests {
             )
         );
         assert!(is_gen4(l.client_type));
+        // 3.151 (type 5, as graal-client-repro's rebuild logs in), served as
+        // 3.153; 3.0beta and 3.01 (type 4) as 3.04
+        let l = parse(b"%7G3D27015#acc\"pw\n", &[]).unwrap();
+        assert_eq!(
+            (l.client_type, l.gen, l.token.as_str(), l.version),
+            (
+                5,
+                EncryptionGen::Gen5,
+                "G3D27015",
+                Some(ClientVersion::V3153)
+            )
+        );
+        for tok in ["G3D16053", "G3D27063"] {
+            let line = format!("$7{tok}#acc\"pw\n");
+            let l = parse(line.as_bytes(), &[]).unwrap();
+            assert_eq!(
+                (l.client_type, l.gen, l.token.as_str(), l.version),
+                (4, EncryptionGen::Gen5, tok, Some(ClientVersion::V304))
+            );
+        }
         // a stand-in never hides a real profile
-        for &(t, g, _) in STAND_INS {
+        for &(t, g, v) in STAND_INS {
             assert!(versions_for(t, g).next().is_none(), "{t} now has a profile");
+            // 2.19 to 2.21 send type 4, read on the gen-5 line, but are
+            // served as 2.17.1 (gen 3); every other stand-in is on its
+            // profile's own generation.
+            let type4 = ["GNW15053", "GNW28063", "GNW01113"].contains(&t);
+            if !type4 {
+                assert_eq!(
+                    g,
+                    v.encryption(),
+                    "{t}: served on {}'s generation",
+                    v.label()
+                );
+            }
         }
         assert_eq!(
             build_label(5, Some(ClientVersion::V222)),
@@ -387,6 +476,29 @@ mod tests {
     }
     use super::*;
     use seihai_core::protocol::write_login;
+
+    /// Every game token seihai-core catalogues is served (by its own profile
+    /// or a stand-in) or listed in [`NOT_SERVED`] with a reason. 3.151's
+    /// `G3D27015` was turned away because nothing checked this.
+    #[test]
+    fn every_catalogued_game_token_is_accounted_for() {
+        use seihai_core::protocol::{TokenKind, KNOWN_TOKENS};
+        let all = crate::allow::AllowList::all_known();
+        for t in KNOWN_TOKENS {
+            if !matches!(t.kind, TokenKind::Game | TokenKind::ServerScript) {
+                continue;
+            }
+            let served = all.allows(t.token);
+            let refused = NOT_SERVED.iter().any(|(n, _)| *n == t.token);
+            assert!(
+                served != refused,
+                "{} ({}): must be served or in NOT_SERVED, not {}",
+                t.token,
+                t.builds,
+                if served { "both" } else { "neither" }
+            );
+        }
+    }
 
     fn line(v: ClientVersion, key: u8) -> Vec<u8> {
         let mut b = Vec::new();
