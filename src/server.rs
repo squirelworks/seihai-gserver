@@ -535,11 +535,23 @@ impl Conn {
         // 5.x and 6.x builds log in as `guest` before any account form
         // (Login lobby and game server alike). As GServer-v2 does, each
         // guest plays under its own load-only name `pc:<number>`, so two
-        // guests can be online at once and none is saved.
+        // guests can be online at once and none is saved. Like GServer-v2,
+        // a guest starts from `accounts/guest.txt` when the world has one.
         let guest = login.account.eq_ignore_ascii_case("guest")
             && version.profile().protocol.lobby.is_some();
         let mut account = if guest {
-            Account::new(
+            let template = {
+                let store = self.server.store.clone();
+                tokio::task::spawn_blocking(move || store.load("guest"))
+                    .await
+                    .map_err(io::Error::other)?
+                    .unwrap_or_else(|e| {
+                        eprintln!("accounts/guest.txt not read: {e}");
+                        None
+                    })
+            };
+            crate::accounts::guest_account(
+                template,
                 &self.server.guest_name(),
                 &cfg.start_level,
                 cfg.start_x,
