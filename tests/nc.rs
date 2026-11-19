@@ -15,8 +15,8 @@ use seihai_gserver::wire::{gchar, gint3, tokenize};
 use seihai_npcserver::scripts::Scripts;
 use seihai_npcserver::session::{self, Timing};
 use seihai_rc::nc::{
-    npc_delete_message, npc_get_message, npc_reset_message, npc_script_get_message,
-    npc_warp_message, NcEvent, NcSession,
+    npc_add_message, npc_delete_message, npc_get_message, npc_reset_message,
+    npc_script_get_message, npc_warp_message, NcEvent, NcSession, NewNpc,
 };
 use seihai_rc::rc::{npc_server_query, Event, LoginParams, RcKind, Session};
 use std::path::{Path, PathBuf};
@@ -208,6 +208,29 @@ fn an_nc_lists_reads_sets_and_deletes_npcs() {
         assert!(Instant::now() < end, "not warped: {file}");
         std::thread::sleep(Duration::from_millis(20));
     }
+
+    // Add NPC: the NPC-server files it and it comes back as 158.
+    nc.send(&[npc_add_message(
+        seihai_rc::wire::ServerTextProfile::SeihaiGserver,
+        &NewNpc {
+            name: "Guard".into(),
+            id: 1001,
+            kind: "OBJECT".into(),
+            scripter: "boss".into(),
+            level: "start.nw".into(),
+            x: "20".into(),
+            y: "25".into(),
+        },
+    )
+    .unwrap()])
+        .unwrap();
+    wait_for(
+        &mut nc,
+        "the new NPC",
+        |e| matches!(e, NcEvent::Npc(row) if row.name.as_deref() == Some("Guard")),
+    );
+    let file = std::fs::read_to_string(w.join("npcs/npcGuard.txt")).unwrap();
+    assert!(file.contains("STARTX 20.00\nSTARTY 25.00\n"), "{file}");
 
     // Deleted: 159 comes back once the file is put aside.
     nc.send(&[npc_delete_message(1).unwrap()]).unwrap();

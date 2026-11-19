@@ -1347,6 +1347,29 @@ impl Conn {
                 ));
                 Some(r)
             }
+            Op::Add {
+                name,
+                kind,
+                scripter,
+                level,
+                x,
+                y,
+            } => {
+                let shown = seihai_core::protocol::latin1(&name);
+                log(format!("adds NPC {shown}"));
+                if !hub.nc_send(Message::NcNpcAdd {
+                    name,
+                    kind,
+                    scripter,
+                    level,
+                    x,
+                    y,
+                }) {
+                    log("no NPC-server connected".into());
+                    return Some(crate::nc::console_line(b"error: no NPC-server connected"));
+                }
+                None
+            }
             Op::Warp(id, level, x, y) => {
                 log(format!(
                     "warps NPC {id} to {} {}",
