@@ -63,7 +63,7 @@ test) and the lab notes.
 | Area | Status | Shown by | Notes |
 |---|---|---|---|
 | Own and other players' props, per receiver's build | lab | `other_players.rs`; `lab/five-clients-2026-11-12.md` | 1.39 draws others with no body (that lab note) |
-| The classic bow (prop 10 before 2.1, 2.05 rev 2 aside) | partial | `others.rs` | Not kept from bow-slot senders and not sent to bow-slot receivers. Upstream beta4 sends the classic bow form with preset 1 as the default (seihai-gserver-v2#102); not here yet |
+| The classic bow (prop 10 before 2.1, 2.05 rev 2 aside) | tests | `others.rs` unit tests | A bow-slot sender's bow is kept apart from the gani and goes only to bow-slot receivers, in the form sent; a player who sent none shows preset 1, as upstream beta4 does on a classic server (seihai-gserver-v2#102). The gani never goes to them. No real-client run |
 | Chat (prop 12) | lab | `lab/five-clients-2026-11-12.md` | |
 | `PLI_TOALL` (to everyone online, `PLO_TOALL` 13) | tests | `original_rules.rs` | |
 | Bombs, arrows, fire spy, explosions | lab | `bombs_arrows.rs`; `lab/stage3-2026-11-05.md` | |

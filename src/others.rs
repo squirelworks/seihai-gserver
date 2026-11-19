@@ -10,8 +10,11 @@
 //!   as the classic half-tile bytes (15/16), so a 2.31 sender that only
 //!   sends 78/79 still moves on a 2.05 screen.
 //! - Prop 10 is the bow slot before 2.1, except 2.05 rev 2, which uses it
-//!   as the gani like 2.1 on (`ServerProfile::prop10_bow`): it is not kept
-//!   from bow-slot senders and not sent to bow-slot receivers.
+//!   as the gani like 2.1 on (`ServerProfile::prop10_bow`). A bow-slot
+//!   sender's bow is kept apart from the gani and passed on only to
+//!   bow-slot receivers, with preset 1 when the player sent none (as
+//!   GServer-v2 beta4 does on a classic server). The gani never goes to
+//!   them.
 //! - The player id (14) is in the message header, not a prop. 1.35 reads
 //!   it as one GCHAR; later builds read a GSHORT (`put_id`). Joining and
 //!   leaving (50 `JOINLEAVELVL`, 51 `PCONNECTED`) are the server's to say.
@@ -38,6 +41,9 @@ pub fn put_id(receiver: impl Into<ClientProfile>, id: u16, out: &mut Vec<u8>) {
         gshort(id, out);
     }
 }
+
+/// The bow preset a bow-slot build gets for a player who sent none.
+pub const DEFAULT_BOW: u8 = 1;
 
 /// Whether prop 10 is `v`'s bow slot rather than the gani
 /// (`ServerProfile::prop10_bow`, which has the 2.05 rev 2 exception).
@@ -84,6 +90,8 @@ pub struct Props {
     /// The kept status (18) came from a build whose value 4 is
     /// "swimming" (`ServerProfile::status_4_swims`).
     status_swims: bool,
+    /// The bow (prop 10 in its pre-2.1 form) from a bow-slot sender.
+    bow: Option<Vec<u8>>,
 }
 
 /// What changed in one update, to pass on.
@@ -94,11 +102,13 @@ pub struct Change {
     y: Option<f32>,
     /// As `Props::status_swims`, for the status in this change.
     status_swims: bool,
+    /// A new bow (prop 10, pre-2.1 form), for bow-slot receivers only.
+    bow: Option<Vec<u8>>,
 }
 
 impl Change {
     pub fn is_empty(&self) -> bool {
-        self.values.is_empty() && self.x.is_none() && self.y.is_none()
+        self.values.is_empty() && self.x.is_none() && self.y.is_none() && self.bow.is_none()
     }
 
     /// Add a later change: where both set a prop, the later value stays.
@@ -107,6 +117,9 @@ impl Change {
             self.status_swims = later.status_swims;
         }
         self.values.extend(later.values);
+        if later.bow.is_some() {
+            self.bow = later.bow;
+        }
         if later.x.is_some() {
             self.x = later.x;
         }
@@ -363,7 +376,11 @@ impl Props {
                 Y => c.y = p.raw.first().map(|&b| classic_pos(b)),
                 X2 => c.x = read_gshort(&p.raw).map(decode_pos_precise),
                 Y2 => c.y = read_gshort(&p.raw).map(decode_pos_precise),
-                10 if bow => {}
+                10 if bow => {
+                    if self.bow.as_ref() != Some(&p.raw) {
+                        c.bow = Some(p.raw.clone());
+                    }
+                }
                 14 | IPADDR | JOINLEAVELVL | PCONNECTED => {}
                 id => {
                     if self.values.get(&id) != Some(&p.raw) {
@@ -378,6 +395,9 @@ impl Props {
         }
         self.values
             .extend(c.values.iter().map(|(k, v)| (*k, v.clone())));
+        if c.bow.is_some() {
+            self.bow = c.bow.clone();
+        }
         if c.x.is_some() {
             self.x = c.x;
         }
@@ -564,6 +584,9 @@ impl Props {
             x: self.x,
             y: self.y,
             status_swims: self.status_swims,
+            // A bow-slot receiver always gets a bow: preset 1 when the
+            // player has sent none, as GServer-v2 beta4 sends it.
+            bow: Some(self.bow.clone().unwrap_or_else(|| vec![gchar(DEFAULT_BOW)])),
         }
     }
 }
@@ -614,8 +637,13 @@ pub fn message(
     }
     let other = &other_props(&receiver);
     let mut body = Vec::new();
-    let mut put = |pid: u8, v: &[u8]| {
-        if other.contains(pid) && !(pid == 10 && receiver.server.prop10_bow) {
+    let bow_slot = receiver.server.prop10_bow;
+    // `raw`: a value already in the receiver's form (the classic bow).
+    let mut put = |pid: u8, v: &[u8], raw: bool| {
+        if raw {
+            body.push(gchar(pid));
+            body.extend_from_slice(v);
+        } else if other.contains(pid) && !(pid == 10 && bow_slot) {
             body.push(gchar(pid));
             body.extend_from_slice(&for_receiver(&receiver, pid, v, change.status_swims));
         }
@@ -625,11 +653,15 @@ pub fn message(
     let tail_first = early_parser(receiver.version);
     if tail_first {
         for (pid, v) in tail {
-            put(*pid, v);
+            put(*pid, v, false);
         }
     }
     for (&pid, v) in &change.values {
-        put(pid, v);
+        put(pid, v, false);
+    }
+    // The bow, as sent by a bow-slot build, to a bow-slot build only.
+    if let (true, Some(b)) = (bow_slot && other.contains(10), &change.bow) {
+        put(10, b, true);
     }
     let precise = other.contains(X2);
     for (v, classic, fine) in [(change.x, X, X2), (change.y, Y, Y2)] {
@@ -637,15 +669,15 @@ pub fn message(
             if precise {
                 let mut w = Vec::new();
                 gshort(encode_pos_precise(v), &mut w);
-                put(fine, &w);
+                put(fine, &w, false);
             } else {
-                put(classic, &[gchar((v * 2.0).clamp(0.0, 223.0) as u8)]);
+                put(classic, &[gchar((v * 2.0).clamp(0.0, 223.0) as u8)], false);
             }
         }
     }
     if !tail_first {
         for (pid, v) in tail {
-            put(*pid, v);
+            put(*pid, v, false);
         }
     }
     if body.is_empty() {
@@ -1119,6 +1151,37 @@ mod tests {
         }
     }
 
+    /// A 1.39's bow reaches another 1.39 in the bow form and no 2.22; a
+    /// player who sent none shows preset 1 to a bow-slot build.
+    #[test]
+    fn the_classic_bow_goes_to_bow_slot_builds_only() {
+        let mut p = Props::default();
+        let mut raw = vec![gchar(10), gchar(10 + 7)];
+        raw.extend_from_slice(b"bow.gif");
+        let c = p.apply(&raw, ClientVersion::V139);
+        let m = message(ClientVersion::V139, 3, &c, &[]).unwrap();
+        assert_eq!(
+            prop_in(&m, ClientVersion::V139, 10),
+            Some(raw[1..].to_vec())
+        );
+        assert!(message(ClientVersion::V222, 3, &c, &[]).is_none());
+        // The whole record: the kept bow, or preset 1.
+        let all = p.all();
+        let m = message(ClientVersion::V139, 3, &all, &[]).unwrap();
+        assert_eq!(
+            prop_in(&m, ClientVersion::V139, 10),
+            Some(raw[1..].to_vec())
+        );
+        let m = message(ClientVersion::V139, 3, &alice().all(), &[]).unwrap();
+        assert_eq!(
+            prop_in(&m, ClientVersion::V139, 10),
+            Some(vec![gchar(DEFAULT_BOW)])
+        );
+        // 2.22 reads 10 as the gani and never gets the bow.
+        let m = message(ClientVersion::V222, 3, &alice().all(), &[]);
+        assert!(m.is_none_or(|m| prop_in(&m, ClientVersion::V222, 10) != Some(vec![gchar(DEFAULT_BOW)])));
+    }
+
     #[test]
     fn unchanged_values_and_server_props_are_not_passed_on() {
         let mut p = alice();
@@ -1126,9 +1189,12 @@ mod tests {
         crate::wire::gstring(b"Alice", &mut raw);
         raw.extend([gchar(JOINLEAVELVL), gchar(1), gchar(PCONNECTED)]);
         assert!(p.apply(&raw, ClientVersion::V222).is_empty());
-        // The bow slot of a 1.39 sender is not kept.
+        // The bow slot of a 1.39 sender is kept as its bow, not as a prop.
         let raw = [gchar(10), gchar(3)];
-        assert!(p.apply(&raw, ClientVersion::V139).is_empty());
+        let c = p.apply(&raw, ClientVersion::V139);
+        assert!(c.values.is_empty());
+        assert_eq!(c.bow, Some(vec![gchar(3)]));
+        assert!(p.apply(&raw, ClientVersion::V139).is_empty(), "unchanged");
     }
 
     #[test]
