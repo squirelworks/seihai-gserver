@@ -9,11 +9,11 @@ publish = false
 
 [dependencies]
 # Protocol, framing, version profiles and scripting shared with the Seihai client.
-seihai-core = { git = "https://github.com/squirelworks/seihai-core", tag = "v0.6.3", default-features = false }
+seihai-core = { git = "https://github.com/squirelworks/seihai-core", tag = "v0.7.0", default-features = false }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time", "macros", "sync", "signal", "process"] }
 # The NPC-server link's wire format (PROTOCOL.md), shared with the NPC-server
 # so both sides use one codec.
-seihai-npcserver = { git = "https://github.com/squirelworks/seihai-npcserver", rev = "ea75881297d7af3bec5b12fdb91631b2f7e53be9" }
+seihai-npcserver = { git = "https://github.com/squirelworks/seihai-npcserver", rev = "61e887cb4965a233f88a629ffc00ddc64283fe3b" }
 sha2 = "0.10"
 getrandom = "0.2"
 pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
@@ -23,10 +23,10 @@ flate2 = { version = "1", features = ["zlib-rs"] }
 [dev-dependencies]
 # Paused time for the world-tick tests.
 tokio = { version = "1", features = ["test-util"] }
-# The RC tests log in with Seihai's own RC client. Pin its v0.6.3 repin so
-# npcserver, rc and this crate all declare seihai-core v0.6.3 without a
+# The RC tests log in with Seihai's own RC client. Pin its v0.7.0 repin so
+# npcserver, rc and this crate all declare seihai-core v0.7.0 without a
 # temporary [patch] (squirelworks/seihai-core#79).
-seihai-rc = { git = "https://github.com/squirelworks/seihai-rc", rev = "2171c2daf642ca32aef14c439caf36c55d2fe0ff" }
+seihai-rc = { git = "https://github.com/squirelworks/seihai-rc", rev = "d7901b3d659ccc580cc248eaa3b2a4157fdcc931" }
 
 # PBKDF2 and the codecs are slow unoptimised; the tests log in dozens of times.
 [profile.dev.package."*"]

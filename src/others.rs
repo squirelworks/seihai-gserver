@@ -24,8 +24,8 @@
 use crate::profile::{ClientProfile, ServerProfile};
 use crate::wire::{gchar, gshort, ids::PLO_OTHERPLPROPS, msg};
 use seihai_core::protocol::{
-    decode_pos_precise, encode_pos_precise, parse_player_props_with, read_gint3, read_gshort,
-    ClientVersion, IdSet,
+    decode_pos_precise, encode_pos_precise, parse_player_props_sized, parse_player_props_with,
+    read_gint3, read_gshort, ClientVersion, IdSet,
 };
 use std::collections::BTreeMap;
 
@@ -73,6 +73,10 @@ pub const IPADDR: u8 = 30;
 const SWORD: u8 = 8;
 const SHIELD: u8 = 9;
 const HEAD: u8 = 11;
+/// Colour indexes (`PLPROP_COLORS`): 5 bytes in every build but the
+/// NewWorld betas, which send 7 and read 8 (`Props::colors_sent`,
+/// `Props::colors_read`). The server keeps 5.
+const COLORS: u8 = 13;
 const STATUS: u8 = 18;
 const BODY: u8 = 35;
 const X: u8 = 15;
@@ -282,8 +286,43 @@ pub fn for_receiver<'a>(
         SWORD | SHIELD | HEAD | BODY if server.image_ext != ".png" => {
             image_for(server.image_ext, pid, v).map_or(Cow::Borrowed(v), Cow::Owned)
         }
+        // Padded with colour 0 for a build that reads more than 5 (the
+        // NewWorld betas: what bytes 6 to 8 mean is not known), cut for one
+        // that reads fewer.
+        COLORS if v.len() != usize::from(receiver.core.props.colors_read) => {
+            let mut w = v.to_vec();
+            w.resize(usize::from(receiver.core.props.colors_read), gchar(0));
+            Cow::Owned(w)
+        }
         _ => Cow::Borrowed(v),
     }
+}
+
+/// A prop stream as `sender`'s build writes it, with COLORS (13) cut to
+/// the 5 bytes the server keeps. The NewWorld betas send 7; the last two are
+/// not known and are dropped. Every other build's stream comes back as it
+/// is. Bytes after the last prop the parser reads are kept as sent.
+pub fn colors_to_five<'a>(raw: &'a [u8], sender: &ClientProfile) -> std::borrow::Cow<'a, [u8]> {
+    use std::borrow::Cow;
+    let sent = usize::from(sender.core.props.colors_sent);
+    if sent == 5 {
+        return Cow::Borrowed(raw);
+    }
+    let props = parse_player_props_sized(raw, sender.server.prop10_bow, sent, None);
+    let mut out = Vec::with_capacity(raw.len());
+    let mut used = 0;
+    for p in &props {
+        used += 1 + p.raw.len();
+        out.push(gchar(p.id));
+        let keep = if p.id == COLORS {
+            p.raw.len().min(5)
+        } else {
+            p.raw.len()
+        };
+        out.extend_from_slice(&p.raw[..keep]);
+    }
+    out.extend_from_slice(&raw[used..]);
+    Cow::Owned(out)
 }
 
 /// [`for_receiver`]'s image rule; `None` when nothing changes.
@@ -481,7 +520,7 @@ impl Props {
                         }
                     }
                 }
-                13 => {
+                COLORS => {
                     for b in new.iter_mut().take(5) {
                         if b.wrapping_sub(0x20) > 18 {
                             *b = gchar(18);
@@ -1041,6 +1080,33 @@ mod tests {
         assert_eq!(p.all().values.get(&IPADDR), Some(&want));
     }
 
+    /// A NewWorld beta sends COLORS as 7 bytes: the server keeps 5 and reads
+    /// the props after it in place; it sends 8 back to a beta and 5 to 2.05.
+    #[test]
+    fn newworld_colors_are_kept_as_five() {
+        let nw = ClientProfile::of(ClientVersion::NewWorldB1);
+        let mut raw = vec![gchar(COLORS)];
+        raw.extend([1, 2, 3, 4, 5, 6, 7].map(gchar));
+        raw.extend([gchar(X), gchar(60)]);
+        let five = colors_to_five(&raw, &nw);
+        let mut want = vec![gchar(COLORS)];
+        want.extend([1, 2, 3, 4, 5].map(gchar));
+        want.extend([gchar(X), gchar(60)]);
+        assert_eq!(&*five, &want[..]);
+        let mut p = Props::default();
+        let c = p.apply(&five, ClientVersion::NewWorldB1);
+        assert_eq!(c.x, Some(30.0));
+        // Every other build's stream is left alone.
+        let v205 = ClientProfile::of(ClientVersion::V205);
+        assert!(matches!(
+            colors_to_five(&want, &v205),
+            std::borrow::Cow::Borrowed(_)
+        ));
+        let five = [1, 2, 3, 4, 5].map(gchar);
+        assert_eq!(for_receiver(&nw, COLORS, &five, false).len(), 8);
+        assert_eq!(for_receiver(&v205, COLORS, &five, false).len(), 5);
+    }
+
     /// Every build reads the whole message, and sees the nickname and the
     /// position where it reads them.
     #[test]
@@ -1073,9 +1139,10 @@ mod tests {
                 }
             }
             // The whole payload is props the build reads: nothing is cut.
-            let props = seihai_core::protocol::parse_player_props_in(
+            let props = seihai_core::protocol::parse_player_props_sized(
                 &m[1 + id_len..m.len() - 1],
                 bow_prop10(v),
+                usize::from(v.profile().props.colors_read),
                 Some(&other_props(&ClientProfile::of(v))),
             );
             let len: usize = props.iter().map(|p| 1 + p.raw.len()).sum();

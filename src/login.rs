@@ -134,9 +134,9 @@ pub fn versions_for(token: &str, gen: EncryptionGen) -> impl Iterator<Item = Cli
 }
 
 /// Builds `seihai-core` has no profile for yet, served as the nearest build
-/// on the same generation. This is the same list as seihai-core's
-/// `protocol::STAND_INS` (squirelworks/seihai-core#122); once a core release
-/// carries it, this table should read from there. The generation is always
+/// on the same generation. The tokens and builds are seihai-core's
+/// `protocol::STAND_INS` (a test checks they match); this table adds the
+/// generation each one logs in with, which core does not carry. The generation is always
 /// the stand-in profile's own (a test checks it), except 2.19 to 2.21. Seen on the wire against
 /// the real client: 1.25, 1.27 and 1.40 rev 1 (graal-client-repro lab,
 /// 2026-11-13). The rest are nearest-build guesses until each build is read
@@ -193,24 +193,11 @@ pub const STAND_INS: &[(&str, EncryptionGen, ClientVersion)] = {
     ]
 };
 
-/// Catalogued game tokens this server does not serve, and why. With the
-/// profiles and [`STAND_INS`], every game token in seihai-core's
-/// `KNOWN_TOKENS` is accounted for (a test fails otherwise).
-pub const NOT_SERVED: &[(&str, &str)] = &[
-    ("GSERV008", "no client build is known for it"),
-    ("GSERV012", "no client build is known for it"),
-    ("GSERV015", "no client build is known for it"),
-    ("G2N15041", "NewWorld line: no profile yet"),
-    ("G2N29070", "NewWorld line: no profile yet"),
-    ("G3D04048", "iPhone: mobile framing unread"),
-    ("G3D0208A", "iPhone: mobile framing unread"),
-    ("G3D18010", "iPhone: mobile framing unread"),
-    ("G3D29090", "iPhone: mobile framing unread"),
-    ("G3D2504D", "iPhone: mobile framing unread"),
-    ("G3D2204D", "Worlds (v7): connector-script login only"),
-    ("G3D2304D", "connector-script constant with no known client"),
-    ("G3D2404D", "connector-script constant with no known client"),
-];
+/// Catalogued game tokens this server does not serve, and why: seihai-core's
+/// own list (`protocol::NOT_SERVED`). With the profiles and [`STAND_INS`],
+/// every game token in seihai-core's `KNOWN_TOKENS` is accounted for (a test
+/// fails otherwise).
+pub const NOT_SERVED: &[(&str, &str)] = seihai_core::protocol::NOT_SERVED;
 
 /// The first known build for `token` and `gen`. Several builds share a
 /// token (5.30r3, 5.31r4 and 6.00r2 all send `G3D26090`); the oldest is
@@ -498,6 +485,24 @@ mod tests {
                 if served { "both" } else { "neither" }
             );
         }
+    }
+
+    /// [`STAND_INS`] is seihai-core's `protocol::STAND_INS` with the
+    /// generation added: same tokens, same builds.
+    #[test]
+    fn stand_ins_match_core() {
+        let ours: Vec<(&str, ClientVersion)> = STAND_INS.iter().map(|&(t, _, v)| (t, v)).collect();
+        assert_eq!(ours, seihai_core::protocol::STAND_INS);
+    }
+
+    /// The NewWorld betas (`G2N15041`) log in as beta 1, the oldest build
+    /// with the token; beta 2 sends the same token and gets beta 1's set.
+    #[test]
+    fn newworld_is_served_as_beta_1() {
+        let v = ClientVersion::NewWorldB1;
+        assert_eq!(version_for("G2N15041", v.encryption()), Some(v));
+        assert_eq!(seihai_core::protocol::serve_as("G2N15041"), Some(v));
+        assert!(NOT_SERVED.iter().all(|(t, _)| *t != "G2N15041"));
     }
 
     fn line(v: ClientVersion, key: u8) -> Vec<u8> {
