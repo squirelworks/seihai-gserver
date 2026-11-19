@@ -133,7 +133,7 @@ What the original servers do (`ORIGINAL-SERVERS.md`) and where this server stand
 | RC accounts, rights, comments, bans | tests | `rc_accounts.rs` | |
 | RC file browser | tests | `rc_files.rs` | Move, delete and rename are not captured from a real RC |
 | Server options, folder config, server flags from RC | partial | `rc_server.rs`; `lab/rc-options-2026-11-12.md` | Real RC2 2.05 reads all three. Its save dialogs crash under Wine, so saving is shown with seihai-rc only |
-| NC: NPC Control | lab | `nc.rs`, `nc_scripts.rs`; `lab/nc-2026-11-12.md` | NPC list, attributes, scripts and delete: lab. Classes (`scripts/`) and weapons (`weapons/`): list, get, save and delete; NPC reset (29 back) and warp, through the NPC-server's `NC_NPC_RESET`/`NC_NPC_WARP`: tests only. NPC flags, add, local NPCs and the level list are not answered |
+| NC: NPC Control | lab | `nc.rs`, `nc_scripts.rs`; `lab/nc-2026-11-12.md` | NPC list, attributes, scripts and delete: lab. Classes (`scripts/`) and weapons (`weapons/`): list, get, save and delete; NPC reset (29 back), warp and add, through the NPC-server's `NC_NPC_RESET`/`NC_NPC_WARP`/`NC_NPC_ADD`: tests only. NPC flags, local NPCs and the level list are not answered |
 | `PLI_PROCESSLIST` | no | | |
 
 ## Anti-cheat

@@ -23,6 +23,7 @@
 //! | 109 `NC_NPCSCRIPTSET`: `GINT3` id, then the script's lines, tokenized | none; the NPC stays on the list |
 //! | 104 `NC_NPCDELETE`: `GINT3` id | 159 `NC_NPCDELETE`: `GINT3` id |
 //! | 105 `NC_NPCRESET`: `GINT3` id | 29: `GINT3` id, and a console line; the NPC-server gets `NC_NPC_RESET` |
+//! | 111 `NC_NPCADD`: `name,id,type,scripter,level,x,y` tokenized | none here; the NPC-server gets `NC_NPC_ADD`, and the new NPC comes back as 158 |
 //! | 107 `NC_NPCWARP`: `GINT3` id, `GCHAR` x × 2, y × 2, then the level | none; the NPC-server gets `NC_NPC_WARP` |
 //! | (login) | 163 `NC_CLASSADD` for every class in `scripts/`: the name |
 //! | 112 `NC_CLASSEDIT`: name | 162: `GSTRING` name, then the class's lines, tokenized (empty for a class the world lacks) |
@@ -39,7 +40,7 @@
 //!
 //! Classes and weapons are the game side's own (`classes.rs`,
 //! `weapons.rs`): the NPC-server is not asked. Players already holding a
-//! changed weapon get it on their next login. NPC flags, add,
+//! changed weapon get it on their next login. NPC flags,
 //! the local-NPC dump and the level list are not answered yet. The class
 //! and weapon layouts are seihai-rc's (`docs/PROTOCOL.md`, from 2004 RC
 //! and RC3 captures).
@@ -62,6 +63,7 @@ pub const PLI_NC_NPCDELETE: u8 = 104;
 pub const PLI_NC_NPCRESET: u8 = 105;
 pub const PLI_NC_NPCSCRIPTGET: u8 = 106;
 pub const PLI_NC_NPCWARP: u8 = 107;
+pub const PLI_NC_NPCADD: u8 = 111;
 pub const PLI_NC_NPCSCRIPTSET: u8 = 109;
 pub const PLI_NC_WEAPONLISTGET: u8 = 115;
 pub const PLI_NC_CLASSEDIT: u8 = 112;
@@ -94,6 +96,15 @@ pub enum Op {
     Reset(u32),
     /// An NPC to `level` at (x, y) in half tiles.
     Warp(u32, Vec<u8>, u16, u16),
+    /// Add NPC: name, type, scripter, level and (x, y) in half tiles.
+    Add {
+        name: Vec<u8>,
+        kind: Vec<u8>,
+        scripter: Vec<u8>,
+        level: Vec<u8>,
+        x: u16,
+        y: u16,
+    },
     WeaponList,
     ClassGet(String),
     ClassSet(String, String),
@@ -166,6 +177,31 @@ pub fn parse(m: &[u8]) -> Result<Option<Op>, u8> {
         ),
         PLI_NC_NPCDELETE => Op::Delete(npc()?),
         PLI_NC_NPCRESET => Op::Reset(npc()?),
+        // `name,id,type,scripter,level,x,y`, tokenized (seihai-rc
+        // `docs/PROTOCOL.md`). The id is not used: the NPC-server numbers
+        // its NPCs.
+        PLI_NC_NPCADD => {
+            let f = detokenize(rest);
+            let field = |i: usize| f.get(i).cloned().unwrap_or_default();
+            let half = |i: usize| -> u16 {
+                let t: f32 = String::from_utf8_lossy(&field(i))
+                    .trim()
+                    .parse()
+                    .unwrap_or(0.0);
+                (t * 2.0).round().clamp(0.0, 65535.0) as u16
+            };
+            if field(0).iter().all(u8::is_ascii_whitespace) {
+                return Err(id);
+            }
+            Op::Add {
+                name: field(0),
+                kind: field(2),
+                scripter: field(3),
+                level: field(4),
+                x: half(5),
+                y: half(6),
+            }
+        }
         PLI_NC_NPCWARP => match rest.get(3..5) {
             Some(&[x, y]) => Op::Warp(
                 npc()?,
@@ -352,6 +388,18 @@ mod tests {
             Ok(Some(Op::Warp(7, b"house.nw".to_vec(), 61, 40)))
         );
         assert_eq!(with(107, &g3(7)), Err(107), "no position");
+        assert_eq!(
+            with(111, b"Guard,0,OBJECT,boss,start.nw,30.5,20"),
+            Ok(Some(Op::Add {
+                name: b"Guard".to_vec(),
+                kind: b"OBJECT".to_vec(),
+                scripter: b"boss".to_vec(),
+                level: b"start.nw".to_vec(),
+                x: 61,
+                y: 40
+            }))
+        );
+        assert_eq!(with(111, b""), Err(111), "no name");
         assert_eq!(with(115, b""), Ok(Some(Op::WeaponList)));
         assert_eq!(with(162, b""), Ok(None));
         assert_eq!(with(103, b"!"), Err(103), "no id");
