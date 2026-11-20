@@ -1877,8 +1877,17 @@ impl Session {
                 }
                 PLI_NPCPROPS => server.world.npc_props(self.id, payload),
                 crate::board::PLI_BOARDMODIFY => server.world.board_modify(self.id, payload),
-                PLI_WEAPONADD => server.world.weapon_add(self.id, payload),
-                PLI_TOWEAPON => server.world.weapon_upload(self.id, payload),
+                PLI_WEAPONADD | PLI_TOWEAPON => {
+                    if server.verbose {
+                        let hex: Vec<String> = payload.iter().map(|b| format!("{b:02x}")).collect();
+                        server.log(peer, &format!("weapon ask {id}: {}", hex.join(" ")));
+                    }
+                    if id == PLI_WEAPONADD {
+                        server.world.weapon_add(self.id, payload)
+                    } else {
+                        server.world.weapon_upload(self.id, payload)
+                    }
+                }
                 PLI_UPDATESCRIPT => server.world.update_script(self.id, payload),
                 PLI_UPDATECLASS => server.world.update_class(self.id, payload),
                 PLI_PRIVATEMESSAGE => {
@@ -1954,14 +1963,17 @@ impl Session {
                 PLI_NPCWEAPONDEL => server.world.npc_weapon_del(self.id, payload),
                 PLI_PLAYERPROPS => {
                     let bow = self.profile.server.prop10_bow;
-                    // From here on COLORS is 5 bytes whatever the build sent.
-                    let payload = &*crate::others::colors_to_five(payload, &self.profile);
+                    // From here on COLORS is 5 bytes whatever the build sent;
+                    // a beta's own last three go to the world beside it.
+                    let (payload, colors_tail) =
+                        crate::others::colors_to_five(payload, &self.profile);
+                    let payload = &*payload;
                     let filtered = server.wordfilter.filter_props(payload, bow);
                     if filtered.is_some() && server.verbose {
                         server.log(peer, "chat filtered");
                     }
                     let payload = filtered.as_deref().unwrap_or(payload);
-                    server.world.props(self.id, payload);
+                    server.world.props(self.id, payload, colors_tail);
                     let props = parse_player_props_with(payload, bow);
                     if let Some(nick) = props.iter().find(|p| p.id == 0) {
                         let nick = nick
