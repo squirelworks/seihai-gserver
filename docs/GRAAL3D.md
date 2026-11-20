@@ -20,7 +20,11 @@ graal3d_port = 14901   # optional; the default is the TCP port + 1
 
 With it on:
 
-- the listing name starts with `3 `, which 3D clients look for;
+- the server registers at HQ level 4 (Graal3D), so the listserver tags its
+  name `3 `, which 3D clients look for. A leading `3 ` in `name` is taken
+  off, since the tag carries it. Mac 3.153 reads only the first tag: with the
+  default bronze level the list said `H 3 name` and it did not see a 3D
+  server;
 - 3D-capable clients (3.153, 4.04r2, 4.20r6, 4.20r8, 5.x, 6.0x) get
   `PLO_SERVERLISTCONNECTED`, an answer to every file request (missing files
   are refused instead of left unanswered), and texture lookups without an
