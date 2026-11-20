@@ -259,6 +259,9 @@ pub enum WorldIn {
     },
     /// `PLI_NPCWEAPONDEL`: the weapon is taken off the account.
     NpcWeaponDel { player: u16, name: String },
+    /// The connection found out its build after login (a NewWorld beta 2
+    /// that logged in as beta 1, `others::newworld_build`).
+    Build { player: u16, version: ClientVersion },
     Relay {
         player: u16,
         out: u8,
@@ -558,6 +561,12 @@ impl World {
             player,
             raw: raw.to_vec(),
         });
+    }
+
+    /// The player's build, found out after login: what the world sends
+    /// and reads for them from here on.
+    pub fn build(&self, player: u16, version: ClientVersion) {
+        let _ = self.tx.send(WorldIn::Build { player, version });
     }
 
     /// `PLI_BADDYPROPS`, as sent.
@@ -1353,6 +1362,12 @@ impl WorldTask {
             WorldIn::NpcWeaponDel { player, name } => {
                 if let Some(p) = self.players.get_mut(&player) {
                     p.weapons.retain(|w| !w.eq_ignore_ascii_case(&name));
+                }
+            }
+            WorldIn::Build { player, version } => {
+                if let Some(p) = self.players.get_mut(&player) {
+                    p.version = version;
+                    p.profile = ClientProfile::of(version);
                 }
             }
             WorldIn::LevelWarp(w) => self.warp(w),

@@ -1950,6 +1950,15 @@ impl Session {
                 PLI_SHOOT2 => server.world.shoot(self.id, true, payload),
                 PLI_NPCWEAPONDEL => server.world.npc_weapon_del(self.id, payload),
                 PLI_PLAYERPROPS => {
+                    if let Some(v) = crate::others::newworld_build(self.version, payload) {
+                        server.log(
+                            peer,
+                            &format!("sent props 43 to 45: served as {} from here on", v.label()),
+                        );
+                        self.version = v;
+                        self.profile = crate::profile::ClientProfile::of(v);
+                        server.world.build(self.id, v);
+                    }
                     let bow = self.profile.server.prop10_bow;
                     // From here on COLORS is 5 bytes whatever the build sent.
                     let payload = &*crate::others::colors_to_five(payload, &self.profile);

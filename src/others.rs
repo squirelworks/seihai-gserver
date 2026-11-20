@@ -57,6 +57,34 @@ pub fn one_byte_id(v: ClientVersion) -> bool {
     ServerProfile::of(v).one_byte_id
 }
 
+/// The NewWorld betas (`G2N15041`): side builds of 2.05 and 2.1 with an
+/// 8-colour body sheet of their own (`bodynw.png`).
+pub fn newworld(v: ClientVersion) -> bool {
+    matches!(v, ClientVersion::NewWorldB1 | ClientVersion::NewWorldB2)
+}
+
+/// The build a NewWorld player's prop stream proves, when it is not the
+/// one the connection is served as. Both betas log in with the same line
+/// (`G2N15041`, the same six props), so the server serves both as beta 1,
+/// whose packets are a subset of beta 2's. Only beta 2's prop writer, from
+/// the 2.1 test base, has GMAPLEVELX, GMAPLEVELY and Z (43 to 45; Graal_analysis
+/// `version-profiles/141-217.toml`, `v21test.props_sent_add`): the first
+/// stream with one of them is beta 2.
+pub fn newworld_build(served: ClientVersion, raw: &[u8]) -> Option<ClientVersion> {
+    if served != ClientVersion::NewWorldB1 {
+        return None;
+    }
+    let sent = usize::from(ClientProfile::of(served).core.props.colors_sent);
+    parse_player_props_sized(raw, bow_prop10(served), sent, None)
+        .iter()
+        .any(|p| (GMAPLEVELX..=Z).contains(&p.id))
+        .then_some(ClientVersion::NewWorldB2)
+}
+
+/// Props only the 2.1 base writes (`newworld_build`).
+const GMAPLEVELX: u8 = 43;
+const Z: u8 = 45;
+
 pub const JOINLEAVELVL: u8 = 50;
 pub const PCONNECTED: u8 = 51;
 /// Level name on another player (`PLPROP_CURLEVEL`). Original 1.28
@@ -259,6 +287,11 @@ pub fn server_message(
 ///   `swordN`, `shieldN` or `headN` as its preset number, so it draws its
 ///   own built-in image and asks for no file, and any other `.png` name
 ///   with its own extension.
+/// - Body (35) first goes to the sheet the receiver draws: a NewWorld beta
+///   gets `bodynw.png` for a stock classic body, everyone else `body.png`
+///   for a stock NewWorld one (`body_for`).
+/// - Colours (13) are cut or filled to the width the receiver reads
+///   (`colors_for`).
 /// - Status (18): where value 4 means "swimming" to the receiver
 ///   (`ServerProfile::status_4_swims`), it is cleared, unless `swims` says
 ///   the value came from such a build and already means that. A player's
@@ -283,19 +316,77 @@ pub fn for_receiver<'a>(
             }
             _ => Cow::Borrowed(v),
         },
-        SWORD | SHIELD | HEAD | BODY if server.image_ext != ".png" => {
+        BODY => {
+            let body = body_for(newworld(receiver.version), v);
+            let named = body.as_deref().unwrap_or(v);
+            let renamed = (server.image_ext != ".png")
+                .then(|| image_for(server.image_ext, pid, named))
+                .flatten();
+            match renamed.or(body) {
+                Some(w) => Cow::Owned(w),
+                None => Cow::Borrowed(v),
+            }
+        }
+        SWORD | SHIELD | HEAD if server.image_ext != ".png" => {
             image_for(server.image_ext, pid, v).map_or(Cow::Borrowed(v), Cow::Owned)
         }
-        // Padded with colour 0 for a build that reads more than 5 (the
-        // NewWorld betas: what bytes 6 to 8 mean is not known), cut for one
-        // that reads fewer.
         COLORS if v.len() != usize::from(receiver.core.props.colors_read) => {
-            let mut w = v.to_vec();
-            w.resize(usize::from(receiver.core.props.colors_read), gchar(0));
-            Cow::Owned(w)
+            Cow::Owned(colors_for(v, usize::from(receiver.core.props.colors_read)))
         }
         _ => Cow::Borrowed(v),
     }
+}
+
+/// COLORS (13) as `width` bytes, from the 5 the server keeps.
+///
+/// Cut for a build that reads fewer. The NewWorld betas read 8: skin, coat,
+/// sleeves, shoes, belt, pullover, pants, border (their `readmenw.txt`).
+/// Bytes 6 to 8 are filled from the classic five so a classic look carries
+/// over: the pullover takes the coat, the pants take the shoes (a classic
+/// body shows shoes straight below the coat), and the border is black, as
+/// the classic sheet's outline. Colour 0 there drew those parts white
+/// (lab, 2026-11-19).
+fn colors_for(v: &[u8], width: usize) -> Vec<u8> {
+    const BLACK: u8 = 18;
+    let mut w = v.to_vec();
+    if w.len() == 5 && width == 8 {
+        w.extend([w[1], w[3], gchar(BLACK)]);
+    }
+    w.resize(width, gchar(0));
+    w
+}
+
+/// BODY (35) for a receiver that draws the NewWorld sheet (`nw`) or the
+/// classic one; `None` when the name stays. The two sheets have different
+/// layouts (classic 128 x 720, NewWorld 144 x 2304), and a body drawn
+/// with the other build's layout comes out as an unkeyed box (lab,
+/// 2026-11-19). The betas have no `body.png` at all: their own default is
+/// `bodynw.png`. So the stock classic bodies (`body`, `body2`, `body3`) go
+/// to a beta as `bodynw.png`, and the stock NewWorld bodies (`bodynw`, and
+/// the race bodies such as `bodyalgo000`) go to everyone else as
+/// `body.png`. Other names are the server's art and pass as they are.
+fn body_for(nw: bool, v: &[u8]) -> Option<Vec<u8>> {
+    let len = usize::from(v.first()?.wrapping_sub(0x20));
+    let name = std::str::from_utf8(v.get(1..1 + len)?)
+        .ok()?
+        .to_ascii_lowercase();
+    let (stem, ext) = name.rsplit_once('.')?;
+    if !matches!(ext, "png" | "gif" | "mng") {
+        return None;
+    }
+    let classic = matches!(stem, "body" | "body2" | "body3");
+    let race = stem.len() == 11
+        && stem.starts_with("body")
+        && stem[4..8].bytes().all(|b| b.is_ascii_lowercase())
+        && stem[8..].bytes().all(|b| b.is_ascii_digit());
+    let to = match (nw, classic, stem == "bodynw" || race) {
+        (true, true, _) => "bodynw.png",
+        (false, _, true) => "body.png",
+        _ => return None,
+    };
+    let mut w = Vec::new();
+    crate::wire::gstring(to.as_bytes(), &mut w);
+    Some(w)
 }
 
 /// A prop stream as `sender`'s build writes it, with COLORS (13) cut to
@@ -1105,6 +1196,64 @@ mod tests {
         let five = [1, 2, 3, 4, 5].map(gchar);
         assert_eq!(for_receiver(&nw, COLORS, &five, false).len(), 8);
         assert_eq!(for_receiver(&v205, COLORS, &five, false).len(), 5);
+    }
+
+    /// The pads a beta reads after the classic five: pullover from the
+    /// coat, pants from the shoes, a black border; never colour 0 (white).
+    #[test]
+    fn newworld_colors_are_filled_from_the_classic_five() {
+        let nw = ClientProfile::of(ClientVersion::NewWorldB2);
+        let five = [2, 0, 10, 4, 18].map(gchar);
+        let eight = for_receiver(&nw, COLORS, &five, false);
+        assert_eq!(&*eight, &[2, 0, 10, 4, 18, 0, 4, 18].map(gchar)[..]);
+        // Eight already: as they are; to 2.05: the first five.
+        let v205 = ClientProfile::of(ClientVersion::V205);
+        assert_eq!(&*for_receiver(&nw, COLORS, &eight, false), &eight[..]);
+        assert_eq!(&*for_receiver(&v205, COLORS, &eight, false), &five[..]);
+    }
+
+    /// Stock bodies go to the sheet the receiver draws.
+    #[test]
+    fn bodies_follow_the_receivers_sheet() {
+        let named = |s: &str| {
+            let mut v = Vec::new();
+            crate::wire::gstring(s.as_bytes(), &mut v);
+            v
+        };
+        let nw = ClientProfile::of(ClientVersion::NewWorldB1);
+        let v222 = ClientProfile::of(ClientVersion::V222);
+        let f = |r: &ClientProfile, s: &str| for_receiver(r, BODY, &named(s), false).into_owned();
+        assert_eq!(f(&nw, "body.png"), named("bodynw.png"));
+        assert_eq!(f(&nw, "BODY2.PNG"), named("bodynw.png"));
+        assert_eq!(f(&nw, "bodyalgo000.png"), named("bodyalgo000.png"));
+        assert_eq!(f(&nw, "knight.png"), named("knight.png"));
+        assert_eq!(f(&v222, "bodynw.png"), named("body.png"));
+        assert_eq!(f(&v222, "bodyalgo000.png"), named("body.png"));
+        assert_eq!(f(&v222, "body.png"), named("body.png"));
+        assert_eq!(f(&v222, "bodybuilder.png"), named("bodybuilder.png"));
+        // A .gif build gets the classic body in its own extension.
+        let gif = ClientProfile::of(ClientVersion::V204);
+        if gif.server.image_ext == ".gif" {
+            assert_eq!(f(&gif, "bodynw.png"), named("body.gif"));
+        }
+    }
+
+    /// Beta 2 is told from beta 1 by the first prop only its 2.1 base
+    /// writes (43 to 45); anything else, or any other build, stays.
+    #[test]
+    fn newworld_beta_2_is_told_by_props_43_to_45() {
+        let b1 = ClientVersion::NewWorldB1;
+        let mut raw = vec![gchar(COLORS)];
+        raw.extend([1, 2, 3, 4, 5, 6, 7, 8].map(gchar));
+        raw.extend([gchar(X), gchar(60)]);
+        assert_eq!(newworld_build(b1, &raw), None);
+        raw.extend([gchar(45), gchar(10)]);
+        assert_eq!(newworld_build(b1, &raw), Some(ClientVersion::NewWorldB2));
+        assert_eq!(newworld_build(ClientVersion::NewWorldB2, &raw), None);
+        assert_eq!(
+            newworld_build(ClientVersion::V210, &[gchar(43), gchar(1)]),
+            None
+        );
     }
 
     /// Every build reads the whole message, and sees the nickname and the
