@@ -238,6 +238,11 @@ impl Connection {
         self.slots.get(&key).is_some_and(|s| s.created)
     }
 
+    /// The ghost under `key`, as it was last set.
+    pub fn ghost(&self, key: Key) -> Option<&Ghost> {
+        self.slots.get(&key).map(|s| &s.ghost)
+    }
+
     pub fn ghost_count(&self) -> usize {
         self.slots.len()
     }

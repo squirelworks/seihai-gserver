@@ -68,7 +68,7 @@ source over the text channel.
 | Torque protocol | Clients | Mission start | Objects | Control |
 |---|---|---|---|---|
 | 24 | 4.20r8, 5.x, 6.0x | phases 1 and 2 | GameObject, Sun, Sky, Camera | the player's own GameObject |
-| 21 | 4.20r6 | phases 1 and 2 | as 24 | as 24 |
+| 21 | 4.20r6 | phases 1 and 2 | as 24, but every Sky padded to 7 texture names, and a plain Sky when the world has none (as 19) | as 24 |
 | 19 | 3.153, 4.04r2 | phases 1 to 3, datablocks, ghost-always | TGE Camera, Player, Sky | Player (with `tgeplayershape`) or Camera |
 
 All protocols: the challenge and connect handshake, the notify link (acks,
@@ -137,6 +137,17 @@ the origin), loopback only:
 | 5.12, Windows 10 VM, right-handed facing angle (first try) | red cube | View tilted up into the sky box, no cube. |
 | 5.12, Windows 10 VM, angle negated (this change) | red cube | Cube centred, seen from above. |
 | 4.20r6 Linux (`G3D22126`), native in a Debian VM | red cube | Logged in, linked, cube centred. With `labcube.3ds` no cube. |
+| 4.20r6 Mac PPC (`G3D27076`, protocol 21), Tiger VM (QEMU, software renderer), main at 368c3d6, no `sky` line | red cube | Logged in, linked as protocol 21, 4 ghosts, shape downloaded, mission start done, control object taken, then a crash on the first 3D frame (3 of 3 runs). Mac 3.153 crashed the same way on protocol 19. |
+| the same, with a six-name `sky` line | red cube | The same crash. |
+| the same, with a seven-name `sky` line | red cube | No crash: the 3D view is drawn through the default Camera and the link holds. |
+| lab build of this change (protocol 21 gets protocol 19's Skies), no `sky` line | red cube | A plain Sky is sent, "Graal3D has been activated!", no crash, the link holds until quit. One harmless "Could not locate texture: g3d_sky". |
+
+The 4.20r6 Mac reads the scene's Sky, and that Sky's seventh texture name,
+on its first 3D frame without checking either, as 3.153 and 4.04r2 do. The
+camera, the control object and the ghost order needed no change. The cube
+itself could not be checked there: the Tiger VM has only Apple's software
+renderer, which drew the sky above the horizon and one flat colour below it
+in every run, with or without the cube. That needs a Mac with real OpenGL.
 
 What the runs and breakpoints showed (hardware breakpoints through the VM's
 debugger; a debugger inside the guest makes the client exit):
