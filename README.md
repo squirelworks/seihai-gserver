@@ -2,21 +2,26 @@
 
 A new Graal game server written in Rust on Seihai's core, for classic clients (1.33 to 2.31 first) and Seihai.
 
-Part of the Seihai server stack:
-[seihai-gserver](https://github.com/squirelworks/seihai-gserver) ·
-[seihai-npcserver](https://github.com/squirelworks/seihai-npcserver) ·
-[seihai-listserver](https://github.com/squirelworks/seihai-listserver) ·
-[seihai-rc](https://github.com/squirelworks/seihai-rc) ·
-[seihai-gserver-v2](https://github.com/squirelworks/seihai-gserver-v2) (GPL fork of GServer-v2, ships first) ·
-client: [seihai](https://github.com/squirelworks/seihai).
+Part of the Seihai project: the client [seihai](https://github.com/squirelworks/seihai)
+and its library [seihai-core](https://github.com/squirelworks/seihai-core); the Rust
+server stack [seihai-gserver](https://github.com/squirelworks/seihai-gserver),
+[seihai-listserver](https://github.com/squirelworks/seihai-listserver),
+[seihai-npcserver](https://github.com/squirelworks/seihai-npcserver),
+[seihai-rc](https://github.com/squirelworks/seihai-rc) and
+[seihai-servertools](https://github.com/squirelworks/seihai-servertools); the GPL forks
+[seihai-gserver-v2](https://github.com/squirelworks/seihai-gserver-v2) and
+[seihai-gs2lib](https://github.com/squirelworks/seihai-gs2lib); and the research notes in
+[Graal_analysis](https://github.com/squirelworks/Graal_analysis).
 
-**Status: stages 1 to 3 built.** Clients log in, play one shared world of
-levels and gmaps, and see each other's NPCs, baddies, bombs and hits. Open
-items per stage (real-client hits, RC, server-side NPC scripts) are in
-[docs/PLAN.md](docs/PLAN.md); the rules every
-contributor and coding agent follows are in [AGENTS.md](AGENTS.md).
+## Status
 
-What is built:
+Stages 1 to 3 of the [plan](docs/PLAN.md) are built: clients log in, play one
+shared world of levels and gmaps, and see each other's NPCs, baddies, bombs and
+hits. What is still open in each stage (hits checked against real clients, RC
+support, server-side NPC scripts) is listed in the plan. Contributors should
+read [AGENTS.md](AGENTS.md) for the project rules.
+
+What works today:
 
 * login for every protocol generation: gen 2 (1.21 to 1.39), gen 3 (1.41 to
   2.17) and gen 5 (2.22 to 6.x), with `seihai-core`'s codecs;
@@ -65,8 +70,7 @@ What is built:
   loopback port and is told the level list and every player's props. With
   `npcserver = auto` in `config/server.txt` the gserver starts
   `seihai-npcserver` from next to its own binary with a fresh token, so there is
-  nothing else to set up. The NPC-server runs no scripts on players yet.
-
+  nothing else to set up. The NPC-server runs no scripts on players yet;
 * the listserver link (`listserver = host:port`): registers the server, keeps
   its player count, and with `listserver_accounts = true` checks passwords
   with the listserver (`VERIACC2`). The link is encrypted by default
@@ -75,21 +79,9 @@ What is built:
   listserver's key is pinned in `config/listserver.pin` on first contact, or
   given as `listserver_key`.
 
-RC and server-side NPC scripts are later stages.
+RC support and server-side NPC scripts are later stages.
 
 ## Build and run
-
-For the older, account-free room/peer protocol, use the separate relay:
-
-```sh
-seihai-gserver relay --bind 127.0.0.1 --port 14801
-```
-
-It forwards peer state without interpreting or rewriting it. Clients supply
-their own compatible levels; it does not serve a world or require a listserver.
-The normal world-server command below is unchanged. See
-[early networking and explicit endpoints](docs/ANCIENT-NETWORKING.md) for the
-1998 relay versus 1999 GSERV distinction, room compatibility and test limits.
 
 ```
 cargo build --release
@@ -103,13 +95,29 @@ GRAAL_PW=labpw ./target/release/seihai-gserver account test1 --password-env GRAA
 
 `--create-accounts` (or `create_accounts = true` in `config/server.txt`)
 makes an account on its first login instead; use it in a lab only.
-`--verbose` logs every message id the server does not handle yet.
+`--verbose` logs every message id the server does not handle yet. Every
+setting is listed with its default in
+[`world/config/server.txt`](world/config/server.txt).
 
 Then log in with Seihai (see its README) or a real client on loopback:
 
 ```
 seihai-mae --online 127.0.0.1:14802 --account test1 --password-env GRAAL_PW --version 2.05
 ```
+
+### The 1998 relay
+
+For the older, account-free room/peer protocol, use the separate relay:
+
+```sh
+seihai-gserver relay --bind 127.0.0.1 --port 14801
+```
+
+It forwards peer state without interpreting or rewriting it. Clients supply
+their own compatible levels; it does not serve a world or require a listserver.
+See
+[early networking and explicit endpoints](docs/ANCIENT-NETWORKING.md) for the
+1998 relay versus 1999 GSERV distinction, room compatibility and test limits.
 
 ### Secure login (SEI00001)
 
@@ -129,11 +137,12 @@ cannot log in). Classic logins are unchanged.
 seihai-mae --online 127.0.0.1:14802 --account test1 --password-env GRAAL_PW --version 2.31 --secure-login
 ```
 
-The settings are listed with their defaults in
-[`world/config/server.txt`](world/config/server.txt).
+## Releases
 
-Releases for Linux, Windows and macOS are built by GitHub Actions on each `v*` tag.
-When a release happens, what the version numbers mean and what 1.0.0 needs: [VERSIONING.md](VERSIONING.md).
+Prebuilt Linux, Windows and macOS archives are on the
+[Releases page](https://github.com/squirelworks/seihai-gserver/releases), built by
+GitHub Actions for each `v*` tag. [VERSIONING.md](VERSIONING.md) explains when a
+release is made, what the version numbers mean and what 1.0.0 needs.
 
 ## Licence
 
