@@ -12,6 +12,7 @@ Notes for the next seihai-gserver release.
 
 ## Fixed
 
+- **The 3D camera now looks at the world.** A protocol 21/24 client's default Camera faces the spawn point instead of looking level along +y, and `camera` in `graal3dworld.txt` takes an optional rotation (`camera <x> <y> <z> [<axis x> <axis y> <axis z> <angle>]`). Angles follow the clients' sense, the opposite of the right-hand rule (lab-checked). `docs/GRAAL3D.md` also notes that a `.3ds` with no material is not drawn at all. Lab, 2026-11-20: a real 5.12 (Windows 10 VM) and a real Linux 4.20r6 (Debian VM) both show the world's cube centred from the default camera.
 - **NewWorld beta bodies and colours.** The betas draw a different body sheet (`bodynw.png`, 144 x 2304) and have no `body.png` at all, so the default `body.png` drew as a box. Stock classic bodies (`body`, `body2`, `body3`) now go to a beta as `bodynw.png`, and stock NewWorld bodies (`bodynw`, the race bodies such as `bodyalgo000`) go to every other build as `body.png`. The three extra colour slots (pullover, pants, border) are filled from the classic five (pullover = coat, pants = shoes, black border) instead of colour 0, which drew them white; the betas fill their own the same way. Lab, 2026-11-20 (nwb1, nwb2 and 2.05 rev2 under Wine in GwenTea2's Debian VM): nwb1 draws its own and the others' bodies, the HUD clock keeps ticking and later players appear. nwb2 and 2.05 draw no bodies under Wine at all, as before.
 
 ## Added

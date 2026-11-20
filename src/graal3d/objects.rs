@@ -76,6 +76,10 @@ impl Transform {
     /// At `position`, turned so that its forward axis (+y, Torque's) points
     /// at `target`: a turn about z, then a tilt about the turned x. Straight
     /// up or down keeps the turn at 0.
+    ///
+    /// The clients turn the other way from the right-hand rule (lab
+    /// 2026-11-20, 5.12 and 4.20r6): a positive angle about +x tilts the view
+    /// down and one about +z turns it right. So the angle sent is negated.
     pub fn facing(position: [f32; 3], target: [f32; 3]) -> Transform {
         let d = [
             target[0] - position[0],
@@ -109,14 +113,15 @@ impl Transform {
         Transform {
             position,
             axis: [v[0] / len, v[1] / len, v[2] / len],
-            angle: 2.0 * len.atan2(w),
+            angle: -2.0 * len.atan2(w),
         }
     }
 
-    /// Where the forward axis (+y) points after the rotation.
+    /// Where the forward axis (+y) points after the rotation, as the
+    /// clients turn it (see [`Transform::facing`]).
     pub fn forward(&self) -> [f32; 3] {
         let [x, y, z] = self.axis;
-        let (s, c) = self.angle.sin_cos();
+        let (s, c) = (-self.angle).sin_cos();
         let t = 1.0 - c;
         // The middle column of the axis-angle matrix.
         [t * x * y - s * z, t * y * y + c, t * y * z + s * x]
@@ -652,6 +657,28 @@ mod tests {
         }
         // Level and along +y: no turn at all.
         assert_eq!(Transform::facing(from, [0.0, 0.0, 3.0]).angle, 0.0);
+        // What the lab saw: +angle about +x looks down, +angle about +z
+        // turns right (toward +x).
+        let down = Transform {
+            axis: [1.0, 0.0, 0.0],
+            angle: 0.38,
+            ..Transform::default()
+        };
+        assert!(down.forward()[2] < 0.0);
+        let right = Transform {
+            angle: 0.3,
+            ..Transform::default()
+        };
+        assert!(right.forward()[0] > 0.0);
+        // The default view of the 2026-11-19 world: 0.38 down about +x.
+        let t = Transform::facing(from, [0.0, 0.0, 1.0]);
+        let (axis, angle) = if t.axis[0] < 0.0 {
+            ([-t.axis[0], -t.axis[1], -t.axis[2]], -t.angle)
+        } else {
+            (t.axis, t.angle)
+        };
+        assert!(near(axis, [1.0, 0.0, 0.0]));
+        assert!((angle - 0.3805).abs() < 1e-3, "{angle}");
     }
 
     fn hex(s: &str) -> Vec<u8> {
