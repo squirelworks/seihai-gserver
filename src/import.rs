@@ -41,7 +41,7 @@ const SETTINGS: [(&str, &str); 5] = [
 const READ: [&str; 4] = ["startlevel", "startx", "starty", "staff"];
 
 /// Account keys carried over or read on purpose (`NAME` is the file name).
-const ACCOUNT_KEYS: [&str; 29] = [
+const ACCOUNT_KEYS: [&str; 30] = [
     "NAME",
     "NICK",
     "LEVEL",
@@ -71,6 +71,7 @@ const ACCOUNT_KEYS: [&str; 29] = [
     "FOLDERRIGHT",
     "LOCALRIGHTS",
     "BANNED",
+    "WEAPON",
 ];
 
 /// `key = value` lines; `#` lines are comments, and so is a `#` after
@@ -260,6 +261,13 @@ pub fn convert_account(
         .filter(|(k, v)| k == "FOLDERRIGHT" && !v.is_empty())
         .map(|(_, v)| convert_folder_right(v))
         .collect();
+    // `WEAPON` lines: the weapons the account holds, as ours keeps them.
+    for (k, v) in fields {
+        let v = v.trim();
+        if k == "WEAPON" && !v.is_empty() && !a.weapons.iter().any(|w| w.eq_ignore_ascii_case(v)) {
+            a.weapons.push(v.to_string());
+        }
+    }
     if let Some(v) = get("LOCALRIGHTS").and_then(|v| v.parse().ok()) {
         a.rc_rights = v;
     }
@@ -457,7 +465,66 @@ pub fn import_v2(src: &Path, world: &Path) -> io::Result<Report> {
         }
     };
     world_files(&src.join("world"), world, &rules, &mut r)?;
+    weapon_files(&src.join("weapons"), &world.join("weapons"), &mut r)?;
     Ok(r)
+}
+
+/// The world's weapons: every `weapons/*.txt` that reads as a weapon
+/// file (`REALNAME` and the rest, `crate::weapons`) goes to the world's
+/// `weapons/` under the same name. Before, the import left them out, so
+/// an imported world's players lost their weapons (graal-client-repro
+/// lab, 2026-11-20).
+pub fn weapon_files(src: &Path, dst: &Path, r: &mut Report) -> io::Result<()> {
+    let Ok(entries) = std::fs::read_dir(src) else {
+        return Ok(());
+    };
+    let mut paths: Vec<_> = entries.flatten().map(|e| e.path()).collect();
+    paths.sort();
+    let (mut made, mut skipped) = (0, Vec::new());
+    for path in paths {
+        let Some(name) = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(str::to_string)
+        else {
+            continue;
+        };
+        let is_txt = path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("txt"));
+        let text = if is_txt {
+            std::fs::read_to_string(&path).ok()
+        } else {
+            None
+        };
+        if text
+            .as_deref()
+            .and_then(crate::weapons::Weapon::parse)
+            .is_none()
+        {
+            skipped.push(name);
+            continue;
+        }
+        let to = dst.join(&name);
+        if to.exists() {
+            r.left.push(format!("{} exists; kept", to.display()));
+            continue;
+        }
+        std::fs::create_dir_all(dst)?;
+        std::fs::write(&to, text.unwrap_or_default())?;
+        made += 1;
+    }
+    if made > 0 {
+        r.done
+            .push(format!("{made} weapon(s) in {}", dst.display()));
+    }
+    if !skipped.is_empty() {
+        r.left.push(format!(
+            "weapons/ files that are not weapon files: {}",
+            skipped.join(", ")
+        ));
+    }
+    Ok(())
 }
 
 /// What a `foldersconfig.txt` line lets a client have.
@@ -675,7 +742,8 @@ mod tests {
         assert_eq!(a.rc_rights, 513);
         let ban = ban.unwrap();
         assert_eq!((ban.until, ban.reason.as_str()), (None, "spam"));
-        assert_eq!(unused.into_iter().collect::<Vec<_>>(), ["RATING", "WEAPON"]);
+        assert_eq!(unused.into_iter().collect::<Vec<_>>(), ["RATING"]);
+        assert_eq!(a.weapons, ["bomb"]);
         assert!(parse_account("SEIHAIACC 1\n").is_none());
         let (b, _) = convert_account(
             "x",
@@ -684,5 +752,54 @@ mod tests {
             &mut BTreeSet::new(),
         );
         assert!(b.ip_ranges.is_empty(), "the template's 0.0.0.0 is none");
+        let (c, _) = convert_account(
+            "y",
+            &[
+                ("WEAPON".into(), "bow".into()),
+                ("WEAPON".into(), "LabChat".into()),
+                ("WEAPON".into(), "Bow".into()),
+                ("WEAPON".into(), "".into()),
+            ],
+            ("s.nw", 1.0, 2.0),
+            &mut BTreeSet::new(),
+        );
+        assert_eq!(c.weapons, ["bow", "LabChat"], "repeats and empties dropped");
+    }
+
+    #[test]
+    fn weapon_files_are_carried() {
+        let base =
+            std::env::temp_dir().join(format!("seihai-import-weapons-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (src, dst) = (base.join("weapons"), base.join("world").join("weapons"));
+        std::fs::create_dir_all(&src).unwrap();
+        let chat = "GRAWP001\nREALNAME LabChat\nIMAGE wbomb1.png\nSCRIPT\n//#CLIENTSIDE\nfunction onWeaponFired() { player.chat = \"hi\"; }\nSCRIPTEND\n";
+        std::fs::write(src.join("weaponLabChat.txt"), chat).unwrap();
+        std::fs::write(src.join("notes.txt"), "not a weapon\n").unwrap();
+        std::fs::write(src.join("icon.png"), [0u8; 4]).unwrap();
+        let mut r = Report::default();
+        weapon_files(&src, &dst, &mut r).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dst.join("weaponLabChat.txt")).unwrap(),
+            chat
+        );
+        assert!(!dst.join("notes.txt").exists() && !dst.join("icon.png").exists());
+        assert!(
+            r.done.iter().any(|l| l.starts_with("1 weapon(s)")),
+            "{:?}",
+            r.done
+        );
+        assert!(
+            r.left.iter().any(|l| l.contains("icon.png, notes.txt")),
+            "{:?}",
+            r.left
+        );
+        // A second run keeps what is there.
+        let mut again = Report::default();
+        weapon_files(&src, &dst, &mut again).unwrap();
+        assert!(again.left.iter().any(|l| l.contains("exists; kept")));
+        // No weapons/ folder: nothing to do.
+        weapon_files(&base.join("none"), &dst, &mut Report::default()).unwrap();
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

@@ -25,6 +25,11 @@ Seen in the sample server folder (`bin/servers/default/`):
 | `world/` | levels, images, sounds, ganis and the rest, in any subfolder | `world/readme.txt` |
 | `weapons/`, `npcs/`, `guilds/`, `logs/`, `translations/`, `documents/`, `serverflags.txt` | weapons, database NPCs, guilds, logs, texts, server flags | file names only |
 
+The importer copies `weapons/*.txt` that read as weapon files
+(`REALNAME`, `IMAGE`, `SCRIPT` ... `SCRIPTEND`, the format
+`src/weapons.rs` reads) to the world's `weapons/` under the same names,
+and lists the rest. `npcs/` and the other folders are not carried.
+
 ## `config/serveroptions.txt`
 
 One `key = value` per line. `#` starts a comment line; some values have a
@@ -59,7 +64,11 @@ nothing.
 
 Ours uses `#` for comments and already reads tokens and `FROM:TO` ranges
 (`src/allow.rs`). The importer rewrites `//` comments as `#` comments and
-keeps every entry and every commented-out entry where it was.
+keeps every entry and every commented-out entry where it was. A range
+end that is a token with no profile of its own but served as a near build
+(`login::STAND_INS`, such as `G3D11125`, 4.03r1 Linux, in a
+`G3D11125:G3D0511C` range) stands at its stand-in's place, and the
+stand-in tokens inside a range are allowed with it.
 
 ## `accounts/<account>.txt`
 
@@ -91,7 +100,8 @@ the listserver). Seen in `defaultaccount.txt` and `YOURACCOUNT.txt`:
 | `FOLDERRIGHT` | `rw world/levels/*`, repeated | `FOLDER`; see below |
 | `LOCALRIGHTS` | `1040383` (the staff sample), `0` | `RCRIGHTS` |
 | `BANNED`, `BANREASON` | `0`, empty | a line in our `config/bans.txt` when `BANNED` is not 0 |
-| `ANI`, `BOWP`, `BOW`, `MP`, `APCOUNTER`, `ONSECS`, `IP`, `LANGUAGE`, `DEATHS`, `RATING`, `DEVIATION`, `LASTSPARTIME`, `WEAPON`, `BANLENGTH`, `LASTFOLDER` | | not carried; listed by the importer |
+| `WEAPON`, repeated | `bomb` | `WEAPON` (repeats and case-only repeats dropped) |
+| `ANI`, `BOWP`, `BOW`, `MP`, `APCOUNTER`, `ONSECS`, `IP`, `LANGUAGE`, `DEATHS`, `RATING`, `DEVIATION`, `LASTSPARTIME`, `BANLENGTH`, `LASTFOLDER` | | not carried; listed by the importer |
 
 `BANLENGTH` is empty in both samples, so its unit is not known, and an
 imported ban has no end. The import reports it when it is set.
