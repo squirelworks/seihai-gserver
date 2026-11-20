@@ -5,21 +5,28 @@ SCRIPT
 // Lab chat for 5.x/6.x, which have no chat bar of their own: type a
 // line and press Enter to say it; Backspace deletes, Escape clears.
 // keypressed gives #p(0) the virtual-key code and #p(1) the character.
+// The line is image 200 on the screen layer (changeimgvis 4), where x and
+// y are screen pixels. The index alone does not put it there: on 5.x/6.x
+// the GS2 showtext draws on the level, in tiles, so y = screenheight-24
+// was far below the level (#174).
 if (created || playerenters) {
   setstring this.line,;
   showtext 200,8,screenheight-24,Arial,b,> ;
+  changeimgvis 200,4;
 }
 if (keypressed) {
   if (strequals(#p(0),13)) {
     setplayerprop #c,#s(this.line);
     setstring this.line,;
   } else if (strequals(#p(0),8)) {
-    setstring this.line,#e(0,strlen(#s(this.line))-1,#s(this.line));
+    this.n = strlen(#s(this.line)) - 1;
+    setstring this.line,#e(0,#v(this.n),#s(this.line));
   } else if (strequals(#p(0),27)) {
     setstring this.line,;
   } else if (strlen(#p(1)) == 1) {
     setstring this.line,#s(this.line)#p(1);
   }
   showtext 200,8,screenheight-24,Arial,b,> #s(this.line);
+  changeimgvis 200,4;
 }
 SCRIPTEND

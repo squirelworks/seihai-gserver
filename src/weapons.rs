@@ -749,6 +749,14 @@ mod lab_chat {
         // 5.x/6.x call the key handler by this name (6.03r7 lab, 2026-11-19).
         let code = code.unwrap();
         assert!(code.windows(13).any(|w| w == b"onKeyPressed\0"));
+        // The input line goes to the screen layer: a GS2 `showtext` alone
+        // draws on the level, in tiles, so it never showed (#174).
+        let s = seihai_core::scripting::gs2::Script::parse(code).unwrap();
+        let d = s.disassemble();
+        assert_eq!(d.matches("\"showtext\"").count(), 3, "{d}");
+        assert_eq!(d.matches("\"changeimgvis\"").count(), 3, "{d}");
+        // Backspace cuts by a number, not by the text `strlen(...)-1`.
+        assert!(!d.contains("\"strlen(\""), "{d}");
         assert!(w.message(ClientVersion::V603R7).is_some());
         assert!(w.bytecode_message(ClientVersion::V603R7).is_some());
     }
