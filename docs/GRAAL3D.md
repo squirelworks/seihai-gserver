@@ -81,7 +81,9 @@ creates, updates and deletes with lost creates resent, and the text channel
 both ways (flags from the TCP world, `clientr.g3dpos`, weapons, and the
 client's `s`/`w`/`t` lines, which go to the world as flags, weapons and
 trigger actions). Protocol 19 moves are read and applied to the Player, and
-each move is acked.
+each move is acked. Every other linked player reaches a protocol 19 client
+as a stock TGE Player, and a protocol 19 player's moves reach the others
+(as a TGE Player on protocol 19, as its GameObject on protocols 21 and 24).
 
 ## The camera (protocols 21 and 24)
 
@@ -119,6 +121,7 @@ same as `camera 0 -5 2 1 0 0 0.38`.
 | Client | Result |
 |---|---|
 | 4.04r2, native Linux (protocol 19) | 3 of 3 runs: linked, datablocks loaded, Sky and Player ghosts, mission start done, control object delivered. The client logged "Initial Control Object" and "Graal3D has been activated!". The link held 96 s. |
+| 4.04r2, native Linux, with Ato (`--version 4.04r2`) on the same world (2026-11-20, #188) | Each client got the other's Player as a third ghost. The real 4.04r2 drew Ato's octahedron and saw it walk away as Ato held Up. Both links held, and neither side had an unread packet. |
 | 4.04r2, Windows under Wine | Crashes while starting 3D, before sending anything (a Wine limit). |
 | 5.12, Windows under Wine (protocol 24) | Linked, assets downloaded, ghosts and mission start done, control object delivered, link held 97 s. Stays on "Starting 3D mode...", the same as the C++ fork. In 2 of 5 runs the client never opened TCP to the 3D server after the lobby warp (a client-side race; holding the lobby link open 20 s avoided it for 4.x). |
 

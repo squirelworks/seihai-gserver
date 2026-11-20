@@ -22,7 +22,8 @@
 //! control object. Each client reports its position in every packet; the
 //! service moves that player's object on everyone else's screen and
 //! passes its chat on. A protocol 19 client gets a Sky and a stock TGE
-//! Player (or Camera) of its own instead.
+//! Player (or Camera) of its own instead, and every other linked player as
+//! a stock TGE Player; its moves reach the others the same way.
 
 use super::conn::{ClientState, Connection, Key, Mission, Out};
 use super::handshake::{self, ConnectRequest};
@@ -335,6 +336,9 @@ pub struct Service {
     sessions: HashMap<SocketAddr, Session>,
     by_player: HashMap<u16, SocketAddr>,
     avatars: BTreeMap<u16, GameObject>,
+    /// Protocol 19: each linked player's TGE Player state as last sent to
+    /// the others (seihai-gserver#188).
+    tge_seen: BTreeMap<u16, tge::PlayerState>,
     moved_until: HashMap<u16, u64>,
     unmatched: HashSet<String>,
     /// Datagrams to send, for the task (or a test) to take.
@@ -360,6 +364,7 @@ impl Service {
             sessions: HashMap::new(),
             by_player: HashMap::new(),
             avatars: BTreeMap::new(),
+            tge_seen: BTreeMap::new(),
             moved_until: HashMap::new(),
             unmatched: HashSet::new(),
             outbox: Vec::new(),
@@ -545,12 +550,7 @@ impl Service {
         };
         self.avatars.insert(id, avatar.clone());
         self.ghost_world(from);
-        for (addr, s) in self.sessions.iter_mut() {
-            if *addr != from {
-                s.conn
-                    .set_ghost(avatar_key(id), Ghost::GameObject(avatar.clone()));
-            }
-        }
+        self.broadcast_avatar(id, Some(from));
         self.outbox
             .push((from, handshake::connect_accept(req.sequence, profile)));
         log(&format!(
@@ -564,6 +564,15 @@ impl Service {
     }
 
     fn ghost_world(&mut self, at: SocketAddr) {
+        // Every other linked player, as a stock TGE Player for a protocol 19
+        // client (the GameObject form goes to the others).
+        let me = self.sessions.get(&at).map(|s| s.player);
+        let others: Vec<(u16, Ghost)> = self
+            .avatars
+            .keys()
+            .filter(|p| Some(**p) != me)
+            .filter_map(|p| self.tge_avatar(*p).map(|g| (*p, g)))
+            .collect();
         let scene = &self.scene;
         let s = self.sessions.get_mut(&at).expect("just added");
         let id = s.player;
@@ -598,6 +607,9 @@ impl Service {
             };
             s.conn.set_ghost(camera_key(id), control);
             s.conn.set_control_object(camera_key(id));
+            for (other, g) in others {
+                s.conn.set_ghost(avatar_key(other), g);
+            }
             return;
         }
         // 4.20r6 (protocol 21) reads the scene's Sky and that Sky's seventh
@@ -652,6 +664,72 @@ impl Service {
         }
         for a in dead {
             self.close(a, "The 3D connection timed out.", false);
+        }
+        self.share_tge_moves();
+    }
+
+    /// Protocol 19 clients move their own Player with moves: send each
+    /// changed Player to everyone else, as a TGE Player to protocol 19 and
+    /// as its GameObject to protocol 21/24 (seihai-gserver#188).
+    fn share_tge_moves(&mut self) {
+        let moved: Vec<(u16, tge::PlayerState)> = self
+            .sessions
+            .values()
+            .filter_map(|s| s.conn.control_player().map(|st| (s.player, st)))
+            .filter(|(p, st)| self.tge_seen.get(p) != Some(st))
+            .collect();
+        for (p, st) in moved {
+            self.tge_seen.insert(p, st);
+            if let Some(a) = self.avatars.get_mut(&p) {
+                a.transform.position = st.position;
+            }
+            let at = self.by_player.get(&p).copied();
+            self.broadcast_avatar(p, at);
+        }
+    }
+
+    /// Player `p` as a stock TGE Player, for protocol 19 screens: its own
+    /// Player state when it plays on protocol 19, else at its object's
+    /// position. `None` without a `tgeplayershape`.
+    fn tge_avatar(&self, p: u16) -> Option<Ghost> {
+        if self.scene.tge_player_shape.is_empty() {
+            return None;
+        }
+        let state = self
+            .tge_seen
+            .get(&p)
+            .copied()
+            .unwrap_or_else(|| tge::PlayerState {
+                position: self
+                    .avatars
+                    .get(&p)
+                    .map_or(self.scene.spawn.position, |a| a.transform.position),
+                ..tge::PlayerState::default()
+            });
+        Some(Ghost::TgePlayer(tge::Player {
+            state,
+            shape: self.scene.tge_player_shape.clone(),
+        }))
+    }
+
+    /// Sends player `p`'s object to every session but `skip`, in the form
+    /// each one reads (the connection drops the other era's form).
+    fn broadcast_avatar(&mut self, p: u16, skip: Option<SocketAddr>) {
+        let Some(a) = self.avatars.get(&p).cloned() else {
+            return;
+        };
+        let tge_form = self.tge_avatar(p);
+        let own = self.by_player.get(&p).copied();
+        for (addr, s) in self.sessions.iter_mut() {
+            if Some(*addr) == skip {
+                continue;
+            }
+            s.conn
+                .set_ghost(avatar_key(p), Ghost::GameObject(a.clone()));
+            // A protocol 19 player's own Player is its control object.
+            if let Some(g) = tge_form.as_ref().filter(|_| Some(*addr) != own) {
+                s.conn.set_ghost(avatar_key(p), g.clone());
+            }
         }
     }
 
@@ -842,14 +920,8 @@ impl Service {
         if *a == before {
             return;
         }
-        let a = a.clone();
         let at = self.by_player.get(&player).copied();
-        for (addr, s) in self.sessions.iter_mut() {
-            if Some(*addr) != at {
-                s.conn
-                    .set_ghost(avatar_key(player), Ghost::GameObject(a.clone()));
-            }
-        }
+        self.broadcast_avatar(player, at);
     }
 
     /// Moves a player's own object for everyone, its own screen included
@@ -871,12 +943,24 @@ impl Service {
             return true;
         }
         a.transform.position = to;
-        let a = a.clone();
         self.moved_until.insert(player, now + SERVER_MOVE_HOLD_MS);
-        for s in self.sessions.values_mut() {
-            s.conn
-                .set_ghost(avatar_key(player), Ghost::GameObject(a.clone()));
+        // A protocol 19 player's own Player moves too, so the next move it
+        // sends starts from there.
+        if let Some(st) = self.tge_seen.get_mut(&player) {
+            st.position = to;
+            let ghost = Ghost::TgePlayer(tge::Player {
+                state: *st,
+                shape: self.scene.tge_player_shape.clone(),
+            });
+            if let Some(s) = self
+                .by_player
+                .get(&player)
+                .and_then(|at| self.sessions.get_mut(at))
+            {
+                s.conn.set_ghost(camera_key(player), ghost);
+            }
         }
+        self.broadcast_avatar(player, None);
         true
     }
 
@@ -898,6 +982,7 @@ impl Service {
             self.by_player.remove(&s.player);
             self.hub.lock().linked.remove(&s.player);
             self.avatars.remove(&s.player);
+            self.tge_seen.remove(&s.player);
             self.moved_until.remove(&s.player);
             for other in self.sessions.values_mut() {
                 other.conn.remove_ghost(avatar_key(s.player));
@@ -1057,6 +1142,66 @@ mod tests {
                 for (cmd, ack) in [
                     (&b"MissionStartPhase1"[..], &b"MissionStartPhase1Ack"[..]),
                     (b"MissionStartPhase2", b"MissionStartPhase2Ack"),
+                ] {
+                    let marker = [b"sent:", cmd].concat();
+                    if c.answered(cmd) && !c.answered(&marker) {
+                        c.commands.push(crate::graal3d::events::Command {
+                            name: marker,
+                            args: vec![],
+                        });
+                        c.events.send_command(ack, &[]);
+                    }
+                }
+            }
+        }
+        now
+    }
+
+    /// [`run`] for protocol 19 clients: also answers DataBlocksDone and
+    /// Phase 3, the way 4.04r2 does.
+    fn run_tge(
+        s: &mut Service,
+        clients: &mut [(SocketAddr, FakeClient)],
+        from: u64,
+        rounds: u64,
+    ) -> u64 {
+        let mut now = from;
+        for _ in 0..rounds {
+            for (at, c) in clients.iter_mut() {
+                let p = c.packet();
+                s.datagram(*at, &p, now);
+            }
+            now += 60;
+            s.update(now);
+            for (to, d) in s.take_outbox() {
+                for (at, c) in clients.iter_mut() {
+                    if *at == to && d[0] & 1 == 1 {
+                        c.take(&d);
+                    }
+                }
+            }
+            for (_, c) in clients.iter_mut() {
+                for ev in std::mem::take(&mut c.got) {
+                    if let crate::graal3d::events::Event::ConnectionMessage {
+                        sequence,
+                        message,
+                        ..
+                    } = ev
+                    {
+                        if message == tge::message::DATABLOCKS_DONE {
+                            c.events
+                                .send(crate::graal3d::events::Event::ConnectionMessage {
+                                    sequence,
+                                    message: tge::message::DATABLOCKS_DOWNLOAD_DONE,
+                                    ghost_count: 0,
+                                });
+                        }
+                    }
+                }
+                for (cmd, ack) in [
+                    (&b"MissionStartPhase1"[..], &b"MissionStartPhase1Ack"[..]),
+                    (b"MissionStartPhase2", b"MissionStartPhase2Ack"),
+                    (b"MissionStartPhase3", b"MissionStartPhase3Ack"),
                 ] {
                     let marker = [b"sent:", cmd].concat();
                     if c.answered(cmd) && !c.answered(&marker) {
@@ -1268,6 +1413,59 @@ mod tests {
         assert!(c.ghost_index(PLAIN_SKY).is_some());
         assert!(c.ghost_index(camera_key(1)).is_some());
         let _ = PROTOCOL_19;
+    }
+
+    #[test]
+    fn protocol_19_players_see_each_other_and_their_moves() {
+        let (mut s, hub, _) = service("spawn 0 0 1\ntgeplayershape octahedron.dts\n");
+        hub.tcp_joined(1, tcp("one"));
+        hub.tcp_joined(2, tcp("two"));
+        let a: SocketAddr = "127.0.0.1:40000".parse().unwrap();
+        let b: SocketAddr = "127.0.0.1:40001".parse().unwrap();
+        handshake(&mut s, a, 19, b"one").unwrap();
+        handshake(&mut s, b, 19, b"two").unwrap();
+        for at in [a, b] {
+            // The Sky, its own Player and the other's (seihai-gserver#188).
+            assert_eq!(s.connection(&at).unwrap().ghost_count(), 3, "{at}");
+        }
+        assert!(s
+            .connection(&a)
+            .unwrap()
+            .ghost_index(avatar_key(2))
+            .is_some());
+        assert!(s
+            .connection(&b)
+            .unwrap()
+            .ghost_index(avatar_key(1))
+            .is_some());
+        assert!(s
+            .connection(&a)
+            .unwrap()
+            .ghost_index(avatar_key(1))
+            .is_none());
+        let mut clients = [
+            (a, FakeClient::new(&PROTOCOL_19)),
+            (b, FakeClient::new(&PROTOCOL_19)),
+        ];
+        let mut now = run_tge(&mut s, &mut clients, 0, 14);
+        assert!(s.connection(&a).unwrap().control_delivered());
+        // Player one walks forward; player two's copy of it follows.
+        for _ in 0..6 {
+            clients[0].1.moves = vec![
+                tge::Move {
+                    y: 32,
+                    ..tge::Move::default()
+                };
+                3
+            ];
+            now = run_tge(&mut s, &mut clients[..], now, 1);
+        }
+        let own = s.connection(&a).unwrap().control_player().unwrap();
+        assert!(own.position[1] > 0.0, "{own:?}");
+        match s.connection(&b).unwrap().ghost(avatar_key(1)) {
+            Some(Ghost::TgePlayer(p)) => assert_eq!(p.state.position, own.position),
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]
