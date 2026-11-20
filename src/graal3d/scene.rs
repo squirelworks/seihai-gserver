@@ -11,8 +11,10 @@
 //!                           the Sky's three unnamed bools (0/1) and solid colour
 //! playershape <shape>       the shape of every player's own object
 //! spawn <x> <y> <z>         where a player's object starts
-//! camera <x> <y> <z>        where each client's Camera sits from the spawn
-//!                           (protocols 21 and 24; default 0 -5 2)
+//! camera <x> <y> <z> [<axis x> <axis y> <axis z> <angle>]
+//!                           where each client's Camera sits from the spawn
+//!                           (protocols 21 and 24; default 0 -5 2), and how it
+//!                           turns; without a rotation it faces the spawn point
 //! tgecontrol player|camera  a protocol 19 client's control object (player)
 //! tgeplayershape <file>     the protocol 19 Player's shape, a TGE .dts; without
 //!                           one those clients get the Camera
@@ -44,6 +46,8 @@ pub struct Scene {
     pub player_shape: Vec<u8>,
     pub spawn: Transform,
     pub camera_offset: Option<[f32; 3]>,
+    /// An axis and an angle in radians; `None` faces the spawn point.
+    pub camera_rotation: Option<[f32; 4]>,
     pub tge_control: TgeControl,
     pub tge_player_shape: Vec<u8>,
     pub weapons: Vec<Weapon3d>,
@@ -160,13 +164,21 @@ impl Scene {
                     }
                     None => false,
                 },
-                ("camera", 4) => match floats::<3>(&w[1..]) {
-                    Some(p) => {
-                        s.camera_offset = Some(p);
-                        true
+                ("camera", 4 | 8) => {
+                    let rot = if w.len() == 8 {
+                        floats::<4>(&w[4..8]).map(Some)
+                    } else {
+                        Some(None)
+                    };
+                    match (floats::<3>(&w[1..4]), rot) {
+                        (Some(p), Some(r)) => {
+                            s.camera_offset = Some(p);
+                            s.camera_rotation = r;
+                            true
+                        }
+                        _ => false,
                     }
-                    None => false,
-                },
+                }
                 ("tgecontrol", 2) => match w[1] {
                     "player" => {
                         s.tge_control = TgeControl::Player;
@@ -238,9 +250,20 @@ mod tests {
         assert_eq!(sky.bools, [0, 1, 0]);
         assert_eq!(s.spawn.position, [10.0, 20.0, 1.0]);
         assert_eq!(s.camera_offset, Some([0.0, -5.0, 2.0]));
+        assert_eq!(s.camera_rotation, None);
         assert_eq!(s.tge_control, TgeControl::Camera);
         assert_eq!(s.tge_player_shape, b"player.dts");
         assert_eq!(s.weapons[0].name, "-walk3d");
+    }
+
+    #[test]
+    fn a_camera_line_may_turn_the_camera() {
+        let (s, errors) = Scene::parse("camera 0 -8 3 1 0 0 -0.3\n");
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(s.camera_offset, Some([0.0, -8.0, 3.0]));
+        assert_eq!(s.camera_rotation, Some([1.0, 0.0, 0.0, -0.3]));
+        let (_, errors) = Scene::parse("camera 0 -8 3 1 0 0\n");
+        assert_eq!(errors.len(), 1);
     }
 
     #[test]
