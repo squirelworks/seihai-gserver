@@ -26,7 +26,7 @@ tokio = { version = "1", features = ["test-util"] }
 # The RC tests log in with Seihai's own RC client. Pin its v0.7.2 repin so
 # npcserver, rc and this crate all declare seihai-core v0.7.2 without a
 # temporary [patch] (squirelworks/seihai-core#79).
-seihai-rc = { git = "https://github.com/squirelworks/seihai-rc", rev = "d9f19d5fc47cbe7fe48e5f948c3bf2eb5d19659f" }
+seihai-rc = { git = "https://github.com/squirelworks/seihai-rc", rev = "d52fc395a7936b41f3bc8dd9082dcf6c42977fe1" }
 
 # PBKDF2 and the codecs are slow unoptimised; the tests log in dozens of times.
 [profile.dev.package."*"]
