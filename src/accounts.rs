@@ -36,6 +36,10 @@
 //! COMMENT warned once for spam
 //! ```
 //!
+//! `COLORS` has 8 values once a NewWorld beta set its own pullover, pants
+//! and border (the slots past the classic five); other builds read the
+//! first five.
+//!
 //! `FOLDER` lines are the RC file browser's rights (`rcfiles.rs`): `r` or
 //! `rw`, then a folder and a file mask.
 //!
@@ -83,6 +87,10 @@ pub struct Account {
     pub head: String,
     pub body: String,
     pub colors: [u8; 5],
+    /// A NewWorld beta's own pullover, pants and border, the COLORS slots
+    /// past the classic five. Kept on the `COLORS` line as values 6 to 8;
+    /// `None` for an account no beta has set them on.
+    pub colors_nw: Option<[u8; 3]>,
     pub status: u8,
     /// Alignment points (player prop 32), 0 to 100. Default 0.
     pub alignment: u8,
@@ -144,6 +152,7 @@ impl Account {
             head: "head0.png".into(),
             body: "body.png".into(),
             colors: [2, 0, 10, 4, 18],
+            colors_nw: None,
             status: 20,
             alignment: 0,
             kills: 0,
@@ -200,9 +209,14 @@ impl Account {
                 "HEAD" => a.head = v.to_string(),
                 "BODY" => a.body = v.to_string(),
                 "COLORS" => {
-                    for (slot, c) in a.colors.iter_mut().zip(v.split(',')) {
-                        *slot = c.trim().parse().unwrap_or(0);
+                    let all: Vec<u8> = v
+                        .split(',')
+                        .map(|c| c.trim().parse().unwrap_or(0))
+                        .collect();
+                    for (slot, c) in a.colors.iter_mut().zip(&all) {
+                        *slot = *c;
                     }
+                    a.colors_nw = all.get(5..8).and_then(|t| t.try_into().ok());
                 }
                 "STATUS" => a.status = v.parse().unwrap_or(0),
                 "ALIGN" => a.alignment = v.parse::<u8>().unwrap_or(0).min(100),
@@ -269,7 +283,16 @@ impl Account {
         kv("SHIELD", format!("{} {}", self.shield.0, self.shield.1));
         kv("HEAD", self.head.clone());
         kv("BODY", self.body.clone());
-        kv("COLORS", self.colors.map(|c| c.to_string()).join(","));
+        let mut colors: Vec<u8> = self.colors.to_vec();
+        colors.extend(self.colors_nw.iter().flatten());
+        kv(
+            "COLORS",
+            colors
+                .iter()
+                .map(u8::to_string)
+                .collect::<Vec<_>>()
+                .join(","),
+        );
         kv("STATUS", self.status.to_string());
         kv("ALIGN", self.alignment.to_string());
         if self.kills > 0 {
@@ -540,7 +563,28 @@ mod tests {
         assert_eq!(Account::parse("Bob", "ALIGN 250\n").alignment, 100);
         assert_eq!(b.sword, (1, "sword1.png".to_string()));
         assert_eq!(b.colors, [2, 0, 10, 4, 18]);
+        assert_eq!(b.colors_nw, None);
+        assert!(a.to_text().contains("COLORS 2,0,10,4,18\n"));
         assert_eq!((b.x, b.y), (30.0, 30.5));
+    }
+
+    /// A NewWorld beta's pullover, pants and border ride on the COLORS line
+    /// as values 6 to 8.
+    #[test]
+    fn eight_colours_round_trip() {
+        let mut a = Account::new("Bob", "start.nw", 30.0, 30.5);
+        a.colors_nw = Some([7, 3, 18]);
+        let text = a.to_text();
+        assert!(text.contains("COLORS 2,0,10,4,18,7,3,18\n"), "{text}");
+        let b = Account::parse("Bob", &text);
+        assert_eq!(
+            (b.colors, b.colors_nw),
+            ([2, 0, 10, 4, 18], Some([7, 3, 18]))
+        );
+        assert_eq!(
+            Account::parse("Bob", "COLORS 1,2,3,4,5,6\n").colors_nw,
+            None
+        );
     }
 
     #[test]

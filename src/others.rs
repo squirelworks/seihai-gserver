@@ -518,9 +518,19 @@ impl Props {
                     }
                 }
                 14 | IPADDR | JOINLEAVELVL | PCONNECTED => {}
-                COLORS if colors_tail.is_some() => {
+                COLORS => {
+                    // A beta's own last three replace the kept ones. Five
+                    // from anyone else (a classic client, an RC, the
+                    // server) keep them: a 2.05 on the same account resends
+                    // its five at every login, and that wiped a beta's
+                    // pullover and pants (lab, 2026-11-20, run 20d).
+                    let kept = self.values.get(&COLORS).and_then(|v| v.get(5..8));
                     let mut v = p.raw.clone();
-                    v.extend_from_slice(colors_tail.unwrap_or_default());
+                    match colors_tail {
+                        Some(t) => v.extend_from_slice(t),
+                        None if v.len() == 5 => v.extend_from_slice(kept.unwrap_or_default()),
+                        None => {}
+                    }
                     if self.values.get(&COLORS) != Some(&v) {
                         c.values.insert(COLORS, v);
                     }
@@ -1228,8 +1238,8 @@ mod tests {
 
     /// A beta's own pullover, pants and border (its last three colours)
     /// are kept and go to the other betas as chosen; 2.05 gets the first
-    /// five. A classic sender later sets five again, and the betas get
-    /// the filled slots (lab, 2026-11-20: nwb1 sent 2,4,4,4,4,4,4,18).
+    /// five. A classic sender's five keep them (lab, 2026-11-20: nwb1 sent
+    /// 2,4,4,4,4,4,4,18).
     #[test]
     fn a_betas_own_last_three_colours_reach_the_other_betas() {
         let nw = ClientProfile::of(ClientVersion::NewWorldB1);
@@ -1259,14 +1269,30 @@ mod tests {
             c.values.get(&COLORS).map(Vec::as_slice),
             Some(&[2, 4, 4, 4, 4, 7, 10, 18].map(gchar)[..])
         );
-        // A five-colour update (an RC, or the server) drops the tail.
+        // A five-colour update (a classic client, an RC, the server)
+        // keeps the beta's three: the same five change nothing, new
+        // ones keep the tail.
         let mut raw5 = vec![gchar(COLORS)];
         raw5.extend([2, 4, 4, 4, 4].map(gchar));
         let c = p.apply(&raw5, ClientVersion::V205);
-        assert_eq!(c.values.get(&COLORS).map(Vec::len), Some(5));
+        assert!(!c.values.contains_key(&COLORS));
+        let mut raw5 = vec![gchar(COLORS)];
+        raw5.extend([1, 1, 1, 1, 1].map(gchar));
+        let c = p.apply(&raw5, ClientVersion::V205);
         assert_eq!(
-            &*for_receiver(&nw, COLORS, &p.values[&COLORS], false),
-            &[2, 4, 4, 4, 4, 4, 4, 18].map(gchar)[..]
+            c.values.get(&COLORS).map(Vec::as_slice),
+            Some(&[1, 1, 1, 1, 1, 7, 10, 18].map(gchar)[..])
+        );
+        assert_eq!(
+            &*for_receiver(&v205, COLORS, &p.values[&COLORS], false),
+            &[1, 1, 1, 1, 1].map(gchar)[..]
+        );
+        // A player who never had a beta's three gets the filled slots.
+        let mut q = Props::default();
+        q.apply(&raw5, ClientVersion::V205);
+        assert_eq!(
+            &*for_receiver(&nw, COLORS, &q.values[&COLORS], false),
+            &[1, 1, 1, 1, 1, 1, 1, 18].map(gchar)[..]
         );
     }
 

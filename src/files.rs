@@ -236,6 +236,18 @@ fn frames_of(bytes: Vec<u8>) -> Vec<Vec<u8>> {
 /// build cannot take a file that big.
 pub fn send_file(version: impl Into<ClientProfile>, f: &Found) -> Option<Vec<Vec<u8>>> {
     let version = version.into();
+    // A build that reads only 8-bit PNGs gets a low-depth one widened.
+    let widened = (version.server.png_8_bit && f.name.to_ascii_lowercase().ends_with(".png"))
+        .then(|| crate::png::widen_to_8_bit(&f.data))
+        .flatten();
+    let widened_found;
+    let f = match widened {
+        Some(data) => {
+            widened_found = Found { data, ..f.clone() };
+            &widened_found
+        }
+        None => f,
+    };
     let prof = version.core;
     let plo = &prof.protocol.plo;
     // The profiles' `plo` sets leave out ids that only come behind
@@ -533,6 +545,54 @@ mod tests {
             assert_eq!(body.len(), len, "{v:?}");
             assert_eq!(body.ends_with(b"PNG\n"), v == ClientVersion::V205, "{v:?}");
         }
+    }
+
+    /// The NewWorld betas get a 4-bit PNG widened to 8 bits; every other
+    /// build gets the file's own bytes, and so do the betas for anything
+    /// but a low-depth PNG.
+    #[test]
+    fn the_betas_get_8_bit_pngs() {
+        // Shaped like the stock head: 4-bit palette with keys.
+        let rows: Vec<Vec<u8>> = (0..40)
+            .map(|y| (0..32).map(|x| ((x + y) % 16) as u8).collect())
+            .collect();
+        let head = crate::png::sample(
+            32,
+            4,
+            3,
+            &rows,
+            0,
+            &[(b"PLTE", &[9u8; 48]), (b"tRNS", &[0])],
+        );
+        let f = Found {
+            name: "head0.png".into(),
+            data: head.clone(),
+            mod_time: 1_700_000_000,
+        };
+        let wide = crate::png::widen_to_8_bit(&head).unwrap();
+        let carries = |v: ClientVersion, bytes: &[u8]| {
+            send_file(v, &f)
+                .unwrap()
+                .concat()
+                .windows(bytes.len())
+                .any(|w| w == bytes)
+        };
+        for v in [ClientVersion::NewWorldB1, ClientVersion::NewWorldB2] {
+            assert!(carries(v, &wide) && !carries(v, &head), "{v:?}");
+        }
+        for v in [
+            ClientVersion::V205,
+            ClientVersion::V222,
+            ClientVersion::V603R7,
+        ] {
+            assert!(carries(v, &head), "{v:?}");
+        }
+        let gif = Found {
+            name: "head0.gif".into(),
+            ..f.clone()
+        };
+        let m = send_file(ClientVersion::NewWorldB1, &gif).unwrap().concat();
+        assert!(m.windows(head.len()).any(|w| w == head), "not a .png name");
     }
 
     /// Every build that reads `PLO_FILE` gets the file whole, small or
