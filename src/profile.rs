@@ -206,11 +206,6 @@ impl ServerProfile {
             ),
         };
         if version == ClientVersion::V205 {
-            // Real 2.05 rev 2 takes a file only with the mod time; sent
-            // without it, the file is dropped and an NPC with that image
-            // is not drawn (Wine lab, 2026-11-05). Other builds before
-            // 2.1 are not checked yet and keep the profile's answer.
-            p.file_modtime = true;
             // 2.05 rev 2 ships the baddy images as `.png` only: sent
             // `baddygray.gif` it draws the shadow but no soldier, and asks
             // for the file (Wine lab, 2026-11-05). beta4 sends `.png` too.
@@ -225,20 +220,6 @@ impl ServerProfile {
             // to 2.04 were not tested and keep the bow slot.
             p.prop10_bow = false;
         }
-        if matches!(
-            version,
-            ClientVersion::NewWorldB1 | ClientVersion::NewWorldB2
-        ) {
-            // The NewWorld betas are side builds of 2.05 and 2.1 and take a
-            // file only with the mod time, as 2.05 rev 2 does. Sent without
-            // it, both betas dropped every file (`block.png`, `head0.png`),
-            // so an NPC with a served image had no size, was walked
-            // through and could not be touched, and its `toweapons` never
-            // ran (Wine lab, 2026-11-20, GwenTea2's Debian VM).
-            // seihai-core says so from its next release; this goes when
-            // gserver, npcserver and rc repin core together.
-            p.file_modtime = true;
-        }
         p
     }
 }
@@ -251,19 +232,14 @@ mod tests {
     fn overrides_are_only_where_a_lab_found_them() {
         for &v in ClientVersion::all_versions() {
             let (p, core) = (ServerProfile::of(v), v.profile());
+            // seihai-core gives 2.05 and the NewWorld betas the mod time
+            // from v0.7.2 on, so it is never overridden.
+            assert_eq!(p.file_modtime, core.files.modtime, "{v:?}");
             if v == ClientVersion::V205 {
-                assert!(p.file_modtime && !core.files.modtime);
                 assert_eq!(p.baddy_image_ext, ".png");
                 assert_eq!(p.image_ext, ".png");
                 assert!(!p.prop10_bow && core.props.bow_prop10);
             } else {
-                let nw = matches!(v, ClientVersion::NewWorldB1 | ClientVersion::NewWorldB2);
-                if nw {
-                    // Drop the override once seihai-core says so too.
-                    assert!(p.file_modtime && !core.files.modtime, "{v:?}");
-                } else {
-                    assert_eq!(p.file_modtime, core.files.modtime, "{v:?}");
-                }
                 assert_eq!(p.baddy_image_ext, core.files.image_ext, "{v:?}");
                 assert_eq!(p.image_ext, core.files.image_ext, "{v:?}");
                 assert_eq!(p.prop10_bow, core.props.bow_prop10, "{v:?}");
