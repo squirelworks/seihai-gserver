@@ -26,7 +26,7 @@
 
 use super::conn::{ClientState, Connection, Key, Mission, Out};
 use super::handshake::{self, ConnectRequest};
-use super::objects::{bits, flags, GameObject, Ghost, Sky};
+use super::objects::{bits, flags, GameObject, Ghost, Sky, Transform};
 use super::scene::{Scene, TgeControl};
 use super::tge;
 use crate::wire::ids::{PLO_FLAGDEL, PLO_FLAGSET, PLO_RAWDATA};
@@ -265,6 +265,27 @@ const PLAIN_SKY: Key = 0x3_0000;
 
 fn avatar_key(p: u16) -> Key {
     AVATAR + u32::from(p)
+}
+
+/// A protocol 21/24 Camera: `offset` from the spawn point, turned by
+/// `rotation` (axis, angle) or else facing the spawn point.
+pub fn camera_transform(
+    spawn: [f32; 3],
+    offset: [f32; 3],
+    rotation: Option<[f32; 4]>,
+) -> Transform {
+    let mut at = spawn;
+    for (p, o) in at.iter_mut().zip(offset) {
+        *p += o;
+    }
+    match rotation {
+        Some(r) => Transform {
+            position: at,
+            axis: [r[0], r[1], r[2]],
+            angle: r[3],
+        },
+        None => Transform::facing(at, spawn),
+    }
 }
 
 fn camera_key(p: u16) -> Key {
@@ -576,10 +597,7 @@ impl Service {
         // object the window stays black (lab 2026-11-20, real 5.12 on
         // Windows 10). `camera` in the world file moves it.
         let off = scene.camera_offset.unwrap_or(DEFAULT_CAMERA_OFFSET);
-        let mut t = scene.spawn;
-        for (p, o) in t.position.iter_mut().zip(off) {
-            *p += o;
-        }
+        let t = camera_transform(scene.spawn.position, off, scene.camera_rotation);
         let camera = GameObject {
             name: format!("G3DCamera_{}", s.account).into_bytes(),
             transform: t,

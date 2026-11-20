@@ -41,7 +41,7 @@ sky <textures> [<visible distance> [<fog r> <g> <b>]]
 skyoptions <b1> <b2> <b3> <solid r> <g> <b>
 playershape <shape>
 spawn <x> <y> <z>
-camera <x> <y> <z>
+camera <x> <y> <z> [<axis x> <axis y> <axis z> <angle>]
 tgecontrol player|camera
 tgeplayershape <file.dts>
 weapon3d <name> <file>
@@ -56,6 +56,9 @@ object house house.dif 4 4 0
 playershape labcube.3ds
 spawn 0 0 1
 ```
+
+A `.3ds` shape needs a material. One with only vertices and faces loads
+without an error, but 5.12 and 4.20r6 draw none of it (lab 2026-11-20).
 
 `weapon3d` files are relative to the world folder and are sent as script
 source over the text channel.
@@ -82,7 +85,14 @@ Every protocol 21/24 client gets a Camera ghost of its own,
 `G3DCamera_<account>`, named as its camera once the client has its create.
 The 5.x client draws its 3D view only through a Camera: with just its control
 object the 3D window stays black. It sits 0 -5 2 from the spawn point unless
-the world file has a `camera` line.
+the world file has a `camera` line, and it faces the spawn point unless that
+line gives a rotation.
+
+Rotations (objects and the camera) are an axis and an angle in radians, and
+the clients turn the opposite way from the right-hand rule: a positive angle
+about +x tilts the view down, a positive angle about +z turns it right
+(forward, +y, swings toward +x). The default camera for `spawn 0 0 1` is the
+same as `camera 0 -5 2 1 0 0 0.38`.
 
 ## Not done yet
 
@@ -94,9 +104,8 @@ the world file has a `camera` line.
 - No TerrainBlock, and no movetype on GameObjects.
 - 3.153 has been seen to crash on the first frame in the C++ fork; the cause
   is unknown.
-- With the default Camera the 5.12 draws the sky and fog, but the world's
-  objects were not seen from it in the lab; a better default view is open.
-- 4.20r6 (protocol 21) gets the Camera too but has not been run.
+- The Linux 4.20r6 (`G3D22126`) links as protocol 24, so the protocol 21
+  path has not been run; no Windows 4.20r6 was found.
 - 3.151, 3.153 and 4.20r8 have not been run against this server.
 
 ## Lab runs
@@ -117,6 +126,17 @@ the world file has a `camera` line.
 | main with `camera 0 -5 2` added to the world | Windows 10 VM | Sky and fog drawn. |
 | with the default Camera | Windows 10 VM, 4 runs | Sky and fog drawn every time. Camera ghost in seq 2, control object delivered in seq 3. |
 | with the default Camera | Wine (Debian VM) | 3D view drawn, the Wine box still on top. |
+
+2026-11-20, the default Camera facing the spawn (`spawn 0 0 1`, objects at
+the origin), loopback only:
+
+| Client | Shape | Result |
+|---|---|---|
+| 5.12, Windows 10 VM | `labcube.3ds` (no material) | Sky and fog, no cube from any camera, also with the sky behind it. |
+| 5.12, Windows 10 VM | the same cube with one red material | Cube drawn and lit by the sun. |
+| 5.12, Windows 10 VM, right-handed facing angle (first try) | red cube | View tilted up into the sky box, no cube. |
+| 5.12, Windows 10 VM, angle negated (this change) | red cube | Cube centred, seen from above. |
+| 4.20r6 Linux (`G3D22126`), native in a Debian VM | red cube | Logged in, linked, cube centred. With `labcube.3ds` no cube. |
 
 What the runs and breakpoints showed (hardware breakpoints through the VM's
 debugger; a debugger inside the guest makes the client exit):
