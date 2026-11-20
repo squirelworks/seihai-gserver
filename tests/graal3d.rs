@@ -184,7 +184,11 @@ fn a_512_reaches_its_control_object_and_leaves_with_its_tcp_session() {
             GameObject::default().read(b, &mut Vec::new()).unwrap();
             control = Some(index);
         }
-        assert!(!b.flag().unwrap(), "no camera in this world");
+        // Its own Camera, named once its create is in.
+        if b.flag().unwrap() {
+            b.int(12).unwrap();
+            assert!(!b.flag().unwrap(), "no camera packet data");
+        }
         assert!(!b.flag().unwrap(), "no fov");
         for ev in events.read(b, &classes).unwrap() {
             if let Some(c) = events.command(&ev) {
@@ -229,8 +233,8 @@ fn a_512_reaches_its_control_object_and_leaves_with_its_tcp_session() {
     ghosts.dedup();
     assert_eq!(
         ghosts,
-        vec!["0 Sun", "1 Sky", "2 house", "3 G3DPlayer_lab3d"],
-        "the world and the player's own object"
+        vec!["0 Sun", "1 Sky", "2 house", "3 G3DPlayer_lab3d", "4 Camera"],
+        "the world, the player's own object and its Camera"
     );
     assert_eq!(control, Some(3), "its own object is its control object");
 

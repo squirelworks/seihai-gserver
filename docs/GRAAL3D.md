@@ -76,6 +76,14 @@ client's `s`/`w`/`t` lines, which go to the world as flags, weapons and
 trigger actions). Protocol 19 moves are read and applied to the Player, and
 each move is acked.
 
+## The camera (protocols 21 and 24)
+
+Every protocol 21/24 client gets a Camera ghost of its own,
+`G3DCamera_<account>`, named as its camera once the client has its create.
+The 5.x client draws its 3D view only through a Camera: with just its control
+object the 3D window stays black. It sits 0 -5 2 from the spawn point unless
+the world file has a `camera` line.
+
 ## Not done yet
 
 - `weapon3d` scripts are sent as source, not compiled to bytecode, and the
@@ -86,9 +94,9 @@ each move is acked.
 - No TerrainBlock, and no movetype on GameObjects.
 - 3.153 has been seen to crash on the first frame in the C++ fork; the cause
   is unknown.
-- 5.12 links and gets its control object, but stays on the "Starting 3D
-  mode..." box, as it does with the C++ fork: the switch to the 3D view after
-  the control object is still unknown.
+- With the default Camera the 5.12 draws the sky and fog, but the world's
+  objects were not seen from it in the lab; a better default view is open.
+- 4.20r6 (protocol 21) gets the Camera too but has not been run.
 - 3.151, 3.153 and 4.20r8 have not been run against this server.
 
 ## Lab runs
@@ -100,6 +108,30 @@ each move is acked.
 | 4.04r2, native Linux (protocol 19) | 3 of 3 runs: linked, datablocks loaded, Sky and Player ghosts, mission start done, control object delivered. The client logged "Initial Control Object" and "Graal3D has been activated!". The link held 96 s. |
 | 4.04r2, Windows under Wine | Crashes while starting 3D, before sending anything (a Wine limit). |
 | 5.12, Windows under Wine (protocol 24) | Linked, assets downloaded, ghosts and mission start done, control object delivered, link held 97 s. Stays on "Starting 3D mode...", the same as the C++ fork. In 2 of 5 runs the client never opened TCP to the 3D server after the lobby warp (a client-side race; holding the lobby link open 20 s avoided it for 4.x). |
+
+2026-11-20, the same world (no `camera` line), real 5.12 (protocol 24):
+
+| Server | Where | Result |
+|---|---|---|
+| main before this change | Windows 10 VM, 2 runs | Logged in, control object delivered, the "Lab 3D" window black. No "Starting 3D mode..." box. |
+| main with `camera 0 -5 2` added to the world | Windows 10 VM | Sky and fog drawn. |
+| with the default Camera | Windows 10 VM, 4 runs | Sky and fog drawn every time. Camera ghost in seq 2, control object delivered in seq 3. |
+| with the default Camera | Wine (Debian VM) | 3D view drawn, the Wine box still on top. |
+
+What the runs and breakpoints showed (hardware breakpoints through the VM's
+debugger; a debugger inside the guest makes the client exit):
+
+- The "Starting 3D mode..." box belongs to the launcher, `Graal.exe`, not to
+  the Torque engine. The launcher shows it while it loads `Graal3DEngine.dll`
+  and hides it right after. No packet decides this. Under Wine the hidden
+  window stays on screen; on Windows 10 it goes away.
+- The 5.12 login finished on the old build too: the client took the control
+  object (login step 5) and ran the step 6 switch to the 3D GUI with no file
+  download pending. Its `console.log` never prints the step 5 line.
+- The Torque "Connecting..." window is another one. `PLO_SERVERLISTCONNECTED`
+  (190) closes it, and the login burst already sends it.
+- The 2026-11-12 C++ fork run that drew the view had a `camera` line. The
+  2026-11-19 world did not.
 
 The log counts moves: `first move received`, then every hundredth, and the
 total when the link closes.
