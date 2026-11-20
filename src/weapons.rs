@@ -753,10 +753,18 @@ mod lab_chat {
         // draws on the level, in tiles, so it never showed (#174).
         let s = seihai_core::scripting::gs2::Script::parse(code).unwrap();
         let d = s.disassemble();
-        assert_eq!(d.matches("\"showtext\"").count(), 3, "{d}");
-        assert_eq!(d.matches("\"changeimgvis\"").count(), 3, "{d}");
+        assert_eq!(d.matches("\"showtext\"").count(), 1, "{d}");
+        assert_eq!(d.matches("\"changeimgvis\"").count(), 1, "{d}");
+        assert!(d.find("\"showtext\"") < d.find("\"changeimgvis\""), "{d}");
         // Backspace cuts by a number, not by the text `strlen(...)-1`.
         assert!(!d.contains("\"strlen(\""), "{d}");
+        // A held space is written between words, as its own string; a
+        // trailing one was lost on 5.24r4 and 6.03r7 (lab 2026-11-20).
+        assert!(d.contains("\" \""), "{d}");
+        // Weapons are off while the line is open, so letters do not fire
+        // one; Escape (27) is left to the client, whose quit box it opens.
+        assert!(d.contains("\"disableweapons\"") && d.contains("\"enableweapons\""));
+        assert!(!d.contains("\"27\""), "{d}");
         assert!(w.message(ClientVersion::V603R7).is_some());
         assert!(w.bytecode_message(ClientVersion::V603R7).is_some());
     }

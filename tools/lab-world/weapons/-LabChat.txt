@@ -2,31 +2,62 @@ GRAWP001
 REALNAME -LabChat
 IMAGE
 SCRIPT
-// Lab chat for 5.x/6.x, which have no chat bar of their own: type a
-// line and press Enter to say it; Backspace deletes, Escape clears.
+// Lab chat for 5.x/6.x, which have no chat bar of their own. Enter opens
+// the line, Enter again says it (Enter on an empty line just closes it);
+// Backspace deletes. While the line is open, weapons are off, so letters
+// do not also fire one (D dropped a bomb on 6.03r7).
 // keypressed gives #p(0) the virtual-key code and #p(1) the character.
 // The line is image 200 on the screen layer (changeimgvis 4), where x and
 // y are screen pixels. The index alone does not put it there: on 5.x/6.x
-// the GS2 showtext draws on the level, in tiles, so y = screenheight-24
-// was far below the level (#174).
+// the GS2 showtext draws on the level, in tiles (#174).
+// A space is held in this.sp and written only with the next character:
+// a trailing space was lost, so "two words" became "twowords".
+// Escape is not used: on 5.24r4 it opens the client's own quit box.
 if (created || playerenters) {
   setstring this.line,;
-  showtext 200,8,screenheight-24,Arial,b,> ;
-  changeimgvis 200,4;
+  this.on = 0;
+  this.sp = 0;
+  hideimg 200;
 }
 if (keypressed) {
   if (strequals(#p(0),13)) {
-    setplayerprop #c,#s(this.line);
-    setstring this.line,;
-  } else if (strequals(#p(0),8)) {
-    this.n = strlen(#s(this.line)) - 1;
-    setstring this.line,#e(0,#v(this.n),#s(this.line));
-  } else if (strequals(#p(0),27)) {
-    setstring this.line,;
-  } else if (strlen(#p(1)) == 1) {
-    setstring this.line,#s(this.line)#p(1);
+    if (this.on) {
+      if (strlen(#s(this.line)) > 0) {
+        setplayerprop #c,#s(this.line);
+      }
+      setstring this.line,;
+      this.on = 0;
+      this.sp = 0;
+      enableweapons;
+      hideimg 200;
+    } else {
+      this.on = 1;
+      disableweapons;
+    }
+  } else if (this.on) {
+    if (strequals(#p(0),8)) {
+      if (this.sp) {
+        this.sp = 0;
+      } else {
+        this.n = strlen(#s(this.line)) - 1;
+        setstring this.line,#e(0,#v(this.n),#s(this.line));
+      }
+    } else if (strequals(#p(0),32)) {
+      if (strlen(#s(this.line)) > 0) {
+        this.sp = 1;
+      }
+    } else if (strlen(#p(1)) == 1) {
+      if (this.sp) {
+        setstring this.line,#s(this.line) #p(1);
+        this.sp = 0;
+      } else {
+        setstring this.line,#s(this.line)#p(1);
+      }
+    }
   }
-  showtext 200,8,screenheight-24,Arial,b,> #s(this.line);
-  changeimgvis 200,4;
+  if (this.on) {
+    showtext 200,8,screenheight-24,Arial,b,> #s(this.line);
+    changeimgvis 200,4;
+  }
 }
 SCRIPTEND
