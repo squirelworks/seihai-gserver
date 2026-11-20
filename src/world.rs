@@ -1100,7 +1100,7 @@ impl Leaving {
             a.alignment = v.min(100);
         }
         // COLORS: the classic five, and a NewWorld beta's last three when
-        // the world holds 8 (`Props::apply_colors`). Five drop the three.
+        // the world holds 8 (`Props::apply_colors`).
         if let Some(v) = self.props.get(&COLORS_PROP) {
             let c: Vec<u8> = v.iter().map(|b| b.wrapping_sub(0x20)).collect();
             if let Some(five) = c.get(..5) {
@@ -4275,7 +4275,7 @@ mod tests {
     /// A NewWorld beta's own pullover, pants and border last past the
     /// session: the account keeps all 8 COLORS on leave, the next join
     /// puts them back in the world, and a classic five-colour update
-    /// drops them again.
+    /// keeps them.
     #[test]
     fn a_betas_eight_colours_persist() {
         let mut was = crate::accounts::Account::new("nwbone", "start.nw", 30.0, 30.0);
@@ -4311,7 +4311,8 @@ mod tests {
             (a.colors, a.colors_nw),
             ([2, 0, 10, 4, 18], Some([7, 5, 18]))
         );
-        // A 2.05 on the same account sets five colours: the three go.
+        // A 2.05 on the same account sets five colours: the three stay
+        // (lab, 2026-11-20, run 20d: they were wiped before).
         let mut raw = vec![gchar(COLORS_PROP)];
         raw.extend([1, 1, 1, 1, 1].map(gchar));
         p.apply(&raw, ClientVersion::V205);
@@ -4320,7 +4321,7 @@ mod tests {
             ..Default::default()
         }
         .apply_to(&mut a);
-        assert_eq!((a.colors, a.colors_nw), ([1, 1, 1, 1, 1], None));
+        assert_eq!((a.colors, a.colors_nw), ([1, 1, 1, 1, 1], Some([7, 5, 18])));
     }
 
     #[test]
