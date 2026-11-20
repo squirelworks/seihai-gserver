@@ -68,6 +68,8 @@ pub struct Server {
     pub wordfilter: crate::wordfilter::WordFilter,
     /// The 3D side (`graal3d`), when `graal3d = true`. Started by `run`.
     pub graal3d: Option<Arc<crate::graal3d::Graal3d>>,
+    /// Which NewWorld beta `G2N15041` is served as (`newworld_beta`).
+    newworld_beta: u8,
 }
 
 impl Server {
@@ -141,6 +143,7 @@ impl Server {
             .graal3d
             .then(|| Arc::new(crate::graal3d::Graal3d::new()));
         Server {
+            newworld_beta: cfg.newworld_beta,
             graal3d,
             wordfilter,
             files: crate::files::FileStore::new(&cfg.world),
@@ -457,7 +460,7 @@ impl Conn {
         };
 
         let login = match login::parse(line, &self.server.extra_tokens) {
-            Ok(l) => l,
+            Ok(l) => login::with_newworld_beta(l, self.server.newworld_beta),
             Err(e) => {
                 self.server.log(&self.peer, &format!("login refused: {e}"));
                 // A known type that is not served yet (RC, NC) is refused
@@ -1950,15 +1953,6 @@ impl Session {
                 PLI_SHOOT2 => server.world.shoot(self.id, true, payload),
                 PLI_NPCWEAPONDEL => server.world.npc_weapon_del(self.id, payload),
                 PLI_PLAYERPROPS => {
-                    if let Some(v) = crate::others::newworld_build(self.version, payload) {
-                        server.log(
-                            peer,
-                            &format!("sent props 43 to 45: served as {} from here on", v.label()),
-                        );
-                        self.version = v;
-                        self.profile = crate::profile::ClientProfile::of(v);
-                        server.world.build(self.id, v);
-                    }
                     let bow = self.profile.server.prop10_bow;
                     // From here on COLORS is 5 bytes whatever the build sent.
                     let payload = &*crate::others::colors_to_five(payload, &self.profile);

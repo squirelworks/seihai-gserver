@@ -63,28 +63,6 @@ pub fn newworld(v: ClientVersion) -> bool {
     matches!(v, ClientVersion::NewWorldB1 | ClientVersion::NewWorldB2)
 }
 
-/// The build a NewWorld player's prop stream proves, when it is not the
-/// one the connection is served as. Both betas log in with the same line
-/// (`G2N15041`, the same six props), so the server serves both as beta 1,
-/// whose packets are a subset of beta 2's. Only beta 2's prop writer, from
-/// the 2.1 test base, has GMAPLEVELX, GMAPLEVELY and Z (43 to 45; Graal_analysis
-/// `version-profiles/141-217.toml`, `v21test.props_sent_add`): the first
-/// stream with one of them is beta 2.
-pub fn newworld_build(served: ClientVersion, raw: &[u8]) -> Option<ClientVersion> {
-    if served != ClientVersion::NewWorldB1 {
-        return None;
-    }
-    let sent = usize::from(ClientProfile::of(served).core.props.colors_sent);
-    parse_player_props_sized(raw, bow_prop10(served), sent, None)
-        .iter()
-        .any(|p| (GMAPLEVELX..=Z).contains(&p.id))
-        .then_some(ClientVersion::NewWorldB2)
-}
-
-/// Props only the 2.1 base writes (`newworld_build`).
-const GMAPLEVELX: u8 = 43;
-const Z: u8 = 45;
-
 pub const JOINLEAVELVL: u8 = 50;
 pub const PCONNECTED: u8 = 51;
 /// Level name on another player (`PLPROP_CURLEVEL`). Original 1.28
@@ -1236,24 +1214,6 @@ mod tests {
         if gif.server.image_ext == ".gif" {
             assert_eq!(f(&gif, "bodynw.png"), named("body.gif"));
         }
-    }
-
-    /// Beta 2 is told from beta 1 by the first prop only its 2.1 base
-    /// writes (43 to 45); anything else, or any other build, stays.
-    #[test]
-    fn newworld_beta_2_is_told_by_props_43_to_45() {
-        let b1 = ClientVersion::NewWorldB1;
-        let mut raw = vec![gchar(COLORS)];
-        raw.extend([1, 2, 3, 4, 5, 6, 7, 8].map(gchar));
-        raw.extend([gchar(X), gchar(60)]);
-        assert_eq!(newworld_build(b1, &raw), None);
-        raw.extend([gchar(45), gchar(10)]);
-        assert_eq!(newworld_build(b1, &raw), Some(ClientVersion::NewWorldB2));
-        assert_eq!(newworld_build(ClientVersion::NewWorldB2, &raw), None);
-        assert_eq!(
-            newworld_build(ClientVersion::V210, &[gchar(43), gchar(1)]),
-            None
-        );
     }
 
     /// Every build reads the whole message, and sees the nickname and the
