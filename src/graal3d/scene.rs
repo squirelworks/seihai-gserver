@@ -11,7 +11,8 @@
 //!                           the Sky's three unnamed bools (0/1) and solid colour
 //! playershape <shape>       the shape of every player's own object
 //! spawn <x> <y> <z>         where a player's object starts
-//! camera <x> <y> <z>        give each client a Camera this far from the spawn
+//! camera <x> <y> <z>        where each client's Camera sits from the spawn
+//!                           (protocols 21 and 24; default 0 -5 2)
 //! tgecontrol player|camera  a protocol 19 client's control object (player)
 //! tgeplayershape <file>     the protocol 19 Player's shape, a TGE .dts; without
 //!                           one those clients get the Camera

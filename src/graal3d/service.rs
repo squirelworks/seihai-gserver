@@ -256,6 +256,10 @@ struct Session {
 
 const AVATAR: Key = 0x1_0000;
 const CAMERA: Key = 0x2_0000;
+
+/// Where a protocol 21/24 client's Camera sits from the spawn point when the
+/// world file has no `camera` line: behind it and above.
+pub const DEFAULT_CAMERA_OFFSET: [f32; 3] = [0.0, -5.0, 2.0];
 /// Protocol 19's plain Sky, when the world has none.
 const PLAIN_SKY: Key = 0x3_0000;
 
@@ -567,19 +571,22 @@ impl Service {
                 .set_ghost(avatar_key(*other), Ghost::GameObject(a.clone()));
         }
         s.conn.set_control_object(avatar_key(id));
-        if let Some(off) = scene.camera_offset {
-            let mut t = scene.spawn;
-            for (p, o) in t.position.iter_mut().zip(off) {
-                *p += o;
-            }
-            let camera = GameObject {
-                name: format!("G3DCamera_{}", s.account).into_bytes(),
-                transform: t,
-                ..GameObject::default()
-            };
-            s.conn.set_ghost(camera_key(id), Ghost::Camera(camera));
-            s.conn.set_camera_object(camera_key(id));
+        // Every protocol 21/24 client gets a Camera of its own. The 5.12
+        // client draws its 3D view only through one: with just the control
+        // object the window stays black (lab 2026-11-20, real 5.12 on
+        // Windows 10). `camera` in the world file moves it.
+        let off = scene.camera_offset.unwrap_or(DEFAULT_CAMERA_OFFSET);
+        let mut t = scene.spawn;
+        for (p, o) in t.position.iter_mut().zip(off) {
+            *p += o;
         }
+        let camera = GameObject {
+            name: format!("G3DCamera_{}", s.account).into_bytes(),
+            transform: t,
+            ..GameObject::default()
+        };
+        s.conn.set_ghost(camera_key(id), Ghost::Camera(camera));
+        s.conn.set_camera_object(camera_key(id));
     }
 
     /// Runs every connection: sends what is due, closes the quiet ones.
@@ -1092,8 +1099,8 @@ mod tests {
         for at in [a, b] {
             let c = s.connection(&at).unwrap();
             assert!(c.control_delivered(), "{at}");
-            // The Sun, the house and both players.
-            assert_eq!(c.ghost_count(), 4);
+            // The Sun, the house, both players and its own Camera.
+            assert_eq!(c.ghost_count(), 5);
         }
         // The initial flags went out as one events text.
         let texts: Vec<String> = clients[0]
@@ -1160,6 +1167,17 @@ mod tests {
         assert_eq!(out[0].1[0], handshake::kind::DISCONNECT);
         assert_eq!(s.link_count(), 0);
         assert!(!hub.is_linked(1));
+    }
+
+    #[test]
+    fn a_protocol_24_client_gets_a_camera_without_a_camera_line() {
+        let (mut s, hub, _) = service("spawn 1 2 3\n");
+        hub.tcp_joined(1, tcp("one"));
+        let a: SocketAddr = "127.0.0.1:40000".parse().unwrap();
+        handshake(&mut s, a, 24, b"one").unwrap();
+        let c = s.connection(&a).unwrap();
+        assert!(c.ghost_index(camera_key(1)).is_some());
+        assert!(c.ghost_index(avatar_key(1)).is_some());
     }
 
     #[test]
