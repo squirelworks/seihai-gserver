@@ -116,8 +116,8 @@ pub struct Config {
     /// one players reach, e.g. behind NAT or a port forward.
     pub listserver_ip: String,
     /// The 3D mode (`graal3d.rs`, `docs/GRAAL3D.md`): a Torque UDP server
-    /// for the 3.153 to 5.x clients beside the TCP one, and the listing
-    /// name starts with `3 `. Off by default.
+    /// for the 3.153 to 5.x clients beside the TCP one, and the server is
+    /// listed at HQ level 4 (tagged `3 `). Off by default.
     pub graal3d: bool,
     /// Its UDP port; 0 (the default) is `port` + 1, the port the clients use.
     pub graal3d_port: u16,

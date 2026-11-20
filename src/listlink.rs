@@ -13,7 +13,8 @@
 //! link, for a listserver that does not know the handshake.
 //!
 //! Inside, the classic link: `SVO_REGISTERV3` (30) as one line, then zlib
-//! frames. Sent: `NEWSERVER` (22), `SETPLYR` (7), `PLYRADD` (14),
+//! frames. Sent: `NEWSERVER` (22), `SERVERHQLEVEL` (24, 3D servers
+//! only), `SETPLYR` (7), `PLYRADD` (14),
 //! `PLYRREM` (15), `VERIACC2` (17), `SERVERINFO` (25, a player's server
 //! warp), `SVO_PMPLAYER` (29), `SETIP` (5) as
 //! the keep-alive, and `SVO_PING` (16) only as the answer to the
@@ -56,6 +57,10 @@ mod svo {
     pub const PING: u8 = 16;
     pub const VERIACC2: u8 = 17;
     pub const NEWSERVER: u8 = 22;
+    /// The server's HQ level, one GCHAR: 0 hidden, 1 bronze, 2 classic,
+    /// 3 gold, 4 Graal3D. The listserver puts the level's tag in front of
+    /// the name on a tagged list (`3 ` for 4).
+    pub const SERVERHQLEVEL: u8 = 24;
     /// A private message for a player on another server.
     pub const PMPLAYER: u8 = 29;
     pub const REGISTERV3: u8 = 30;
@@ -476,6 +481,9 @@ fn hello(cfg: &Config, players: &BTreeMap<u16, ListedPlayer>) -> io::Result<Vec<
         gstr(&mut p, f);
     }
     let mut body = message(svo::NEWSERVER, &p);
+    if cfg.graal3d {
+        body.extend(message(svo::SERVERHQLEVEL, &[gchar(HQ_LEVEL_3D)]));
+    }
     body.extend(message(svo::SETPLYR, b""));
     for player in players.values() {
         body.extend(plyradd(player));
@@ -484,13 +492,19 @@ fn hello(cfg: &Config, players: &BTreeMap<u16, ListedPlayer>) -> io::Result<Vec<
     Ok(out)
 }
 
-/// The listed name. A 3D server's starts with `3 `: the 3.153 to 5.x
-/// clients open the 3D link on that alone (the client strips it to show).
+/// HQ level 4, Graal3D: the listserver tags the name `3 `, and the 3.153
+/// to 5.x clients open the 3D link on that tag alone (the client strips it
+/// to show the name). A `3 ` in the name itself is not enough: the
+/// listserver puts the HQ tag in front of it (bronze `H ` when no level is
+/// sent), and Mac 3.153 reads only the first tag (lab, 2026-11-20).
+const HQ_LEVEL_3D: u8 = 4;
+
+/// The listed name. A 3D server's is sent without a leading `3 `: HQ level
+/// 4 puts the tag there, and a second one would show in the list.
 fn listed_name(cfg: &Config) -> String {
-    if cfg.graal3d && !cfg.name.starts_with("3 ") {
-        format!("3 {}", cfg.name)
-    } else {
-        cfg.name.clone()
+    match cfg.name.strip_prefix("3 ") {
+        Some(rest) if cfg.graal3d => rest.to_string(),
+        _ => cfg.name.clone(),
     }
 }
 
@@ -1189,6 +1203,44 @@ fn wait_or_apply(rx: &Receiver<Cmd>, state: &Mutex<State>, d: Duration) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The `NEWSERVER` .. `SETPLYR` frame of `hello`, unpacked into
+    /// (id, payload) messages.
+    fn hello_messages(cfg: &Config) -> Vec<(u8, Vec<u8>)> {
+        let out = hello(cfg, &BTreeMap::new()).unwrap();
+        let register = out.iter().position(|&b| b == b'\n').unwrap() + 1;
+        let frame = &out[register..];
+        let len = u16::from_be_bytes([frame[0], frame[1]]) as usize;
+        let body = zlib_decompress(&frame[2..2 + len]).unwrap();
+        body.split(|&b| b == b'\n')
+            .filter(|m| !m.is_empty())
+            .map(|m| (m[0] - 32, m[1..].to_vec()))
+            .collect()
+    }
+
+    #[test]
+    fn a_3d_server_is_listed_at_hq_level_4_without_a_name_prefix() {
+        let mut cfg = Config::defaults(Path::new("w"));
+        assert!(cfg.apply("name = Lab\ngraal3d = true\n").is_empty());
+        let msgs = hello_messages(&cfg);
+        let ids: Vec<u8> = msgs.iter().map(|(id, _)| *id).collect();
+        assert_eq!(ids, [svo::NEWSERVER, svo::SERVERHQLEVEL, svo::SETPLYR]);
+        assert_eq!(msgs[1].1, [4 + 32]);
+        // The first NEWSERVER field is the name: GCHAR length, then the text.
+        assert_eq!(msgs[0].1[0] - 32, 3);
+        assert_eq!(&msgs[0].1[1..4], b"Lab");
+
+        // A `3 ` the owner wrote is taken off; the HQ tag carries it.
+        assert!(cfg.apply("name = 3 Lab\n").is_empty());
+        assert_eq!(listed_name(&cfg), "Lab");
+
+        // A 2D server sends no level (the listserver keeps its default)
+        // and its name as written.
+        assert!(cfg.apply("graal3d = false\n").is_empty());
+        assert_eq!(listed_name(&cfg), "3 Lab");
+        let ids: Vec<u8> = hello_messages(&cfg).iter().map(|(id, _)| *id).collect();
+        assert_eq!(ids, [svo::NEWSERVER, svo::SETPLYR]);
+    }
 
     #[test]
     fn listed_ip_is_auto_unless_set() {
