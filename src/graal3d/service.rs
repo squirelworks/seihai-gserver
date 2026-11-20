@@ -695,15 +695,17 @@ impl Service {
         if self.scene.tge_player_shape.is_empty() {
             return None;
         }
-        let state = self.tge_seen.get(&p).copied().unwrap_or_else(|| {
-            tge::PlayerState {
+        let state = self
+            .tge_seen
+            .get(&p)
+            .copied()
+            .unwrap_or_else(|| tge::PlayerState {
                 position: self
                     .avatars
                     .get(&p)
                     .map_or(self.scene.spawn.position, |a| a.transform.position),
                 ..tge::PlayerState::default()
-            }
-        });
+            });
         Some(Ghost::TgePlayer(tge::Player {
             state,
             shape: self.scene.tge_player_shape.clone(),
@@ -1181,15 +1183,18 @@ mod tests {
             for (_, c) in clients.iter_mut() {
                 for ev in std::mem::take(&mut c.got) {
                     if let crate::graal3d::events::Event::ConnectionMessage {
-                        sequence, message, ..
+                        sequence,
+                        message,
+                        ..
                     } = ev
                     {
                         if message == tge::message::DATABLOCKS_DONE {
-                            c.events.send(crate::graal3d::events::Event::ConnectionMessage {
-                                sequence,
-                                message: tge::message::DATABLOCKS_DOWNLOAD_DONE,
-                                ghost_count: 0,
-                            });
+                            c.events
+                                .send(crate::graal3d::events::Event::ConnectionMessage {
+                                    sequence,
+                                    message: tge::message::DATABLOCKS_DOWNLOAD_DONE,
+                                    ghost_count: 0,
+                                });
                         }
                     }
                 }
@@ -1423,9 +1428,21 @@ mod tests {
             // The Sky, its own Player and the other's (seihai-gserver#188).
             assert_eq!(s.connection(&at).unwrap().ghost_count(), 3, "{at}");
         }
-        assert!(s.connection(&a).unwrap().ghost_index(avatar_key(2)).is_some());
-        assert!(s.connection(&b).unwrap().ghost_index(avatar_key(1)).is_some());
-        assert!(s.connection(&a).unwrap().ghost_index(avatar_key(1)).is_none());
+        assert!(s
+            .connection(&a)
+            .unwrap()
+            .ghost_index(avatar_key(2))
+            .is_some());
+        assert!(s
+            .connection(&b)
+            .unwrap()
+            .ghost_index(avatar_key(1))
+            .is_some());
+        assert!(s
+            .connection(&a)
+            .unwrap()
+            .ghost_index(avatar_key(1))
+            .is_none());
         let mut clients = [
             (a, FakeClient::new(&PROTOCOL_19)),
             (b, FakeClient::new(&PROTOCOL_19)),
