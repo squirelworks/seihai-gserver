@@ -81,31 +81,89 @@ What works today:
 
 RC support and server-side NPC scripts are later stages.
 
-## Build and run
+## Getting started
+
+1. Get the program: download the archive for your system from the
+   [Releases page](https://github.com/squirelworks/seihai-gserver/releases), or
+   build it from source (below).
+2. Start from the sample world in [`world/`](world/): copy the folder somewhere
+   of your own. It has the settings file, the version list and an empty
+   accounts folder. Put your levels in a `levels/` folder inside it; without
+   one, the server makes a plain generated board as the start level.
+3. Make an account and start the server:
 
 ```
-cargo build --release
-cargo test
-
-# the sample world in world/ listens on 127.0.0.1:14802
-./target/release/seihai-gserver --world world
-# make an account (the password comes from an environment variable)
-GRAAL_PW=labpw ./target/release/seihai-gserver account test1 --password-env GRAAL_PW --world world
+GRAAL_PW=labpw seihai-gserver account test1 --password-env GRAAL_PW --world world
+seihai-gserver --world world
 ```
 
-`--create-accounts` (or `create_accounts = true` in `config/server.txt`)
-makes an account on its first login instead; use it in a lab only.
-`--verbose` logs every message id the server does not handle yet. Every
-setting is listed with its default in
-[`world/config/server.txt`](world/config/server.txt).
-
-Then log in with Seihai (see its README) or a real client on loopback:
+The server now listens on `127.0.0.1:14802`, so only this machine can join. Log
+in with Seihai (see its README) or a real client on loopback:
 
 ```
 seihai-mae --online 127.0.0.1:14802 --account test1 --password-env GRAAL_PW --version 2.05
 ```
 
-### The 1998 relay
+To move an existing GServer-v2 server over, `seihai-gserver import-v2 SRC --world
+DIR` makes a new world from its folder (see
+[docs/GSERVER-V2-WORLD.md](docs/GSERVER-V2-WORLD.md)).
+
+## Build
+
+Install Rust from [rustup.rs](https://rustup.rs/) the first time, then:
+
+```
+git clone https://github.com/squirelworks/seihai-gserver.git
+cd seihai-gserver
+cargo build --release
+cargo test
+```
+
+The program is then at `target/release/seihai-gserver`.
+
+## Command line
+
+Every command takes `--world DIR`, the world folder; without it, the current
+folder is the world.
+
+| Command | What it does |
+| --- | --- |
+| `seihai-gserver [--world DIR] [--bind IP] [--port N] [--create-accounts] [--verbose]` | Runs the server. `--bind` and `--port` override `bind` and `port` in the settings; `--create-accounts` makes an account on its first login (lab use only); `--verbose` logs every message id the server does not handle yet |
+| `seihai-gserver account NAME --password-env VAR` | Makes an account, or sets its password, from the environment variable `VAR` |
+| `seihai-gserver ban NAME [--for 30m\|12h\|3d\|2w] [--reason TEXT] [--admin NAME]` | Bans an account, or an address (`ip:ADDR`) or a machine (`machine:ID`). Without `--for` the ban lasts until it is lifted. It takes effect at the next login and does not apply to staff accounts |
+| `seihai-gserver unban NAME` | Lifts a ban. Lifting an account's ban also lifts the machine bans the anti-cheat made with it |
+| `seihai-gserver key-fingerprint` | Prints the secure-login public key and its fingerprint. It reads the key file and never makes one |
+| `seihai-gserver import-v2 SRC` | Makes a new world from a GServer-v2 server folder: settings, the version list, accounts, staff, bans, levels and files |
+| `seihai-gserver relay [--bind IP] [--port N] [--max-clients N]` | Runs the separate 1998 relay (below); defaults `127.0.0.1`, port 14801, 128 clients |
+| `seihai-gserver --help`, `--version` | Prints the usage or the version |
+
+## Settings
+
+The server reads `config/server.txt` in the world folder: one `key = value` per
+line, `#` for comments, every line optional. The sample
+[`world/config/server.txt`](world/config/server.txt) lists every setting with its
+default and a comment. The main groups:
+
+| Settings | What they set |
+| --- | --- |
+| `name`, `description`, `bind`, `port`, `max_players` | The server's name in the list, where it listens and how many players it takes |
+| `start_level`, `start_x`, `start_y`, `start_message`, `status_list` | Where new accounts start and what they see at login |
+| `create_accounts`, `password_checks`, `login_rate`, `login_rate_loopback`, `login_timeout` | Account creation and login limits |
+| `heartbeat`, `ping`, `ping_misses`, `idle_timeout` | Keepalives and timeouts |
+| `rules`, `respawn_time`, `horse_lifetime`, `baddy_respawn_time`, `alignment_time`, `revive_dead`, `put_npcs`, `board_tile` | Game rules: `v2` plays as GServer-v2, `1999` as the original 1999 servers ([docs/ORIGINAL-SERVERS.md](docs/ORIGINAL-SERVERS.md)) |
+| `gpaks` | Resource packages pushed at login |
+| `secure_login_key`, `require_secure_login` | The Seihai secure login (below) |
+| `npcserver`, `npcserver_bind`, `npcserver_port`, `npcserver_token`, `npcserver_path` | The NPC-server link: `off`, `auto` (start seihai-npcserver for you) or `external` |
+| `lobby_port`, `lobby_host` | The Login lobby that 4.x to 6.x clients connect to first |
+| `listserver`, `listserver_secure`, `listserver_key`, `listserver_accounts`, `listserver_ip` | Registering with a listserver and checking passwords through it |
+| `newworld_beta` | Which NewWorld beta the shared login token is served as |
+| `anticheat`, `anticheat_log`, `anticheat_rate`, `anticheat.*` | The optional anti-cheat checks, off by default |
+
+Other files in `config/`: `allowedversions.txt` (which client versions may log
+in), `bans.txt` (bans), `gpakkeys.txt` (package keys, never served) and
+`boardrules.txt` (the board changes the anti-cheat's board check allows).
+
+## The 1998 relay
 
 For the older, account-free room/peer protocol, use the separate relay:
 
@@ -119,7 +177,7 @@ See
 [early networking and explicit endpoints](docs/ANCIENT-NETWORKING.md) for the
 1998 relay versus 1999 GSERV distinction, room compatibility and test limits.
 
-### Secure login (SEI00001)
+## Secure login (SEI00001)
 
 Seihai clients started with `--secure-login` send the version token
 `SEI00001`: the account and password go encrypted (X25519 key exchange,
