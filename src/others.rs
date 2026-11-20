@@ -81,7 +81,8 @@ const SHIELD: u8 = 9;
 const HEAD: u8 = 11;
 /// Colour indexes (`PLPROP_COLORS`): 5 bytes in every build but the
 /// NewWorld betas, which send and read 8 (`Props::colors_sent`,
-/// `Props::colors_read`). The server keeps 5.
+/// `Props::colors_read`). The server keeps 5 for every build, and a
+/// beta's own last three after them (`colors_to_five`).
 const COLORS: u8 = 13;
 const STATUS: u8 = 18;
 const BODY: u8 = 35;
@@ -315,7 +316,8 @@ pub fn for_receiver<'a>(
     }
 }
 
-/// COLORS (13) as `width` bytes, from the 5 the server keeps.
+/// COLORS (13) as `width` bytes, from the 5 the server keeps (or 8, when
+/// a NewWorld beta sent its own).
 ///
 /// Cut for a build that reads fewer. The NewWorld betas read 8: skin, coat,
 /// sleeves, shoes, belt, pullover, pants, border (their `readmenw.txt`).
@@ -368,30 +370,42 @@ fn body_for(nw: bool, v: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// A prop stream as `sender`'s build writes it, with COLORS (13) cut to
-/// the 5 bytes the server keeps. The NewWorld betas send 8 (lab, 2026-11-19);
-/// the last three are not known and are dropped. Every other build's stream comes back as it
-/// is. Bytes after the last prop the parser reads are kept as sent.
-pub fn colors_to_five<'a>(raw: &'a [u8], sender: &ClientProfile) -> std::borrow::Cow<'a, [u8]> {
+/// the classic 5 bytes, so every parser after this one reads the stream
+/// the usual way, and the bytes cut off it. The NewWorld betas send 8
+/// (lab, 2026-11-19): the last three are the beta's own pullover, pants
+/// and border, which go to the world beside the stream
+/// ([`Props::apply_colors`]) and on to the other betas. Every other
+/// build's stream comes back as it is, with no tail. Bytes after the last
+/// prop the parser reads are kept as sent.
+pub fn colors_to_five<'a>(
+    raw: &'a [u8],
+    sender: &ClientProfile,
+) -> (std::borrow::Cow<'a, [u8]>, Option<Vec<u8>>) {
     use std::borrow::Cow;
     let sent = usize::from(sender.core.props.colors_sent);
     if sent == 5 {
-        return Cow::Borrowed(raw);
+        return (Cow::Borrowed(raw), None);
     }
     let props = parse_player_props_sized(raw, sender.server.prop10_bow, sent, None);
     let mut out = Vec::with_capacity(raw.len());
+    let mut tail = None;
     let mut used = 0;
     for p in &props {
         used += 1 + p.raw.len();
         out.push(gchar(p.id));
         let keep = if p.id == COLORS {
-            p.raw.len().min(5)
+            let keep = p.raw.len().min(5);
+            if p.raw.len() > 5 {
+                tail = Some(p.raw[5..].to_vec());
+            }
+            keep
         } else {
             p.raw.len()
         };
         out.extend_from_slice(&p.raw[..keep]);
     }
     out.extend_from_slice(&raw[used..]);
-    Cow::Owned(out)
+    (Cow::Owned(out), tail)
 }
 
 /// [`for_receiver`]'s image rule; `None` when nothing changes.
@@ -476,6 +490,20 @@ impl Props {
     /// Apply a prop stream as `sender`'s build writes it; returns what
     /// changed.
     pub fn apply(&mut self, raw: &[u8], sender: ClientVersion) -> Change {
+        self.apply_colors(raw, sender, None)
+    }
+
+    /// [`Props::apply`], with the colour bytes past the classic five that
+    /// [`colors_to_five`] cut off the stream (a NewWorld beta's pullover,
+    /// pants and border). They are kept on the end of COLORS (13), so the
+    /// other betas get the slots the player chose, and every other build
+    /// still gets the first five (`for_receiver`).
+    pub fn apply_colors(
+        &mut self,
+        raw: &[u8],
+        sender: ClientVersion,
+        colors_tail: Option<&[u8]>,
+    ) -> Change {
         let bow = bow_prop10(sender);
         let mut c = Change::default();
         for p in parse_player_props_with(raw, bow) {
@@ -490,6 +518,13 @@ impl Props {
                     }
                 }
                 14 | IPADDR | JOINLEAVELVL | PCONNECTED => {}
+                COLORS if colors_tail.is_some() => {
+                    let mut v = p.raw.clone();
+                    v.extend_from_slice(colors_tail.unwrap_or_default());
+                    if self.values.get(&COLORS) != Some(&v) {
+                        c.values.insert(COLORS, v);
+                    }
+                }
                 id => {
                     if self.values.get(&id) != Some(&p.raw) {
                         c.values.insert(id, p.raw.clone());
@@ -1157,11 +1192,12 @@ mod tests {
         let mut raw = vec![gchar(COLORS)];
         raw.extend([1, 2, 3, 4, 5, 6, 7, 8].map(gchar));
         raw.extend([gchar(X), gchar(60)]);
-        let five = colors_to_five(&raw, &nw);
+        let (five, tail) = colors_to_five(&raw, &nw);
         let mut want = vec![gchar(COLORS)];
         want.extend([1, 2, 3, 4, 5].map(gchar));
         want.extend([gchar(X), gchar(60)]);
         assert_eq!(&*five, &want[..]);
+        assert_eq!(tail.as_deref(), Some(&[6, 7, 8].map(gchar)[..]));
         let mut p = Props::default();
         let c = p.apply(&five, ClientVersion::NewWorldB1);
         assert_eq!(c.x, Some(30.0));
@@ -1169,7 +1205,7 @@ mod tests {
         let v205 = ClientProfile::of(ClientVersion::V205);
         assert!(matches!(
             colors_to_five(&want, &v205),
-            std::borrow::Cow::Borrowed(_)
+            (std::borrow::Cow::Borrowed(_), None)
         ));
         let five = [1, 2, 3, 4, 5].map(gchar);
         assert_eq!(for_receiver(&nw, COLORS, &five, false).len(), 8);
@@ -1188,6 +1224,50 @@ mod tests {
         let v205 = ClientProfile::of(ClientVersion::V205);
         assert_eq!(&*for_receiver(&nw, COLORS, &eight, false), &eight[..]);
         assert_eq!(&*for_receiver(&v205, COLORS, &eight, false), &five[..]);
+    }
+
+    /// A beta's own pullover, pants and border (its last three colours)
+    /// are kept and go to the other betas as chosen; 2.05 gets the first
+    /// five. A classic sender later sets five again, and the betas get
+    /// the filled slots (lab, 2026-11-20: nwb1 sent 2,4,4,4,4,4,4,18).
+    #[test]
+    fn a_betas_own_last_three_colours_reach_the_other_betas() {
+        let nw = ClientProfile::of(ClientVersion::NewWorldB1);
+        let v205 = ClientProfile::of(ClientVersion::V205);
+        let mut raw = vec![gchar(COLORS)];
+        raw.extend([2, 4, 4, 4, 4, 7, 9, 18].map(gchar));
+        let (five, tail) = colors_to_five(&raw, &nw);
+        let mut p = Props::default();
+        let c = p.apply_colors(&five, ClientVersion::NewWorldB1, tail.as_deref());
+        let kept = c.values.get(&COLORS).expect("colours change").clone();
+        assert_eq!(kept, [2, 4, 4, 4, 4, 7, 9, 18].map(gchar));
+        assert_eq!(p.values.get(&COLORS), Some(&kept));
+        let to_nw = for_receiver(&nw, COLORS, &kept, false);
+        assert_eq!(&*to_nw, &[2, 4, 4, 4, 4, 7, 9, 18].map(gchar)[..]);
+        let to_205 = for_receiver(&v205, COLORS, &kept, false);
+        assert_eq!(&*to_205, &[2, 4, 4, 4, 4].map(gchar)[..]);
+        // The same eight again: no change to pass on.
+        let (five, tail) = colors_to_five(&raw, &nw);
+        let c = p.apply_colors(&five, ClientVersion::NewWorldB1, tail.as_deref());
+        assert!(!c.values.contains_key(&COLORS));
+        // Only the pants change: the change carries all eight.
+        let mut raw2 = vec![gchar(COLORS)];
+        raw2.extend([2, 4, 4, 4, 4, 7, 10, 18].map(gchar));
+        let (five, tail) = colors_to_five(&raw2, &nw);
+        let c = p.apply_colors(&five, ClientVersion::NewWorldB1, tail.as_deref());
+        assert_eq!(
+            c.values.get(&COLORS).map(Vec::as_slice),
+            Some(&[2, 4, 4, 4, 4, 7, 10, 18].map(gchar)[..])
+        );
+        // A five-colour update (an RC, or the server) drops the tail.
+        let mut raw5 = vec![gchar(COLORS)];
+        raw5.extend([2, 4, 4, 4, 4].map(gchar));
+        let c = p.apply(&raw5, ClientVersion::V205);
+        assert_eq!(c.values.get(&COLORS).map(Vec::len), Some(5));
+        assert_eq!(
+            &*for_receiver(&nw, COLORS, &p.values[&COLORS], false),
+            &[2, 4, 4, 4, 4, 4, 4, 18].map(gchar)[..]
+        );
     }
 
     /// Stock bodies go to the sheet the receiver draws.

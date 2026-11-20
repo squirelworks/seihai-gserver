@@ -216,6 +216,18 @@ impl ServerProfile {
             // to 2.04 were not tested and keep the bow slot.
             p.prop10_bow = false;
         }
+        if matches!(
+            version,
+            ClientVersion::NewWorldB1 | ClientVersion::NewWorldB2
+        ) {
+            // The NewWorld betas are side builds of 2.05 and 2.1 and take a
+            // file only with the mod time, as 2.05 rev 2 does. Sent without
+            // it, both betas dropped every file (`block.png`, `head0.png`),
+            // so an NPC with a served image had no size, was walked
+            // through and could not be touched, and its `toweapons` never
+            // ran (Wine lab, 2026-11-20, GwenTea2's Debian VM).
+            p.file_modtime = true;
+        }
         p
     }
 }
@@ -234,7 +246,13 @@ mod tests {
                 assert_eq!(p.image_ext, ".png");
                 assert!(!p.prop10_bow && core.props.bow_prop10);
             } else {
-                assert_eq!(p.file_modtime, core.files.modtime, "{v:?}");
+                let nw = matches!(v, ClientVersion::NewWorldB1 | ClientVersion::NewWorldB2);
+                if nw {
+                    // Drop the override once seihai-core says so too.
+                    assert!(p.file_modtime && !core.files.modtime, "{v:?}");
+                } else {
+                    assert_eq!(p.file_modtime, core.files.modtime, "{v:?}");
+                }
                 assert_eq!(p.baddy_image_ext, core.files.image_ext, "{v:?}");
                 assert_eq!(p.image_ext, core.files.image_ext, "{v:?}");
                 assert_eq!(p.prop10_bow, core.props.bow_prop10, "{v:?}");

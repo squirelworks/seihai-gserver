@@ -178,7 +178,11 @@ pub enum WorldIn {
         reply: oneshot::Sender<Result<Joined, Refused>>,
     },
     /// `PLI_PLAYERPROPS` (2), as sent.
-    Props { player: u16, raw: Vec<u8> },
+    Props {
+        player: u16,
+        raw: Vec<u8>,
+        colors_tail: Option<Vec<u8>>,
+    },
     /// `PLI_TRIGGERACTION` (38), as sent.
     TriggerAction { player: u16, raw: Vec<u8> },
     /// `PLI_LEVELWARP` (0) or `PLI_LEVELWARPMOD` (30).
@@ -553,10 +557,13 @@ impl World {
     }
 
     /// A player's prop update, as the client sent it.
-    pub fn props(&self, player: u16, raw: &[u8]) {
+    /// `colors_tail` is the colour bytes a NewWorld beta sent past the
+    /// classic five (`others::colors_to_five`).
+    pub fn props(&self, player: u16, raw: &[u8], colors_tail: Option<Vec<u8>>) {
         let _ = self.tx.send(WorldIn::Props {
             player,
             raw: raw.to_vec(),
+            colors_tail,
         });
     }
 
@@ -1332,7 +1339,11 @@ impl WorldTask {
                 }
                 let _ = reply.send(n);
             }
-            WorldIn::Props { player, raw } => self.props(player, &raw),
+            WorldIn::Props {
+                player,
+                raw,
+                colors_tail,
+            } => self.props(player, &raw, colors_tail.as_deref()),
             WorldIn::TriggerAction { player, raw } => self.trigger_action(player, &raw),
             WorldIn::NpcProps { player, raw } => self.npc_props(player, &raw),
             WorldIn::BaddyProps { player, raw } => self.baddy_props(player, &raw),
@@ -3018,7 +3029,7 @@ impl WorldTask {
     }
 
     /// A player's own prop update, passed on to the others in the level.
-    fn props(&mut self, id: u16, raw: &[u8]) {
+    fn props(&mut self, id: u16, raw: &[u8], colors_tail: Option<&[u8]>) {
         let Some(p) = self.players.get_mut(&id) else {
             return;
         };
@@ -3043,7 +3054,7 @@ impl WorldTask {
             p.props.values().get(&CARRY).cloned(),
         );
         let pk_on = self.rules.pk_flag(p.version) && status_of(&p.props) & PK_FLAG != 0;
-        let mut change = p.props.apply(raw, p.version);
+        let mut change = p.props.apply_colors(raw, p.version, colors_tail);
         // Under the flag a living player's own hearts are not taken
         // (GServer 1.28 beta 2 and 1.3; `rules = 1999`, builds before 1.3).
         if pk_on && change.has(HEARTS) && hearts_of(hearts_before.as_ref()) > 0 {
@@ -3729,11 +3740,18 @@ impl WorldTask {
             [t, item, ..] if t.wrapping_sub(0x20) == 0 => {
                 match crate::weapons::default_name(item.wrapping_sub(0x20)) {
                     Some(n) => n.to_string(),
-                    None => return,
+                    None => {
+                        eprintln!(
+                            "player {id}: weapon add refused: item {} is no default weapon",
+                            item.wrapping_sub(0x20)
+                        );
+                        return;
+                    }
                 }
             }
             [_, rest @ ..] => {
                 let Some(npc_id) = seihai_core::protocol::read_gint3(rest) else {
+                    eprintln!("player {id}: weapon add refused: no NPC id");
                     return;
                 };
                 let Some(npc) = self
@@ -3741,13 +3759,19 @@ impl WorldTask {
                     .get(&p.level)
                     .and_then(|l| l.iter().find(|n| n.id == npc_id as u32))
                 else {
+                    eprintln!(
+                        "player {id}: weapon add refused: NPC {npc_id} is not in {}",
+                        p.level
+                    );
                     return;
                 };
                 let Some(script) = &npc.script else {
+                    eprintln!("player {id}: weapon add refused: NPC {npc_id} has no script");
                     return;
                 };
                 let source = script.prepared().source().to_string();
                 let Some(name) = crate::weapons::toweapons_name(&source).into_iter().next() else {
+                    eprintln!("player {id}: weapon add refused: NPC {npc_id} has no toweapons");
                     return;
                 };
                 if self.weapons.get(&name).is_none() {
@@ -4320,7 +4344,7 @@ mod tests {
         // Bob (2.31) walks with X2/Y2; Alice (2.05) sees it.
         let mut raw = vec![crate::wire::gchar(78)];
         crate::wire::gshort(seihai_core::protocol::encode_pos_precise(12.5), &mut raw);
-        w.props(bob, &raw);
+        w.props(bob, &raw, None);
         w.left(carol);
         // Bob logs out: Alice sees him go.
         w.left(bob);
@@ -4373,8 +4397,8 @@ mod tests {
         };
         // Ben and Cat each walk five steps within one tick.
         for step in 1..=5 {
-            w.props(ids[1], &walk(10.0 + step as f32));
-            w.props(ids[2], &walk(20.0 + step as f32));
+            w.props(ids[1], &walk(10.0 + step as f32), None);
+            w.props(ids[2], &walk(20.0 + step as f32), None);
         }
         tokio::time::sleep(TICK * 2).await;
         // Amy gets one body: one message per mover, at the last step.
@@ -5032,7 +5056,7 @@ mod bench {
                     );
                     raw.push(crate::wire::gchar(79));
                     crate::wire::gshort(seihai_core::protocol::encode_pos_precise(20.0), &mut raw);
-                    w.props(id, &raw);
+                    w.props(id, &raw, None);
                 }
             }
             let s = Instant::now();
