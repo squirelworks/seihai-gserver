@@ -260,8 +260,40 @@ const CAMERA: Key = 0x2_0000;
 /// Where a protocol 21/24 client's Camera sits from the spawn point when the
 /// world file has no `camera` line: behind it and above.
 pub const DEFAULT_CAMERA_OFFSET: [f32; 3] = [0.0, -5.0, 2.0];
-/// Protocol 19's plain Sky, when the world has none.
+/// The plain Sky of protocols 19 and 21, when the world has none.
 const PLAIN_SKY: Key = 0x3_0000;
+
+/// The Skies a protocol 19 or 21 client gets: the world's, each with its
+/// material list padded to the 7 names the client reads, or a plain Sky
+/// when the world has none. Both builds read the scene's Sky and its
+/// seventh name without a null check (4.04r2 and 4.20r6 Mac labs).
+fn padded_skies(objects: &[Ghost]) -> Vec<(Key, Sky)> {
+    let mut out: Vec<(Key, Sky)> = objects
+        .iter()
+        .enumerate()
+        .filter_map(|(i, o)| match o {
+            Ghost::Sky(k) => Some((
+                i as Key + 1,
+                Sky {
+                    material_list: tge::sky_material_list(&k.material_list, b"g3d_sky"),
+                    ..k.clone()
+                },
+            )),
+            _ => None,
+        })
+        .collect();
+    if out.is_empty() {
+        out.push((
+            PLAIN_SKY,
+            Sky {
+                bools: [0, 0, 0],
+                material_list: tge::sky_material_list(b"", b"g3d_sky"),
+                ..Sky::default()
+            },
+        ));
+    }
+    out
+}
 
 fn avatar_key(p: u16) -> Key {
     AVATAR + u32::from(p)
@@ -539,24 +571,8 @@ impl Service {
             // 3.153 and 4.04r2: a Sky (the world's, else a plain one: 4.04r2
             // reads the scene's Sky without a null check) and one Player, or
             // with `tgecontrol camera` a Camera, as the control object.
-            let mut sky = false;
-            for (i, o) in scene.objects.iter().enumerate() {
-                if let Ghost::Sky(k) = o {
-                    let padded = Sky {
-                        material_list: tge::sky_material_list(&k.material_list, b"g3d_sky"),
-                        ..k.clone()
-                    };
-                    s.conn.set_ghost(i as Key + 1, Ghost::Sky(padded));
-                    sky = true;
-                }
-            }
-            if !sky {
-                let plain = Sky {
-                    bools: [0, 0, 0],
-                    material_list: tge::sky_material_list(b"", b"g3d_sky"),
-                    ..Sky::default()
-                };
-                s.conn.set_ghost(PLAIN_SKY, Ghost::Sky(plain));
+            for (key, sky) in padded_skies(&scene.objects) {
+                s.conn.set_ghost(key, Ghost::Sky(sky));
             }
             let player =
                 scene.tge_control == TgeControl::Player && !scene.tge_player_shape.is_empty();
@@ -584,8 +600,21 @@ impl Service {
             s.conn.set_control_object(camera_key(id));
             return;
         }
+        // 4.20r6 (protocol 21) reads the scene's Sky and that Sky's seventh
+        // texture name on its first 3D frame without a null check, as
+        // protocol 19 does, and crashed there with no Sky or with six names
+        // (lab 2026-11-20, real Mac 4.20r6 in a Tiger VM). So it gets
+        // protocol 19's Skies. 5.12 (protocol 24) draws without them.
+        let p21 = s.conn.profile().protocol == 21;
         for (i, o) in scene.objects.iter().enumerate() {
-            s.conn.set_ghost(i as Key + 1, o.clone());
+            if !(p21 && matches!(o, Ghost::Sky(_))) {
+                s.conn.set_ghost(i as Key + 1, o.clone());
+            }
+        }
+        if p21 {
+            for (key, sky) in padded_skies(&scene.objects) {
+                s.conn.set_ghost(key, Ghost::Sky(sky));
+            }
         }
         for (other, a) in &self.avatars {
             s.conn
@@ -1196,6 +1225,36 @@ mod tests {
         let c = s.connection(&a).unwrap();
         assert!(c.ghost_index(camera_key(1)).is_some());
         assert!(c.ghost_index(avatar_key(1)).is_some());
+    }
+
+    /// 4.20r6 (protocol 21) crashed on its first 3D frame with no Sky and
+    /// with a six-name Sky; it gets protocol 19's Skies. Protocol 24 gets
+    /// the world's as written.
+    #[test]
+    fn a_protocol_21_client_gets_a_sky_with_seven_names() {
+        let names = |g: Option<&Ghost>| match g {
+            Some(Ghost::Sky(k)) => k.material_list.split(|b| *b == b',').count(),
+            other => panic!("{other:?}"),
+        };
+        let (mut s, hub, _) = service("spawn 1 2 3\n");
+        hub.tcp_joined(1, tcp("one"));
+        hub.tcp_joined(2, tcp("two"));
+        let a: SocketAddr = "127.0.0.1:40000".parse().unwrap();
+        let b: SocketAddr = "127.0.0.1:40001".parse().unwrap();
+        handshake(&mut s, a, 21, b"one").unwrap();
+        handshake(&mut s, b, 24, b"two").unwrap();
+        assert_eq!(names(s.connection(&a).unwrap().ghost(PLAIN_SKY)), 7);
+        assert!(s.connection(&b).unwrap().ghost(PLAIN_SKY).is_none());
+
+        let (mut s, hub, _) = service("sky a,b,c,d,e,f 500\nspawn 1 2 3\n");
+        hub.tcp_joined(1, tcp("one"));
+        hub.tcp_joined(2, tcp("two"));
+        handshake(&mut s, a, 21, b"one").unwrap();
+        handshake(&mut s, b, 24, b"two").unwrap();
+        let (p21, p24) = (s.connection(&a).unwrap(), s.connection(&b).unwrap());
+        assert!(p21.ghost(PLAIN_SKY).is_none());
+        assert_eq!(names(p21.ghost(1)), 7);
+        assert_eq!(names(p24.ghost(1)), 6);
     }
 
     #[test]
