@@ -636,6 +636,9 @@ impl Conn {
             flags: account.flags.clone(),
             staff: account.staff,
             weapons: account.weapons.clone(),
+            colors_tail: account
+                .colors_nw
+                .map(|t| t.iter().map(|&c| crate::wire::gchar(c)).collect()),
             machines: machines.clone(),
             ip: match self.peer.ip() {
                 std::net::IpAddr::V4(v4) => Some(v4),

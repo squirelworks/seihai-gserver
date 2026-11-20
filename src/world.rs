@@ -373,6 +373,9 @@ pub struct Joining {
     pub staff: bool,
     /// The weapons the account holds (`WEAPON` lines).
     pub weapons: Vec<String>,
+    /// A NewWorld beta's own last three COLORS bytes from the account
+    /// (pullover, pants, border), `GCHAR`-coded; `props` has the five.
+    pub colors_tail: Option<Vec<u8>>,
     /// The machine ids from the login line, banned with the account when
     /// the anti-cheat bans it.
     pub machines: Vec<String>,
@@ -1096,6 +1099,15 @@ impl Leaving {
         if let Some(v) = byte(ALIGNMENT) {
             a.alignment = v.min(100);
         }
+        // COLORS: the classic five, and a NewWorld beta's last three when
+        // the world holds 8 (`Props::apply_colors`). Five drop the three.
+        if let Some(v) = self.props.get(&COLORS_PROP) {
+            let c: Vec<u8> = v.iter().map(|b| b.wrapping_sub(0x20)).collect();
+            if let Some(five) = c.get(..5) {
+                a.colors.copy_from_slice(five);
+                a.colors_nw = c.get(5..8).and_then(|t| t.try_into().ok());
+            }
+        }
         a.kills = self.kills;
         a.deaths = self.deaths;
         a.chests = self.chests.clone();
@@ -1240,7 +1252,11 @@ impl WorldTask {
                     let gmap = self.gmap_of(who.version, &level.name);
                     if let Some(p) = self.players.get_mut(&id) {
                         p.level = level.name.to_ascii_lowercase();
-                        p.props.apply(&who.props, ClientVersion::V222);
+                        p.props.apply_colors(
+                            &who.props,
+                            ClientVersion::V222,
+                            who.colors_tail.as_deref(),
+                        );
                         // Original 1.28 introductions carry nickname and
                         // level (#132); own_props does not emit prop 20.
                         p.props.set_level(&level.name);
@@ -4174,6 +4190,7 @@ mod tests {
             deaths: 0,
             staff: false,
             weapons: Vec::new(),
+            colors_tail: None,
             machines: Vec::new(),
             ip: None,
         }
@@ -4253,6 +4270,57 @@ mod tests {
         }
         .apply_to(&mut b);
         assert_eq!(b.rupees, 100);
+    }
+
+    /// A NewWorld beta's own pullover, pants and border last past the
+    /// session: the account keeps all 8 COLORS on leave, the next join
+    /// puts them back in the world, and a classic five-colour update
+    /// drops them again.
+    #[test]
+    fn a_betas_eight_colours_persist() {
+        let mut was = crate::accounts::Account::new("nwbone", "start.nw", 30.0, 30.0);
+        was.colors_nw = Some([7, 3, 18]);
+        let joined = crate::burst::own_props(
+            ClientVersion::V222,
+            &crate::burst::Player {
+                id: 1,
+                account: &was,
+                leader: false,
+            },
+        );
+        let tail: Vec<u8> = [7, 3, 18].map(gchar).to_vec();
+        let mut p = Props::default();
+        p.apply_colors(&joined, ClientVersion::V222, Some(&tail));
+        assert_eq!(p.values()[&COLORS_PROP].len(), 8);
+        // The beta changes its pants in the session.
+        let five = [2, 0, 10, 4, 18].map(gchar);
+        let mut raw = vec![gchar(COLORS_PROP)];
+        raw.extend(five);
+        p.apply_colors(
+            &raw,
+            ClientVersion::NewWorldB1,
+            Some(&[7, 5, 18].map(gchar)),
+        );
+        let mut a = crate::accounts::Account::new("nwbone", "start.nw", 30.0, 30.0);
+        Leaving {
+            props: p.values().clone(),
+            ..Default::default()
+        }
+        .apply_to(&mut a);
+        assert_eq!(
+            (a.colors, a.colors_nw),
+            ([2, 0, 10, 4, 18], Some([7, 5, 18]))
+        );
+        // A 2.05 on the same account sets five colours: the three go.
+        let mut raw = vec![gchar(COLORS_PROP)];
+        raw.extend([1, 1, 1, 1, 1].map(gchar));
+        p.apply(&raw, ClientVersion::V205);
+        Leaving {
+            props: p.values().clone(),
+            ..Default::default()
+        }
+        .apply_to(&mut a);
+        assert_eq!((a.colors, a.colors_nw), ([1, 1, 1, 1, 1], None));
     }
 
     #[test]
@@ -4853,6 +4921,8 @@ fn parse_pm(raw: &[u8], narrow: bool) -> Option<(Vec<u16>, &[u8])> {
 
 /// Player prop 32: alignment points (AP), 0 to 100.
 const ALIGNMENT: u8 = 32;
+/// Player prop 13, the colour indexes.
+const COLORS_PROP: u8 = 13;
 
 /// The counted props the items check guards: max hearts, hearts (in
 /// halves), gralats, arrows, bombs.

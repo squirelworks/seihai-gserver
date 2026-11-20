@@ -367,7 +367,15 @@ pub fn own_props(version: impl Into<ClientProfile>, p: &Player) -> Vec<u8> {
     let mut h = vec![gchar(100 + head.len() as u8)];
     h.extend_from_slice(head);
     put(11, &h);
-    put(13, &a.colors.map(gchar));
+    // COLORS with a beta's own last three when the account has them; a
+    // build that reads 5 gets them cut (`others::for_receiver`).
+    let colors: Vec<u8> = a
+        .colors
+        .iter()
+        .chain(a.colors_nw.iter().flatten())
+        .map(|&c| gchar(c))
+        .collect();
+    put(13, &colors);
     let mut id = Vec::new();
     gshort(p.id, &mut id);
     put(14, &id);
@@ -490,6 +498,38 @@ mod tests {
             assert_eq!(len, bytes.len(), "{v:?}: {parsed:?}");
             assert!(parsed.iter().any(|p| p.id == 0), "{v:?} gets its nickname");
         }
+    }
+
+    /// An account's 8 COLORS go to a NewWorld beta whole and to every
+    /// other build as the classic five.
+    #[test]
+    fn own_colours_follow_the_account() {
+        let mut a = account();
+        a.colors_nw = Some([7, 3, 18]);
+        let p = Player {
+            id: 7,
+            account: &a,
+            leader: true,
+        };
+        let colors = |v: ClientVersion| {
+            let prof = v.profile();
+            let bow = crate::profile::ServerProfile::of(v).prop10_bow;
+            seihai_core::protocol::parse_player_props_sized(
+                &own_props(v, &p),
+                bow,
+                usize::from(prof.props.colors_read),
+                Some(&prof.props.own),
+            )
+            .into_iter()
+            .find(|p| p.id == 13)
+            .map(|p| p.raw.iter().map(|b| b - 0x20).collect::<Vec<u8>>())
+        };
+        assert_eq!(
+            colors(ClientVersion::NewWorldB1).unwrap(),
+            [2, 0, 10, 4, 18, 7, 3, 18]
+        );
+        assert_eq!(colors(ClientVersion::V222).unwrap(), [2, 0, 10, 4, 18]);
+        assert_eq!(colors(ClientVersion::V205).unwrap(), [2, 0, 10, 4, 18]);
     }
 
     /// Gralats past prop 3's 2,097,151 go to a 6.x client as prop 83, held

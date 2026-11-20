@@ -113,6 +113,9 @@ pub struct ServerProfile {
     /// Reads prop 83, a `GINT5` gralat count up to 999,999,999, for counts
     /// past prop 3's 2,097,151 (`burst::own_props`).
     pub gralats_83: bool,
+    /// Reads only 8-bit PNGs: a 1, 2 or 4-bit one is widened before it is
+    /// sent (`png.rs`). The NewWorld betas.
+    pub png_8_bit: bool,
 }
 
 /// Builds that read and write another player's id as one `GCHAR`: up to
@@ -195,6 +198,12 @@ impl ServerProfile {
             // The 1.x line shares the status prop's layout.
             status_4_swims: version.label().starts_with("1."),
             gralats_83: GRALATS_83.contains(&version),
+            // The betas draw a 4-bit PNG garbled (stock `head0.png`, Wine
+            // lab, 2026-11-20); everything they ship is 8-bit.
+            png_8_bit: matches!(
+                version,
+                ClientVersion::NewWorldB1 | ClientVersion::NewWorldB2
+            ),
         };
         if version == ClientVersion::V205 {
             // Real 2.05 rev 2 takes a file only with the mod time; sent
@@ -226,6 +235,8 @@ impl ServerProfile {
             // so an NPC with a served image had no size, was walked
             // through and could not be touched, and its `toweapons` never
             // ran (Wine lab, 2026-11-20, GwenTea2's Debian VM).
+            // seihai-core says so from its next release; this goes when
+            // gserver, npcserver and rc repin core together.
             p.file_modtime = true;
         }
         p
