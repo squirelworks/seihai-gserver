@@ -68,6 +68,8 @@ pub struct Server {
     pub wordfilter: crate::wordfilter::WordFilter,
     /// The 3D side (`graal3d`), when `graal3d = true`. Started by `run`.
     pub graal3d: Option<Arc<crate::graal3d::Graal3d>>,
+    /// Which NewWorld beta `G2N15041` is served as (`newworld_beta`).
+    newworld_beta: u8,
 }
 
 impl Server {
@@ -141,6 +143,7 @@ impl Server {
             .graal3d
             .then(|| Arc::new(crate::graal3d::Graal3d::new()));
         Server {
+            newworld_beta: cfg.newworld_beta,
             graal3d,
             wordfilter,
             files: crate::files::FileStore::new(&cfg.world),
@@ -457,7 +460,7 @@ impl Conn {
         };
 
         let login = match login::parse(line, &self.server.extra_tokens) {
-            Ok(l) => l,
+            Ok(l) => login::with_newworld_beta(l, self.server.newworld_beta),
             Err(e) => {
                 self.server.log(&self.peer, &format!("login refused: {e}"));
                 // A known type that is not served yet (RC, NC) is refused

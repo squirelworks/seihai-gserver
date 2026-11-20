@@ -212,6 +212,16 @@ pub fn version_for(token: &str, gen: EncryptionGen) -> Option<ClientVersion> {
     })
 }
 
+/// `login` as the server serves it when a `G2N15041` login is to be
+/// NewWorld beta 2 (`newworld_beta = 2`): the token names both betas and
+/// [`version_for`] takes beta 1.
+pub fn with_newworld_beta(mut login: Login, beta: u8) -> Login {
+    if beta == 2 && login.version == Some(ClientVersion::NewWorldB1) {
+        login.version = Some(ClientVersion::NewWorldB2);
+    }
+    login
+}
+
 /// Read the login line. `extra_tokens` are tokens from the allow-list that
 /// `seihai-core` has no profile for; they help tell a gen-2 line from a
 /// gen-3 one.
@@ -503,6 +513,25 @@ mod tests {
         assert_eq!(version_for("G2N15041", v.encryption()), Some(v));
         assert_eq!(seihai_core::protocol::serve_as("G2N15041"), Some(v));
         assert!(NOT_SERVED.iter().all(|(t, _)| *t != "G2N15041"));
+    }
+
+    /// `newworld_beta = 2` serves `G2N15041` as beta 2 and touches no
+    /// other build.
+    #[test]
+    fn newworld_beta_2_by_config() {
+        let b1 = ClientVersion::NewWorldB1;
+        let l = parse(&line(b1, 0x41), &[]).unwrap();
+        assert_eq!(l.version, Some(b1));
+        assert_eq!(with_newworld_beta(l.clone(), 1).version, Some(b1));
+        assert_eq!(
+            with_newworld_beta(l, 2).version,
+            Some(ClientVersion::NewWorldB2)
+        );
+        let v205 = parse(&line(ClientVersion::V205, 0x41), &[]).unwrap();
+        assert_eq!(
+            with_newworld_beta(v205, 2).version,
+            Some(ClientVersion::V205)
+        );
     }
 
     fn line(v: ClientVersion, key: u8) -> Vec<u8> {

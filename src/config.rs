@@ -121,6 +121,14 @@ pub struct Config {
     pub graal3d: bool,
     /// Its UDP port; 0 (the default) is `port` + 1, the port the clients use.
     pub graal3d_port: u16,
+    /// Which NewWorld beta a `G2N15041` login is served as: 1 (the
+    /// default) or 2. The two betas send the same login line and the same
+    /// props, and nothing they send on a plain level tells them apart (lab,
+    /// 2026-11-20), so the server cannot choose. Beta 1's messages are a
+    /// subset of beta 2's, so 1 is safe for both; 2 gives beta 2 its gmap
+    /// warp (49) and gmap props (43 to 45), and is for worlds that only
+    /// beta 2 players join.
+    pub newworld_beta: u8,
     /// The anti-cheat checks and what they do (`anticheat`,
     /// `anticheat_log`, `anticheat_rate`, `anticheat.<check>`).
     pub anticheat: crate::anticheat::Policy,
@@ -182,6 +190,7 @@ impl Config {
             listserver_accounts: false,
             listserver_ip: String::new(),
             graal3d: false,
+            newworld_beta: 1,
             graal3d_port: 0,
             anticheat: crate::anticheat::Policy::default(),
             gpaks: Vec::new(),
@@ -304,6 +313,13 @@ impl Config {
             "listserver_ip" => self.listserver_ip = v.to_string(),
             "graal3d" => self.graal3d = flag(v)?,
             "graal3d_port" => self.graal3d_port = num(v)?,
+            "newworld_beta" => {
+                self.newworld_beta = match v.trim() {
+                    "1" => 1,
+                    "2" => 2,
+                    _ => return Err(format!("newworld_beta: `{v}` is not 1 or 2")),
+                }
+            }
             "gpaks" => {
                 self.gpaks = v
                     .split(',')
