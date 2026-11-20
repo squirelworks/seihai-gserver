@@ -74,8 +74,20 @@ impl AllowList {
         if let Some((a, b)) = range {
             let (a, b) = (index_of(a.trim())?, index_of(b.trim())?);
             let (lo, hi) = (a.min(b), a.max(b));
-            for v in &ClientVersion::all_versions()[lo..=hi] {
+            let all = ClientVersion::all_versions();
+            for v in &all[lo..=hi] {
                 self.tokens.insert(v.token().to_string());
+            }
+            // The builds served as a near one whose stand-in is in the
+            // range, the ends' own tokens among them.
+            for (t, _, v) in crate::login::STAND_INS {
+                if all
+                    .iter()
+                    .position(|x| x == v)
+                    .is_some_and(|i| (lo..=hi).contains(&i))
+                {
+                    self.tokens.insert(t.to_string());
+                }
             }
             return Ok(());
         }
@@ -104,11 +116,13 @@ impl AllowList {
         self.tokens.is_empty()
     }
 
-    /// Listed tokens that no seihai-core profile has.
+    /// Listed tokens that no seihai-core profile has and that are not
+    /// served as a near build (`login::STAND_INS`).
     pub fn unknown_tokens(&self) -> Vec<String> {
         let known: BTreeSet<&str> = ClientVersion::all_versions()
             .iter()
             .map(|v| v.token())
+            .chain(crate::login::STAND_INS.iter().map(|(t, _, _)| *t))
             .collect();
         self.tokens
             .iter()
@@ -122,12 +136,23 @@ fn is_token(s: &str) -> bool {
     s.len() == 8 && s.bytes().all(|b| b.is_ascii_alphanumeric())
 }
 
-/// Position of a label or token in seihai-core's build order.
+/// Position of a label or token in seihai-core's build order. A token
+/// served as a near build (`login::STAND_INS`) takes its stand-in's
+/// place: GServer-v2's sample range `G3D11125:G3D0511C` starts at the
+/// 4.03r1 Linux token, which has no profile, and the whole range was
+/// refused, locking 6.03r7 out of an imported world (lab 2026-11-20).
 fn index_of(s: &str) -> Result<usize, String> {
     let all = ClientVersion::all_versions();
     let by_label = ClientVersion::from_label(s).and_then(|v| all.iter().position(|&x| x == v));
+    let stand_in = || {
+        crate::login::STAND_INS
+            .iter()
+            .find(|(t, _, _)| *t == s)
+            .and_then(|(_, _, v)| all.iter().position(|x| x == v))
+    };
     by_label
         .or_else(|| all.iter().position(|v| v.token() == s))
+        .or_else(stand_in)
         .ok_or_else(|| format!("`{s}` is not a build label or token seihai-core knows"))
 }
 
@@ -146,6 +171,17 @@ mod tests {
         assert!(l.allows("GNW03014"));
         assert!(l.allows("ZZZ12345"));
         assert_eq!(l.unknown_tokens(), vec!["ZZZ12345".to_string()]);
+    }
+
+    #[test]
+    fn a_range_from_a_stand_in_token() {
+        // GServer-v2's own sample range for the modern clients.
+        let (l, w) = AllowList::parse("[versions]\nmodern = G3D11125:G3D0511C\n");
+        assert!(w.is_empty(), "{w:?}");
+        assert!(l.allows("G3D0511C"), "6.03r7 Linux");
+        assert!(l.allows("G3D11125"), "the 4.03r1 Linux end itself");
+        assert!(l.allows("G3D26090"), "5.31r4 in between");
+        assert!(!l.allows("GNW03081"), "2.05 is before the range");
     }
 
     #[test]
