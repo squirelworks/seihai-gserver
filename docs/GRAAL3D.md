@@ -137,6 +137,7 @@ the origin), loopback only:
 | 5.12, Windows 10 VM, right-handed facing angle (first try) | red cube | View tilted up into the sky box, no cube. |
 | 5.12, Windows 10 VM, angle negated (this change) | red cube | Cube centred, seen from above. |
 | 4.20r6 Linux (`G3D22126`), native in a Debian VM | red cube | Logged in, linked, cube centred. With `labcube.3ds` no cube. |
+| 4.20r6 Mac PPC (`G3D27076`, protocol 21), Tiger VM (QEMU, software renderer), main at 368c3d6 | red cube (one material) | Logged in, linked as protocol 21, 4 ghosts (Sun, cube, player, camera), shape downloaded, mission start phases 1 and 2 done, control object taken. The client then crashes on its first 3D frame (3 of 3 runs): the draw reads a render-state pointer that is still null. Mac 3.153 crashed the same way on protocol 19. Not yet known whether protocol 21 wants the camera sent differently. |
 
 What the runs and breakpoints showed (hardware breakpoints through the VM's
 debugger; a debugger inside the guest makes the client exit):
