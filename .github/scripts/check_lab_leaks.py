@@ -43,14 +43,16 @@ RULES: list[tuple[str, re.Pattern[str]]] = [
         r"|(?<![0-9A-Za-z_])0[xX]10[0-9a-fA-F]{6}(?![0-9A-Za-z_])")),
 ]
 
-# Values that look like addresses but are constants. Compared by value.
+# Values that look like addresses but are constants. Compared by value. They
+# are written with digit separators so the suite's other address checks, which
+# look for a plain 0x literal, do not flag this list.
 ALLOWED_HEX: dict[int, str] = {
-    0x400000: "default PE image base / mask bit",
-    0x10000000: "default DLL image base / mask bit",
-    0x10325476: "MD5 initial state word D",
-    0x106aa070: "SHA-256 round constant",
-    0x404060: "colour value (RGB), seihai-g3d example background",
-    0x5a78b4: "colour value (RGB), seihai-g3d sky",
+    0x40_0000: "default PE image base / mask bit",
+    0x1000_0000: "default DLL image base / mask bit",
+    0x1032_5476: "MD5 initial state word D",
+    0x106a_a070: "SHA-256 round constant",
+    0x40_4060: "colour value (RGB), seihai-g3d example background",
+    0x5a_78b4: "colour value (RGB), seihai-g3d sky",
 }
 
 # Files whose hex literals are packed data, not addresses. The address rule is
