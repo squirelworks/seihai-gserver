@@ -4164,6 +4164,63 @@ mod tests {
     use super::*;
     use seihai_core::protocol::SessionState;
 
+    #[test]
+    fn script_attributes_reach_mirror_and_survive_npcserver_reload() {
+        use seihai_core::protocol::npcprops::{NPCPROP_GATTRIB1, NPCPROP_GATTRIB10};
+        use seihai_core::scripting::engine::Era;
+        use seihai_npcserver::{link, scripts::Scripts};
+
+        let dir =
+            std::env::temp_dir().join(format!("seihai-attribute-link-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("npcs")).unwrap();
+        let path = dir.join("npcs/bell.txt");
+        let original = "GRNPC001\nNAME bell\nTYPE OBJECT\nSTARTLEVEL a.nw\nSTARTX 5\nSTARTY 6\nIMAGE bell.png\nNPCSCRIPT\nif (playerenters) { setcharprop #P1,red=blue; setcharprop #P30,; }\nNPCSCRIPTEND\n";
+        std::fs::write(&path, original).unwrap();
+        let mut scripts = Scripts::with_world(Era::V217, &dir);
+        scripts.open_database().unwrap();
+        let mut task = World::new(5, blank()).task.lock().unwrap().take().unwrap();
+        for m in scripts.start().messages {
+            task.apply_npc(m);
+        }
+        let server = task.server_npcs.get(&1).unwrap().clone();
+        let before = task.npcs[&server.level][0].props.clone();
+        let p = seihai_npcserver::world::Player {
+            level: b"a.nw".to_vec(),
+            ..Default::default()
+        };
+        let produced = scripts.on_player(1, &p, "playerenters");
+        assert!(produced.notes.is_empty(), "{:?}", produced.notes);
+        let frame = link::encode_frame(&produced.messages).unwrap();
+        for m in link::read_frame(&mut &frame[..]).unwrap() {
+            task.apply_npc(m);
+        }
+        let changed = &task.npcs[&server.level][0].props;
+        assert_eq!(
+            changed[&NPCPROP_GATTRIB1],
+            [vec![gchar(8)], b"red=blue".to_vec()].concat()
+        );
+        assert_eq!(changed[&(NPCPROP_GATTRIB10 + 20)], vec![gchar(0)]);
+        for (id, value) in before {
+            assert_eq!(changed[&id], value);
+        }
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+
+        let mut fresh = Scripts::with_world(Era::V217, &dir);
+        fresh.open_database().unwrap();
+        let mut mirror = World::new(5, blank()).task.lock().unwrap().take().unwrap();
+        let replay = link::encode_frame(&fresh.start().messages).unwrap();
+        for m in link::read_frame(&mut &replay[..]).unwrap() {
+            mirror.apply_npc(m);
+        }
+        let new = &mirror.npcs[&server.level][0].props;
+        assert_eq!(new[&NPCPROP_GATTRIB1], changed[&NPCPROP_GATTRIB1]);
+        assert_eq!(
+            new[&(NPCPROP_GATTRIB10 + 20)],
+            changed[&(NPCPROP_GATTRIB10 + 20)]
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     fn outbox() -> (Outbox, mpsc::UnboundedReceiver<Vec<Vec<u8>>>) {
         mpsc::unbounded_channel()
     }
