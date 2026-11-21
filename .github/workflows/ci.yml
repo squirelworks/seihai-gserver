@@ -6,6 +6,15 @@ on:
   pull_request:
 
 jobs:
+  # Lab machine and VM names, home paths and image-relative code addresses
+  # (.github/scripts/check_lab_leaks.py, shared across the Seihai suite).
+  lab-leak-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: No lab names, home paths or binary addresses
+        run: python3 .github/scripts/check_lab_leaks.py
+
   test:
     strategy:
       fail-fast: false
