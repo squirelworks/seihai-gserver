@@ -221,6 +221,28 @@ rights check. A finer NC-versus-RC-rights rule is still unresolved.
 
 ### 0x80 to 0x8F: NPC Control
 
+Project persistence note: script GANI attributes (`#P1` through `#P30`)
+already travel as `NPC_PROPS`. The NPC-server now stores their latest
+values beside each NPC file as `<file>.attrs`, using one existing link
+frame containing `NPC_PROPS` for id zero and only attribute properties.
+No link message id or version changes. Each update replaces supplied slots;
+omitted slots stay unchanged. An empty value is an explicit empty slot, not
+a separate deletion operation. Existing property lengths and Latin-1
+encoding apply, including their truncation behavior; delimiters and line
+breaks use the existing binary framing, not `name=value` escaping.
+The NPC source file is unchanged. Saving uses the existing synchronous
+temporary-file/rename convention; failures are logged, with no rollback
+claim for the live script or remote mirror. A malformed sidecar causes that
+NPC load to be reported and skipped. Reload seeds script reads, attribute
+readback and `NPC_ADDED`. This does not define a native NC attribute-write
+packet or complete issue #49's general attribute-editing contract.
+Deleting an NPC archives its sidecar as `<file>.deleted.attrs` without
+replacing an existing recovery. A failed source removal attempts to restore
+the live sidecar and reports any failure. Adding an NPC refuses an orphan
+live sidecar instead of silently inheriting its values. Recovery copies are
+kept for manual restoration; renaming only a source file does not move its
+sidecar automatically.
+
 NPC Control (NC) clients log in to the gserver, which serves them from what
 the NPC-server tells it. These ids were reserved in link version 1;
 specifying them does not bump the version. A side that does not know them

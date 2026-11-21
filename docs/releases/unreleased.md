@@ -31,3 +31,5 @@ Notes for the next seihai-gserver release.
 
 - `newworld_beta = 1 | 2` in `server.txt`: which NewWorld beta a `G2N15041` login is served as. The two betas send the same login line and props, and the lab found nothing on a plain level that tells them apart, so the default stays beta 1 (a subset of beta 2, safe for both). 2 is for worlds that only beta 2 players join.
 
+
+- Adopt NPC-server script GANI attribute persistence and reload replay; an offline integration test exercises the existing gserver mirror through production script updates and fresh NPC database reload. Native NC attribute editing remains open (#49).
