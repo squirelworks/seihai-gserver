@@ -13,6 +13,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: No lab names, home paths or binary addresses
+        env:
+          LAB_LEAK_DENYLIST: ${{ secrets.LAB_LEAK_DENYLIST }}
+          LAB_LEAK_REQUIRE_DENYLIST: ${{ github.event.pull_request.head.repo.fork != true }}
         run: python3 .github/scripts/check_lab_leaks.py
 
   test:
