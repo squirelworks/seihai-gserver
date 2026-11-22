@@ -307,6 +307,9 @@ pub fn admin_message(account: &str, text: &[u8]) -> Vec<u8> {
 /// One RC link after its login.
 #[derive(Debug, Default)]
 pub struct RcSession {
+    // Only the original name is retained, never file content. Nested starts
+    // cannot replace it; only its matching end or connection drop releases it.
+    unsupported_large_upload: Option<Vec<u8>>,
     /// Messages a later slice will answer, by id, and how many.
     pub unhandled: BTreeMap<u8, u32>,
 }
@@ -322,6 +325,19 @@ impl RcSession {
                 continue;
             };
             match id.wrapping_sub(0x20) {
+                crate::rcfiles::PLI_RC_LARGEFILESTART => {
+                    if self.unsupported_large_upload.is_none() {
+                        self.unsupported_large_upload = Some(rest.to_vec());
+                    }
+                }
+                crate::rcfiles::PLI_RC_LARGEFILEEND => {
+                    if self.unsupported_large_upload.as_deref() == Some(rest) {
+                        self.unsupported_large_upload = None;
+                        out.push(RcEvent::Files(crate::rcfiles::Op::RefuseLargeUpload));
+                    }
+                }
+                crate::rcfiles::PLI_RC_FILEBROWSER_UP
+                    if self.unsupported_large_upload.is_some() => {}
                 PLI_PONG => {}
                 PLI_PLAYERPROPS => {
                     // Prop 0, GSTRING nickname.

@@ -30,8 +30,11 @@
 //! `?` one character). An account with no `FOLDER` line sees no files.
 //! Only plain files are listed, read or written: not folders or links. A
 //! file over [`MAX_FILE`] is refused both ways, as one frame cannot carry
-//! more until the large-file ids (155/156) have a lab layout. A put is
-//! written through a temporary file. Folder rights from an RC (83/84) come
+//! more. Large-upload starts (155) enter per-session discard state: no
+//! chunk (93) writes occur before the matching original end (156), which
+//! answers with one refusal. Nested starts and mismatched ends do not
+//! release that state; connection close drops it. This is project recovery
+//! policy, not large-file support. A put is written through a temporary file. Folder rights from an RC (83/84) come
 //! with a later slice; until then an admin edits the account file.
 
 use crate::wire::{gchar, gint5, gstring, latin1, msg, raw_block, text};
@@ -40,6 +43,8 @@ use std::path::{Path, PathBuf};
 pub const PLI_RC_FILEBROWSER_CD: u8 = 90;
 pub const PLI_RC_FILEBROWSER_DOWN: u8 = 92;
 pub const PLI_RC_FILEBROWSER_UP: u8 = 93;
+pub const PLI_RC_LARGEFILESTART: u8 = 155;
+pub const PLI_RC_LARGEFILEEND: u8 = 156;
 pub const PLI_RC_FILEBROWSER_MOVE: u8 = 96;
 pub const PLI_RC_FILEBROWSER_DELETE: u8 = 97;
 pub const PLI_RC_FILEBROWSER_RENAME: u8 = 98;
@@ -53,6 +58,8 @@ pub const MAX_FILE: usize = 60 * 1024;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Op {
     Cd(String),
+    /// Internal completion of an unsupported large upload; never a chunk write.
+    RefuseLargeUpload,
     Down(String),
     Up { name: String, data: Vec<u8> },
     Move { name: String, to: String },
@@ -219,6 +226,10 @@ impl Browser {
     pub fn run(&mut self, op: Op) -> (Vec<Vec<u8>>, String) {
         match op {
             Op::Cd(f) => self.cd(f),
+            Op::RefuseLargeUpload => (
+                vec![refusal("Large uploads are not supported.")],
+                "large put: refused".into(),
+            ),
             Op::Down(name) => self.down(&name),
             Op::Up { name, data } => self.up(&name, &data),
             Op::Delete(name) => self.delete(&name),
