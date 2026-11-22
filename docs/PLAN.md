@@ -104,8 +104,12 @@ behaviour against, never a code source (see `00-rules.md`).
    that kind as RC console line 74 (`tests/staff_lines.rs`). A finer rights
    rule is still open.
    Dropped with a log line: the sound messages (no build reads a server
-   sound) and a script's own `NPC_TRIGGER_ACTION` (not passed back to
-   clients). A client's `PLI_TRIGGERACTION` (38) is passed to the others
+   sound). A script's `NPC_TRIGGER_ACTION` now reaches eligible same-level
+   clients through the project bridge ([#196](https://github.com/squirelworks/seihai-gserver/pull/196)), with server/no-NPC origin
+   fields and no NPC echo. Coordinate/text and production-codec envelope
+   checks refuse an unrepresentable action before any delivery. Linux and
+   Windows production-path tests cover this; `gr.*` commands and a new
+   real-client execution run remain open. A client's `PLI_TRIGGERACTION` (38) is passed to the others
    who read 48, with the sender's id first, and to the NPC-server as
    `TRIGGER_ACTION` (the action name, the level, half-tile x and y). A
    new non-empty chat line is `PM_TO_NPC`. A real 2.05 rev 2 saw
@@ -363,3 +367,16 @@ Next:
 - [x] A `key-fingerprint` subcommand that prints the key without starting
       (`src/main.rs`, `tests/cli.rs`). It reads the key file and never
       makes one.
+
+## Merged persistence follow-through (2026-11-22)
+
+- [#194](https://github.com/squirelworks/seihai-gserver/pull/194) adopts NPC script GANI-attribute persistence and proves fresh replay
+  into the existing gserver mirror. Native NC attribute editing remains open.
+- [#195](https://github.com/squirelworks/seihai-gserver/pull/195) preserves NC class/weapon state when backing-file deletion fails,
+  reports refusal, and supports retry using the original loaded path.
+- [#197](https://github.com/squirelworks/seihai-gserver/pull/197) omits directories from account-file listings and unconditioned
+  RC replies, preserving existing name filters and symlink-to-file following.
+
+The PRs link actual Linux/Windows CI and bounded production regressions.
+They do not establish new real-client or macOS runs, whole-world parity,
+or release completion. The active 1.0 checklist is [#166](https://github.com/squirelworks/seihai-gserver/issues/166).
