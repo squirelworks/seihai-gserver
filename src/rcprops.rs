@@ -149,7 +149,8 @@ fn power_image(power: u8, bias: u8, image: &str) -> Vec<u8> {
         return vec![gchar(power)];
     }
     let mut v = vec![gchar(power.saturating_add(bias))];
-    gstring(&latin1(&image[..image.len().min(60)]), &mut v);
+    let image = latin1(image);
+    gstring(&image[..image.len().min(60)], &mut v);
     v
 }
 

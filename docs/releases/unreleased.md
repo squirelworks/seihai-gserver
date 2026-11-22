@@ -2,7 +2,7 @@ Notes for the next seihai-gserver release.
 
 ## Added
 
-- Baseline acceptance for account sword/shield RC replies at a UTF-8 character boundary in the existing 60-byte image cap; implementation and observed regression results are pending, so this branch is not ready.
+- Apply the existing RC sword/shield image cap to Latin-1 bytes instead of slicing UTF-8 account strings. Mixed Latin-1 names no longer panic or lose bytes prematurely; the server's existing 60-byte cap, power/discriminator and unsupported-character replacement remain unchanged. Accepted-account replies are checked with the pinned peer readers.
 
 - Refuse unsupported RC large-upload transactions without writing their chunks over existing files. Per-session name-only discard state lasts until the matching original end or disconnect; nested starts and wrong ends cannot release it. The matching end returns one browser refusal, then ordinary uploads resume. This is project recovery policy, not large-file support; existing ordinary-upload limits and file rights remain unchanged.
 
