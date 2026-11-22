@@ -796,4 +796,120 @@ mod tests {
             b"unrelated"
         );
     }
+
+
+    #[test]
+    fn unsupported_large_upload_preserves_files_and_recovers_after_its_end() {
+        use crate::rc::{RcEvent, RcSession};
+
+        struct Fixture(PathBuf);
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "seihai-rcfiles-large-refusal-{}-{stamp}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let fixture = Fixture(root);
+        std::fs::write(fixture.0.join("asset.bin"), b"original").unwrap();
+        std::fs::write(fixture.0.join("other.bin"), b"other").unwrap();
+        let mut browser = Browser::new(&fixture.0, &["rw *.bin".into()]);
+        browser.run(Op::Cd(String::new()));
+
+        fn dispatch(session: &mut RcSession, browser: &mut Browser, body: &[u8]) -> Vec<String> {
+            let mut replies = Vec::new();
+            for event in session.handle(&split(body)) {
+                if let RcEvent::Files(op) = event {
+                    for body in browser.run(op).0 {
+                        for message in split_messages(&body) {
+                            if message.id == PLO_RC_FILEBROWSER_MESSAGE {
+                                replies.push(text(&message.payload));
+                            }
+                        }
+                    }
+                } else {
+                    panic!("unexpected event: {event:?}");
+                }
+            }
+            replies
+        }
+        let data: Vec<u8> = (0..80_001).map(|i| (i % 251) as u8).collect();
+        let bodies = seihai_rc::files::large_upload_bodies("asset.bin", &data).unwrap();
+        assert_eq!(bodies.len(), 5);
+        let mut session = RcSession::default();
+        let mut replies = Vec::new();
+        for body in &bodies {
+            replies.extend(dispatch(&mut session, &mut browser, body));
+        }
+        // The real peer transaction must not become three replacing ordinary puts.
+        assert_eq!(
+            std::fs::read(fixture.0.join("asset.bin")).unwrap(),
+            b"original"
+        );
+        assert_eq!(replies, ["Large uploads are not supported."]);
+
+        let small = seihai_rc::files::upload_body("asset.bin", b"after").unwrap();
+        assert_eq!(
+            dispatch(&mut session, &mut browser, &small),
+            ["Uploaded file asset.bin"]
+        );
+        assert_eq!(
+            std::fs::read(fixture.0.join("asset.bin")).unwrap(),
+            b"after"
+        );
+
+        // Nested starts and wrong ends cannot end the original discard state.
+        assert!(dispatch(&mut session, &mut browser, &bodies[0]).is_empty());
+        let nested = seihai_rc::files::large_upload_bodies("other.bin", b"nested").unwrap();
+        assert!(dispatch(&mut session, &mut browser, &nested[0]).is_empty());
+        assert!(dispatch(&mut session, &mut browser, nested.last().unwrap()).is_empty());
+        assert!(dispatch(&mut session, &mut browser, &small).is_empty());
+        assert_eq!(
+            std::fs::read(fixture.0.join("asset.bin")).unwrap(),
+            b"after"
+        );
+        assert_eq!(
+            std::fs::read(fixture.0.join("other.bin")).unwrap(),
+            b"other"
+        );
+
+        // State belongs to this connection, not the browser or all RC sessions.
+        let mut second = RcSession::default();
+        let other = seihai_rc::files::upload_body("other.bin", b"independent").unwrap();
+        assert_eq!(
+            dispatch(&mut second, &mut browser, &other),
+            ["Uploaded file other.bin"]
+        );
+        assert_eq!(
+            dispatch(&mut session, &mut browser, bodies.last().unwrap()),
+            ["Large uploads are not supported."]
+        );
+        assert_eq!(
+            dispatch(&mut session, &mut browser, &small),
+            ["Uploaded file asset.bin"]
+        );
+        assert_eq!(
+            std::fs::read(fixture.0.join("asset.bin")).unwrap(),
+            b"after"
+        );
+        assert_eq!(
+            std::fs::read(fixture.0.join("other.bin")).unwrap(),
+            b"independent"
+        );
+        // An abandoned transaction's state ends with its connection.
+        assert!(dispatch(&mut session, &mut browser, &bodies[0]).is_empty());
+        drop(session);
+        let mut replacement = RcSession::default();
+        assert_eq!(
+            dispatch(&mut replacement, &mut browser, &small),
+            ["Uploaded file asset.bin"]
+        );
+    }
 }

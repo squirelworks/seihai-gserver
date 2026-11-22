@@ -2,6 +2,8 @@ Notes for the next seihai-gserver release.
 
 ## Added
 
+- Baseline acceptance for refusing unsupported RC large-upload transactions without overwriting files; implementation and observed regression results are pending, so this branch is not ready.
+
 - Decode RC file moves in the pinned peer's documented order: destination-folder GSTRING, then the exact filename. Real pinned-encoder/browser regressions cover moves, root targets, names with spaces and retained rights/path/no-overwrite rules.
 
 - Repeated ordinary player props now keep their final value when a later field restores the previously stored value; no stale intermediate value is retained or sent. Seeded model and receiver-session regressions cover net no-ops, unrelated changes and distinct final values; specialised colour/bow/position paths are unchanged.
