@@ -2,6 +2,8 @@ Notes for the next seihai-gserver release.
 
 ## Added
 
+- Deliver representable server-side NPC trigger actions to same-level clients that read packet 48, with server-origin fields and no NPC echo. Refuse unsupported coordinates/text and actions outside the common client transport envelope before enqueueing.
+
 - NPC Control class/weapon deletion now retains the live entry and refuses a success acknowledgment when deleting its backing file fails. Retry uses the original loaded path; class saves also preserve a loaded filename's extension case.
 
 - **The Torque 3D mode** (`graal3d = true`, `docs/GRAAL3D.md`): the UDP link of 3.153 to 6.x clients, protocols 19, 21 and 24, tied to the TCP login by account and IP. Handshake, ghosts (GameObject, Sun, Sky, Camera, TGE Player), datablocks, mission start, protocol 19 moves, and the text channel. Checked against recorded 5.12 packets, a loopback test, and a lab run: a real 4.04r2 (Linux) reaches its control object; a real 5.12 (Windows 10) draws the 3D view once every protocol 21/24 client gets a Camera of its own, which it now does by default (the "Starting 3D mode..." box was a Wine leftover).
