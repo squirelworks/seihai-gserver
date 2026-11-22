@@ -123,11 +123,34 @@ fn an_nc_edits_classes_and_weapons() {
         |e| matches!(e, NcEvent::Message { id: 74, payload } if payload.starts_with(b"error:")),
     );
     assert!(!w.join("x.txt").exists());
+    // A deterministic filesystem error must not acknowledge a deletion or
+    // discard the live class. The following get is an ordered wire barrier.
+    let class_path = w.join("scripts/door.txt");
+    let class_backup = w.join("scripts/door.saved");
+    std::fs::rename(&class_path, &class_backup).unwrap();
+    std::fs::create_dir(&class_path).unwrap();
+    nc.send(&[
+        class_delete_message("door").unwrap(),
+        class_get_message("door").unwrap(),
+    ])
+    .unwrap();
+    wait_for(&mut nc, "retained class after failed delete", |e| {
+        assert_ne!(*e, NcEvent::ClassDeleted("door".into()));
+        matches!(e, NcEvent::ClassScript { name, script } if name == "door" && script.contains("this.open"))
+    });
+    std::fs::remove_dir(&class_path).unwrap();
+    std::fs::rename(&class_backup, &class_path).unwrap();
+    assert!(seihai_gserver::classes::Classes::load(&w.join("scripts"))
+        .get("door")
+        .is_some());
     nc.send(&[class_delete_message("door").unwrap()]).unwrap();
     wait_for(&mut nc, "188", |e| {
         *e == NcEvent::ClassDeleted("door".into())
     });
     assert!(!w.join("scripts/door.txt").exists());
+    assert!(seihai_gserver::classes::Classes::load(&w.join("scripts"))
+        .get("door")
+        .is_none());
 
     // Weapons.
     nc.send(&[weapon_list_message()]).unwrap();
@@ -158,11 +181,41 @@ fn an_nc_edits_classes_and_weapons() {
         |e| matches!(e, NcEvent::Weapon(ws) if ws.name == "Lamp" && ws.script.contains("say2 light;")),
     );
 
+    let weapon_path = w.join("weapons/weaponBow.txt");
+    let weapon_backup = w.join("weapons/Bow.saved");
+    std::fs::rename(&weapon_path, &weapon_backup).unwrap();
+    std::fs::create_dir(&weapon_path).unwrap();
+    nc.send(&[
+        weapon_delete_message("Bow").unwrap(),
+        weapon_get_message("Bow").unwrap(),
+    ])
+    .unwrap();
+    wait_for(&mut nc, "weapon delete failure", |e| {
+        if let NcEvent::Message { id: 74, payload } = e {
+            assert!(!payload.starts_with(b"Weapon Bow deleted"));
+            return payload == b"error: weapon Bow not deleted";
+        }
+        false
+    });
+    wait_for(&mut nc, "retained weapon after failed delete", |e| {
+        if let NcEvent::Message { id: 74, payload } = e {
+            assert!(!payload.starts_with(b"Weapon Bow deleted"));
+        }
+        matches!(e, NcEvent::Weapon(ws) if ws.name == "Bow" && ws.image == "bow.png")
+    });
+    std::fs::remove_dir(&weapon_path).unwrap();
+    std::fs::rename(&weapon_backup, &weapon_path).unwrap();
+    assert!(seihai_gserver::weapons::Weapons::load(&w.join("weapons"))
+        .get("Bow")
+        .is_some());
     nc.send(&[weapon_delete_message("Bow").unwrap()]).unwrap();
     wait_for(&mut nc, "167 without Bow", |e| {
         *e == NcEvent::Weapons(vec!["Lamp".into()])
     });
     assert!(!w.join("weapons/weaponBow.txt").exists());
+    let reloaded = seihai_gserver::weapons::Weapons::load(&w.join("weapons"));
+    assert!(reloaded.get("Bow").is_none());
+    assert!(reloaded.get("Lamp").is_some());
     nc.close();
     let _ = std::fs::remove_dir_all(&w);
 }

@@ -452,21 +452,28 @@ impl Weapons {
     }
 
     /// NPC Control's weapon delete: the weapon and its file go. False when
-    /// the world had no such weapon.
+    /// the world had no such weapon or its backing file could not be
+    /// removed. An already absent file counts as deleted.
     pub fn remove(&mut self, name: &str) -> bool {
         let key = name.to_ascii_lowercase();
-        if self.by_name.remove(&key).is_none() {
+        if !self.by_name.contains_key(&key) {
             return false;
         }
         let path = self
             .files
-            .remove(&key)
+            .get(&key)
+            .cloned()
             .or_else(|| self.dir.as_ref().map(|d| d.join(file_name(name))));
         if let Some(path) = path {
             if let Err(e) = std::fs::remove_file(&path) {
-                eprintln!("weapon {name}: could not remove {}: {e}", path.display());
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    eprintln!("weapon {name}: could not remove {}: {e}", path.display());
+                    return false;
+                }
             }
         }
+        self.by_name.remove(&key);
+        self.files.remove(&key);
         true
     }
 
