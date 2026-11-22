@@ -8,7 +8,7 @@
 //! | 90 `RC_FILEBROWSER_CD`: the folder, the rest of the line | 67 `Folder changed to <folder>`, then 66: `GSTRING` folder, then per file a space, a `GCHAR` record length, `GSTRING` name, `GSTRING` rights (`r` or `rw`), `GINT5` size, `GINT5` mod time |
 //! | 92 `RC_FILEBROWSER_DOWN`: the name, the rest of the line | raw block (100) of 102: `GINT5` mod time, `GCHAR` name length, the name, the bytes |
 //! | 93 `RC_FILEBROWSER_UP` in a raw block (50): `GSTRING` name, the bytes | 67 `Uploaded file <name>` |
-//! | 96 `RC_FILEBROWSER_MOVE`: `GSTRING` name, the target folder as the rest of the line | 67 `Moved file <name> to <folder>` |
+//! | 96 `RC_FILEBROWSER_MOVE`: `GSTRING` target folder, the file name as the rest of the line | 67 `Moved file <name> to <folder>` |
 //! | 97 `RC_FILEBROWSER_DELETE`: the name, the rest of the line | 67 `Deleted file <name>` |
 //! | 98 `RC_FILEBROWSER_RENAME`: `GSTRING` old name, `GSTRING` new name | 67 `Renamed file <old> to <new>` |
 //!
@@ -82,10 +82,10 @@ pub fn parse(id: u8, rest: &[u8]) -> Option<Op> {
             })
         }
         PLI_RC_FILEBROWSER_MOVE => {
-            let (name, to) = gstr(rest)?;
+            let (to, name) = gstr(rest)?;
             Some(Op::Move {
-                name,
-                to: text(to).trim().to_string(),
+                name: text(name),
+                to,
             })
         }
         PLI_RC_FILEBROWSER_DELETE => Some(Op::Delete(text(rest).trim().to_string())),
@@ -621,11 +621,11 @@ mod tests {
         assert!(line(&b.run(op).0).ends_with("already there."));
         let op = parse(98, b"$c.nw%c.txt").unwrap();
         assert!(line(&b.run(op).0).starts_with("No rights"));
-        // Move: a GSTRING, then the folder.
-        let op = parse(96, b"$c.nwold").unwrap();
+        // Move: a GSTRING destination folder, then the filename.
+        let op = parse(96, b"$old/c.nw").unwrap();
         assert_eq!(line(&b.run(op).0), "Moved file c.nw to old/");
         assert_eq!(std::fs::read(w.join("old/c.nw")).unwrap(), b"A");
-        let op = parse(96, b"$b.nw../x").unwrap();
+        let op = parse(96, b"%../x/b.nw").unwrap();
         assert!(line(&b.run(op).0).starts_with("No rights"));
         // Delete: the name, the rest of the line; a read right is not enough.
         assert_eq!(
