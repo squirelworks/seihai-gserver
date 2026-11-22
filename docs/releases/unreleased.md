@@ -26,6 +26,8 @@ Notes for the next seihai-gserver release.
 
 ## Fixed
 
+- Repeated player colours and legacy bow updates now drop any intermediate change when the final normalized value restores the stored one. NewWorld colour tails and legacy bow encoding are preserved.
+
 - **`import-v2` keeps 6.03r7 and the weapons.** GServer-v2's range `G3D11125:G3D0511C` was refused whole, because its first end (4.03r1 Linux) has no profile, so the imported world turned 6.03r7 away until `allowedversions.txt` was edited. A range end served as a near build now stands at its stand-in's place, and stand-in tokens inside a range are allowed. The import now also carries `weapons/*.txt` weapon files and the accounts' `WEAPON` lines, which it used to drop. Found in the graal-client-repro #373 end-to-end lab (2026-11-20: rebuilt 6.03r7 Linux against a world imported from the GServer-v2 fork).
 
 - **A 3D server is listed at HQ level 4.** With `graal3d = true` the server now sends `SERVERHQLEVEL` (24) = 4 after `NEWSERVER`, and the name goes without its own `3 `. Before, it sent no level, so the listserver kept bronze and tagged the name `H `: the list read `H 3 name`, and Mac 3.153, which reads only the first tag, did not see a 3D server (lab finding, 2026-11-20). seihai-listserver already tags level 4 `3 `; seihai-gserver-v2 makes the same change. A 2D server still sends no level.

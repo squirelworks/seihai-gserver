@@ -515,6 +515,8 @@ impl Props {
                 10 if bow => {
                     if self.bow.as_ref() != Some(&p.raw) {
                         c.bow = Some(p.raw.clone());
+                    } else {
+                        c.bow = None;
                     }
                 }
                 14 | IPADDR | JOINLEAVELVL | PCONNECTED => {}
@@ -533,6 +535,8 @@ impl Props {
                     }
                     if self.values.get(&COLORS) != Some(&v) {
                         c.values.insert(COLORS, v);
+                    } else {
+                        c.values.remove(&COLORS);
                     }
                 }
                 id => {
