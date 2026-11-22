@@ -136,20 +136,25 @@ impl WordFilter {
         c.1.apply(text)
     }
 
-    /// A player-props stream with the chat (prop 12) filtered, or `None`
-    /// when there is no chat or nothing in it matched. Props after the
-    /// chat, and any bytes the parser stopped at, are kept as sent.
+    /// A player-props stream with each chat (prop 12) filtered, or `None`
+    /// when there is no chat or nothing in it matched. Other props and
+    /// any bytes the parser stopped at are kept as sent.
     pub fn filter_props(&self, payload: &[u8], bow_prop10: bool) -> Option<Vec<u8>> {
         let props = seihai_core::protocol::parse_player_props_with(payload, bow_prop10);
-        let chat = props.iter().find(|p| p.id == CURCHAT)?;
-        let text = chat.raw.get(1..)?;
-        let new = self.apply(text)?;
+        if !props.iter().any(|p| p.id == CURCHAT) {
+            return None;
+        }
+        let mut matched = false;
         let mut out = Vec::with_capacity(payload.len() + 8);
         let mut used = 0;
         for p in &props {
             used += 1 + p.raw.len();
             out.push(p.id + 0x20);
-            if p.id == CURCHAT {
+            if let Some(new) = (p.id == CURCHAT)
+                .then(|| p.raw.get(1..).and_then(|text| self.apply(text)))
+                .flatten()
+            {
+                matched = true;
                 // A GCHAR length: at most 223 bytes.
                 let n = new.len().min(223);
                 out.push(n as u8 + 0x20);
@@ -159,7 +164,7 @@ impl WordFilter {
             }
         }
         out.extend_from_slice(&payload[used.min(payload.len())..]);
-        Some(out)
+        matched.then_some(out)
     }
 }
 
@@ -215,5 +220,92 @@ mod tests {
         // No chat: unchanged.
         assert_eq!(f.filter_props(&[2 + 0x20, 0x21], false), None);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn repeated_chat_filter_case(
+        version: seihai_core::protocol::ClientVersion,
+        chats: [&[u8]; 2],
+        expected: [&[u8]; 2],
+        should_match: bool,
+    ) {
+        struct Fixture(PathBuf);
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let stamp = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "seihai-repeated-chat-{}-{stamp}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let fixture = Fixture(dir);
+        let path = fixture.0.join("wordfilter.txt");
+        std::fs::write(&path, b"heck=h\ndarn=drat\n").unwrap();
+        let filter = WordFilter::new(path);
+        let bow = crate::others::bow_prop10(version);
+        let stream = |chats: [&[u8]; 2]| {
+            let mut out = vec![2 + 0x20, 6 + 0x20, CURCHAT + 0x20];
+            crate::wire::gstring(chats[0], &mut out);
+            out.push(10 + 0x20);
+            if bow {
+                out.push(1 + 0x20);
+            } else {
+                crate::wire::gstring(b"idle", &mut out);
+            }
+            out.push(CURCHAT + 0x20);
+            crate::wire::gstring(chats[1], &mut out);
+            out.extend_from_slice(&[17 + 0x20, 2 + 0x20]);
+            // The parser stops here; the existing filter contract retains this tail.
+            out.extend_from_slice(&[0xff, 0x41, 0x42]);
+            out
+        };
+        let input = stream(chats);
+        let before = seihai_core::protocol::parse_player_props_with(&input, bow);
+        assert_eq!(
+            before.iter().map(|p| p.id).collect::<Vec<_>>(),
+            [2, 12, 10, 12, 17]
+        );
+        let filtered = filter.filter_props(&input, bow);
+        let delivered = filtered.as_deref().unwrap_or(&input);
+        // This is the production receiver used by WorldTask after server filtering.
+        let mut model = crate::others::Props::default();
+        model.apply(delivered, version);
+        let mut last = Vec::new();
+        crate::wire::gstring(expected[1], &mut last);
+        assert_eq!(model.values().get(&CURCHAT), Some(&last), "{version:?}");
+        assert_eq!(filtered.is_some(), should_match, "{version:?}");
+        assert_eq!(delivered, stream(expected), "{version:?}");
+        let after = seihai_core::protocol::parse_player_props_with(delivered, bow);
+        for id in [2, 10, 17] {
+            assert_eq!(
+                before.iter().find(|p| p.id == id).unwrap().raw,
+                after.iter().find(|p| p.id == id).unwrap().raw,
+                "non-chat prop {id}, {version:?}"
+            );
+        }
+        assert!(delivered.ends_with(&[0xff, 0x41, 0x42]));
+    }
+
+    #[test]
+    fn a_later_repeated_chat_is_filtered_after_an_unmatched_first_chat() {
+        use seihai_core::protocol::ClientVersion::{V139, V222};
+        for version in [V139, V222] {
+            repeated_chat_filter_case(version, [b"hello", b"fine"], [b"hello", b"fine"], false);
+            repeated_chat_filter_case(version, [b"hello", b"HECK"], [b"hello", b"h"], true);
+        }
+    }
+
+    #[test]
+    fn repeated_chats_keep_their_own_filtered_or_unmatched_text() {
+        use seihai_core::protocol::ClientVersion::{V139, V222};
+        for version in [V139, V222] {
+            repeated_chat_filter_case(version, [b"Heck", b"hello"], [b"h", b"hello"], true);
+            repeated_chat_filter_case(version, [b"Heck", b"DARN"], [b"h", b"drat"], true);
+        }
     }
 }
