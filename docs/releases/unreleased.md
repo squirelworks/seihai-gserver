@@ -2,6 +2,8 @@ Notes for the next seihai-gserver release.
 
 ## Added
 
+- Refuse unsupported RC large-upload transactions without writing their chunks over existing files. Per-session name-only discard state lasts until the matching original end or disconnect; nested starts and wrong ends cannot release it. The matching end returns one browser refusal, then ordinary uploads resume. This is project recovery policy, not large-file support; existing ordinary-upload limits and file rights remain unchanged.
+
 - Decode RC file moves in the pinned peer's documented order: destination-folder GSTRING, then the exact filename. Real pinned-encoder/browser regressions cover moves, root targets, names with spaces and retained rights/path/no-overwrite rules.
 
 - Repeated ordinary player props now keep their final value when a later field restores the previously stored value; no stale intermediate value is retained or sent. Seeded model and receiver-session regressions cover net no-ops, unrelated changes and distinct final values; specialised colour/bow/position paths are unchanged.
