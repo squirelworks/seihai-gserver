@@ -797,7 +797,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn unsupported_large_upload_preserves_files_and_recovers_after_its_end() {
         use crate::rc::{RcEvent, RcSession};
