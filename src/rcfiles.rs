@@ -8,7 +8,7 @@
 //! | 90 `RC_FILEBROWSER_CD`: the folder, the rest of the line | 67 `Folder changed to <folder>`, then 66: `GSTRING` folder, then per file a space, a `GCHAR` record length, `GSTRING` name, `GSTRING` rights (`r` or `rw`), `GINT5` size, `GINT5` mod time |
 //! | 92 `RC_FILEBROWSER_DOWN`: the name, the rest of the line | raw block (100) of 102: `GINT5` mod time, `GCHAR` name length, the name, the bytes |
 //! | 93 `RC_FILEBROWSER_UP` in a raw block (50): `GSTRING` name, the bytes | 67 `Uploaded file <name>` |
-//! | 96 `RC_FILEBROWSER_MOVE`: `GSTRING` name, the target folder as the rest of the line | 67 `Moved file <name> to <folder>` |
+//! | 96 `RC_FILEBROWSER_MOVE`: `GSTRING` target folder, the file name as the rest of the line | 67 `Moved file <name> to <folder>` |
 //! | 97 `RC_FILEBROWSER_DELETE`: the name, the rest of the line | 67 `Deleted file <name>` |
 //! | 98 `RC_FILEBROWSER_RENAME`: `GSTRING` old name, `GSTRING` new name | 67 `Renamed file <old> to <new>` |
 //!
@@ -82,10 +82,10 @@ pub fn parse(id: u8, rest: &[u8]) -> Option<Op> {
             })
         }
         PLI_RC_FILEBROWSER_MOVE => {
-            let (name, to) = gstr(rest)?;
+            let (to, name) = gstr(rest)?;
             Some(Op::Move {
-                name,
-                to: text(to).trim().to_string(),
+                name: text(name),
+                to,
             })
         }
         PLI_RC_FILEBROWSER_DELETE => Some(Op::Delete(text(rest).trim().to_string())),
@@ -621,11 +621,11 @@ mod tests {
         assert!(line(&b.run(op).0).ends_with("already there."));
         let op = parse(98, b"$c.nw%c.txt").unwrap();
         assert!(line(&b.run(op).0).starts_with("No rights"));
-        // Move: a GSTRING, then the folder.
-        let op = parse(96, b"$c.nwold").unwrap();
+        // Move: a GSTRING destination folder, then the filename.
+        let op = parse(96, b"$old/c.nw").unwrap();
         assert_eq!(line(&b.run(op).0), "Moved file c.nw to old/");
         assert_eq!(std::fs::read(w.join("old/c.nw")).unwrap(), b"A");
-        let op = parse(96, b"$b.nw../x").unwrap();
+        let op = parse(96, b"%../x/b.nw").unwrap();
         assert!(line(&b.run(op).0).starts_with("No rights"));
         // Delete: the name, the rest of the line; a read right is not enough.
         assert_eq!(
@@ -639,5 +639,161 @@ mod tests {
         let (out, _) = Browser::new(&w, &[]).run(Op::Cd(String::new()));
         assert!(text(&split_messages(&out[0])[0].payload).contains("no folder rights"));
         let _ = std::fs::remove_dir_all(&w);
+    }
+
+    #[test]
+    fn pinned_rc_move_packets_move_files_without_changing_file_policies() {
+        struct Fixture(PathBuf);
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "seihai-rcfiles-client-move-{}-{stamp}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let fixture = Fixture(root);
+        for folder in ["levels", "old", "locked"] {
+            std::fs::create_dir(fixture.0.join(folder)).unwrap();
+        }
+        for (path, bytes) in [
+            ("levels/a.nw", b"moving".as_slice()),
+            ("levels/ spaced.nw", b"spaced".as_slice()),
+            ("levels/taken.nw", b"source".as_slice()),
+            ("old/taken.nw", b"destination".as_slice()),
+            ("levels/denied.nw", b"denied-source".as_slice()),
+            ("levels/readonly.txt", b"read-only".as_slice()),
+            ("unrelated.bin", b"unrelated".as_slice()),
+        ] {
+            std::fs::write(fixture.0.join(path), bytes).unwrap();
+        }
+        let mut browser = Browser::new(
+            &fixture.0,
+            &[
+                "rw levels/*.nw".into(),
+                "r levels/*".into(),
+                "rw old/*".into(),
+                "rw *.nw".into(),
+                "r locked/*".into(),
+            ],
+        );
+        let run_client = |browser: &mut Browser, mut packet: Vec<u8>| {
+            // The pinned client's Link adds this to ordinary messages.
+            packet.push(b'\n');
+            let messages = split_messages(&packet);
+            assert_eq!(messages.len(), 1);
+            let message = &messages[0];
+            let op = parse(message.id, &message.payload).unwrap();
+            browser.run(op)
+        };
+        let line = |out: &[Vec<u8>]| {
+            let messages = split_messages(&out[0]);
+            assert_eq!(messages.len(), 1);
+            assert_eq!(messages[0].id, PLO_RC_FILEBROWSER_MESSAGE);
+            text(&messages[0].payload)
+        };
+        run_client(
+            &mut browser,
+            seihai_rc::files::cd_message("levels/").unwrap(),
+        );
+        let packet = seihai_rc::files::move_message("a.nw", "old/").unwrap();
+        assert_eq!(packet, b"\x80$old/a.nw");
+        let out = run_client(&mut browser, packet).0;
+        assert_eq!(line(&out), "Moved file a.nw to old/");
+        assert!(!fixture.0.join("levels/a.nw").exists());
+        assert_eq!(
+            std::fs::read(fixture.0.join("old/a.nw")).unwrap(),
+            b"moving"
+        );
+
+        // Empty destination means the world root, not an absent filename.
+        run_client(&mut browser, seihai_rc::files::cd_message("old/").unwrap());
+        let out = run_client(
+            &mut browser,
+            seihai_rc::files::move_message("a.nw", "").unwrap(),
+        )
+        .0;
+        assert_eq!(line(&out), "Moved file a.nw to ");
+        assert!(!fixture.0.join("old/a.nw").exists());
+        assert_eq!(std::fs::read(fixture.0.join("a.nw")).unwrap(), b"moving");
+
+        run_client(
+            &mut browser,
+            seihai_rc::files::cd_message("levels/").unwrap(),
+        );
+        // The filename is the exact rest, including a leading space.
+        let out = run_client(
+            &mut browser,
+            seihai_rc::files::move_message(" spaced.nw", "old/").unwrap(),
+        )
+        .0;
+        assert_eq!(line(&out), "Moved file  spaced.nw to old/");
+        assert!(!fixture.0.join("levels/ spaced.nw").exists());
+        assert_eq!(
+            std::fs::read(fixture.0.join("old/ spaced.nw")).unwrap(),
+            b"spaced"
+        );
+
+        // Existing targets and source/destination write rights are unchanged.
+        let out = run_client(
+            &mut browser,
+            seihai_rc::files::move_message("taken.nw", "old/").unwrap(),
+        )
+        .0;
+        assert!(line(&out).ends_with("already there."));
+        assert_eq!(
+            std::fs::read(fixture.0.join("levels/taken.nw")).unwrap(),
+            b"source"
+        );
+        assert_eq!(
+            std::fs::read(fixture.0.join("old/taken.nw")).unwrap(),
+            b"destination"
+        );
+        let out = run_client(
+            &mut browser,
+            seihai_rc::files::move_message("denied.nw", "locked/").unwrap(),
+        )
+        .0;
+        assert!(line(&out).starts_with("No rights"));
+        assert!(!fixture.0.join("locked/denied.nw").exists());
+        assert_eq!(
+            std::fs::read(fixture.0.join("levels/denied.nw")).unwrap(),
+            b"denied-source"
+        );
+        let out = run_client(
+            &mut browser,
+            seihai_rc::files::move_message("readonly.txt", "old/").unwrap(),
+        )
+        .0;
+        assert!(line(&out).starts_with("No rights"));
+        assert_eq!(
+            std::fs::read(fixture.0.join("levels/readonly.txt")).unwrap(),
+            b"read-only"
+        );
+        assert!(!fixture.0.join("old/readonly.txt").exists());
+
+        // The peer and server retain their existing path checks.
+        assert!(seihai_rc::files::move_message("taken.nw", "../outside/").is_err());
+        let out = browser
+            .run(Op::Move {
+                name: "taken.nw".into(),
+                to: "../outside/".into(),
+            })
+            .0;
+        assert!(line(&out).starts_with("No rights"));
+        assert_eq!(
+            std::fs::read(fixture.0.join("levels/taken.nw")).unwrap(),
+            b"source"
+        );
+        assert_eq!(
+            std::fs::read(fixture.0.join("unrelated.bin")).unwrap(),
+            b"unrelated"
+        );
     }
 }
