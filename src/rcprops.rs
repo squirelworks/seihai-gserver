@@ -149,7 +149,8 @@ fn power_image(power: u8, bias: u8, image: &str) -> Vec<u8> {
         return vec![gchar(power)];
     }
     let mut v = vec![gchar(power.saturating_add(bias))];
-    gstring(&latin1(&image[..image.len().min(60)]), &mut v);
+    let image = latin1(image);
+    gstring(&image[..image.len().min(60)], &mut v);
     v
 }
 
@@ -312,5 +313,87 @@ mod tests {
         gstring(b"bow", &mut want);
         gstring(b"Lantern", &mut want);
         assert!(split_messages(&r)[0].payload.ends_with(&want));
+    }
+
+    fn assert_account_image_reply(id: u8, image: &str, expected: &[u8]) {
+        let (sword, shield) = if id == 8 { (image, "") } else { ("", image) };
+        let source = format!(
+            "SEIHAIACC 1\nSWORD 1 {sword}\nSHIELD 1 {shield}\nBODY retained.png\nFLAG sentinel=kept\nWEAPON Lantern\n"
+        );
+        let account = Account::parse("fixture", &source);
+        let stored = if id == 8 {
+            &account.sword.1
+        } else {
+            &account.shield.1
+        };
+        assert_eq!(stored, image);
+        // This is the generator used by rcaccounts::run for a loaded account.
+        let reply = reply(7, &account);
+        let messages = split_messages(&reply);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].id, PLO_RC_PLAYERPROPSGET);
+        let decoded = seihai_rc::players::parse_props(&messages[0].payload).unwrap();
+        assert_eq!(
+            (decoded.id, decoded.account.as_str(), decoded.world.as_str()),
+            (7, "fixture", "main")
+        );
+        assert!(decoded.props_complete);
+        assert_eq!(decoded.flags, ["sentinel=kept"]);
+        assert!(decoded.chests.is_empty());
+        assert_eq!(decoded.weapons, ["Lantern"]);
+        let raw = &decoded.props.iter().find(|p| p.id == id).unwrap().raw;
+        let mut want = vec![gchar(1)];
+        if !image.is_empty() {
+            want = vec![
+                gchar(if id == 8 { 31 } else { 11 }),
+                gchar(expected.len() as u8),
+            ];
+            want.extend_from_slice(expected);
+        }
+        assert_eq!(raw, &want);
+        assert_eq!(
+            seihai_rc::players::power_and_image(id, raw).unwrap(),
+            (1, text(expected))
+        );
+        let body = &decoded.props.iter().find(|p| p.id == 35).unwrap().raw;
+        assert_eq!(&body[1..], b"retained.png");
+        assert_eq!(decoded.props.last().unwrap().id, 36);
+        assert_eq!(
+            if id == 8 {
+                &account.sword.1
+            } else {
+                &account.shield.1
+            },
+            image
+        );
+    }
+
+    fn check_account_image_cases(id: u8) {
+        assert_account_image_reply(id, "", b"");
+        assert_account_image_reply(id, "plain.png", b"plain.png");
+        assert_account_image_reply(id, &"a".repeat(60), &[b'a'; 60]);
+        assert_account_image_reply(id, &"a".repeat(61), &[b'a'; 60]);
+        assert_account_image_reply(id, "caf\u{e9}.png", b"caf\xe9.png");
+        // Wire byte 60 is Latin-1; UTF-8 byte 60 bisects its representation.
+        let mut expected = vec![b'a'; 59];
+        expected.push(0xe9);
+        assert_account_image_reply(id, &format!("{}\u{e9}", "a".repeat(59)), &expected);
+        assert_account_image_reply(id, &format!("{}\u{e9}.png", "a".repeat(59)), &expected);
+        assert_account_image_reply(id, &"\u{e9}".repeat(40), &[0xe9; 40]);
+        assert_account_image_reply(id, &"\u{e9}".repeat(60), &[0xe9; 60]);
+        assert_account_image_reply(id, &"\u{e9}".repeat(61), &[0xe9; 60]);
+        // Existing non-Latin-1 replacement remains '?', before the same cap.
+        expected[59] = b'?';
+        assert_account_image_reply(id, &format!("{}\u{2603}.png", "a".repeat(59)), &expected);
+    }
+
+    #[test]
+    fn account_sword_image_replies_cap_wire_bytes_without_slicing_utf8() {
+        check_account_image_cases(8);
+    }
+
+    #[test]
+    fn account_shield_image_replies_cap_wire_bytes_without_slicing_utf8() {
+        check_account_image_cases(9);
     }
 }
