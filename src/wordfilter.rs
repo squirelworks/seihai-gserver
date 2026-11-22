@@ -136,20 +136,25 @@ impl WordFilter {
         c.1.apply(text)
     }
 
-    /// A player-props stream with the chat (prop 12) filtered, or `None`
-    /// when there is no chat or nothing in it matched. Props after the
-    /// chat, and any bytes the parser stopped at, are kept as sent.
+    /// A player-props stream with each chat (prop 12) filtered, or `None`
+    /// when there is no chat or nothing in it matched. Other props and
+    /// any bytes the parser stopped at are kept as sent.
     pub fn filter_props(&self, payload: &[u8], bow_prop10: bool) -> Option<Vec<u8>> {
         let props = seihai_core::protocol::parse_player_props_with(payload, bow_prop10);
-        let chat = props.iter().find(|p| p.id == CURCHAT)?;
-        let text = chat.raw.get(1..)?;
-        let new = self.apply(text)?;
+        if !props.iter().any(|p| p.id == CURCHAT) {
+            return None;
+        }
+        let mut matched = false;
         let mut out = Vec::with_capacity(payload.len() + 8);
         let mut used = 0;
         for p in &props {
             used += 1 + p.raw.len();
             out.push(p.id + 0x20);
-            if p.id == CURCHAT {
+            if let Some(new) = (p.id == CURCHAT)
+                .then(|| p.raw.get(1..).and_then(|text| self.apply(text)))
+                .flatten()
+            {
+                matched = true;
                 // A GCHAR length: at most 223 bytes.
                 let n = new.len().min(223);
                 out.push(n as u8 + 0x20);
@@ -159,7 +164,7 @@ impl WordFilter {
             }
         }
         out.extend_from_slice(&payload[used.min(payload.len())..]);
-        Some(out)
+        matched.then_some(out)
     }
 }
 
