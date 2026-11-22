@@ -609,8 +609,7 @@ mod bench {
         let mut server = Codec::new(EncryptionGen::Gen5, 0x33, Some(ClientVersion::V222));
         let mut client = Gen5::new(0x33);
         let wire = server.encode(&body).unwrap();
-        let plain =
-            seihai_core::protocol::read_frame(&mut wire.as_slice(), &mut client).unwrap();
+        let plain = seihai_core::protocol::read_frame(&mut wire.as_slice(), &mut client).unwrap();
         let mut state = seihai_core::protocol::SessionState::for_version(ClientVersion::V222);
         state.apply_body(&plain);
         assert_eq!(state.triggers.len(), 1);
