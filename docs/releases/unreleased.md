@@ -2,6 +2,8 @@ Notes for the next seihai-gserver release.
 
 ## Added
 
+- Add seeded production-model and receiver regressions for repeated ordinary props that return to their stored value. Baseline execution is pending; no model correction is applied yet.
+
 - Filter each repeated chat property independently: later matches are filtered and later benign or differently matched text keeps its own result. Real-file/production-model regressions preserve other fields, parser-stop tails and both bow/gani property grammars.
 
 - File requests recover missing/non-file cached paths through the existing rescan interval after assets move or are replaced. Valid cached hits and scanner/name behavior are retained; real-file offer/client readback regressions cover recovery and throttling.

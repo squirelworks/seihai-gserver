@@ -1519,4 +1519,97 @@ mod tests {
         let pm = private_message(ClientVersion::V222, 4, b"Far", b"far", b"\"hi\"");
         assert!(!pm.windows(4).any(|w| w == b"head"));
     }
+
+    fn repeated_chat_raw(text: &[u8]) -> Vec<u8> {
+        let mut raw = vec![gchar(12)];
+        crate::wire::gstring(text, &mut raw);
+        raw
+    }
+
+    #[test]
+    fn repeated_ordinary_props_reverting_to_stored_values_are_net_unchanged() {
+        for version in [ClientVersion::V139, ClientVersion::V222] {
+            let mut seed = repeated_chat_raw(b"seed");
+            seed.extend([gchar(17), gchar(1)]);
+            let mut props = Props::default();
+            props.apply(&seed, version);
+            let original = props.values().clone();
+            let introduction = props.all();
+            let mut raw = repeated_chat_raw(b"intermediate");
+            raw.extend([gchar(17), gchar(2)]);
+            raw.extend(repeated_chat_raw(b"seed"));
+            raw.extend([gchar(17), gchar(1)]);
+            let change = props.apply(&raw, version);
+            assert_eq!(props.values(), &original, "{version:?}");
+            assert!(change.is_empty(), "{version:?}: {change:?}");
+            for receiver in [ClientVersion::V139, ClientVersion::V222] {
+                assert!(message(receiver, 7, &change, &[]).is_none());
+                let mut client = SessionState::for_version(receiver);
+                client.apply_body(&message(receiver, 7, &introduction, &JOINED).unwrap());
+                assert_eq!(client.others.len(), 1);
+                assert_eq!(client.others[0].chat.as_deref(), Some("seed"));
+                assert_eq!(client.others[0].sprite, Some(1));
+            }
+        }
+    }
+
+    #[test]
+    fn a_reverted_chat_does_not_hide_an_unrelated_final_change() {
+        for version in [ClientVersion::V139, ClientVersion::V222] {
+            let mut seed = repeated_chat_raw(b"seed");
+            seed.extend([gchar(17), gchar(1)]);
+            let mut props = Props::default();
+            props.apply(&seed, version);
+            let introduction = props.all();
+            let mut sequential = props.clone();
+            let first = repeated_chat_raw(b"intermediate");
+            let last = repeated_chat_raw(b"seed");
+            let sprite = [gchar(17), gchar(2)];
+            sequential.apply(&first, version);
+            sequential.apply(&sprite, version);
+            sequential.apply(&last, version);
+            let raw = [first, sprite.to_vec(), last].concat();
+            let change = props.apply(&raw, version);
+            assert_eq!(props.values(), sequential.values(), "{version:?}");
+            assert_eq!(props.values()[&12], vec![gchar(4), b's', b'e', b'e', b'd']);
+            assert_eq!(props.values()[&17], vec![gchar(2)]);
+            assert!(!change.values.contains_key(&12), "{version:?}: {change:?}");
+            assert_eq!(change.values[&17], vec![gchar(2)]);
+            for receiver in [ClientVersion::V139, ClientVersion::V222] {
+                let update = message(receiver, 7, &change, &[]).unwrap();
+                assert_eq!(prop_in(&update, receiver, 12), None);
+                assert_eq!(prop_in(&update, receiver, 17), Some(vec![gchar(2)]));
+                let mut client = SessionState::for_version(receiver);
+                client.apply_body(&message(receiver, 7, &introduction, &JOINED).unwrap());
+                assert_eq!(client.others[0].chat.as_deref(), Some("seed"));
+                assert_eq!(client.others[0].sprite, Some(1));
+                client.apply_body(&update);
+                assert_eq!(client.others[0].chat.as_deref(), Some("seed"));
+                assert_eq!(client.others[0].sprite, Some(2));
+            }
+        }
+    }
+
+    #[test]
+    fn repeated_ordinary_props_keep_a_distinct_final_value() {
+        for version in [ClientVersion::V139, ClientVersion::V222] {
+            let mut props = Props::default();
+            props.apply(&repeated_chat_raw(b"seed"), version);
+            let introduction = props.all();
+            let raw = [repeated_chat_raw(b"first"), repeated_chat_raw(b"final")].concat();
+            let change = props.apply(&raw, version);
+            let expected = vec![gchar(5), b'f', b'i', b'n', b'a', b'l'];
+            assert_eq!(props.values()[&12], expected, "{version:?}");
+            assert_eq!(change.values[&12], expected);
+            for receiver in [ClientVersion::V139, ClientVersion::V222] {
+                let update = message(receiver, 7, &change, &[]).unwrap();
+                assert_eq!(prop_in(&update, receiver, 12), Some(expected.clone()));
+                let mut client = SessionState::for_version(receiver);
+                client.apply_body(&message(receiver, 7, &introduction, &JOINED).unwrap());
+                assert_eq!(client.others[0].chat.as_deref(), Some("seed"));
+                client.apply_body(&update);
+                assert_eq!(client.others[0].chat.as_deref(), Some("final"));
+            }
+        }
+    }
 }
