@@ -4165,6 +4165,103 @@ mod tests {
     use seihai_core::protocol::SessionState;
 
     #[test]
+    fn nc_delete_retains_live_assets_after_file_error_and_retries_the_original_path() {
+        use crate::nc::{StoreAnswer, StoreOp};
+        let dir =
+            std::env::temp_dir().join(format!("seihai-nc-delete-failure-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("scripts")).unwrap();
+        std::fs::create_dir_all(dir.join("weapons")).unwrap();
+        let class_path = dir.join("scripts/Fixture.TXT");
+        let weapon_path = dir.join("weapons/noncanonical.TXT");
+        let class_source = "if (created) { this.on = 1; }";
+        let weapon_source =
+            "GRAWP001\nREALNAME Bell\nIMAGE bell.png\nSCRIPT\nsay2 ding;\nSCRIPTEND\n";
+        std::fs::write(&class_path, class_source).unwrap();
+        std::fs::write(&weapon_path, weapon_source).unwrap();
+        let mut task = World::new(5, blank()).task.lock().unwrap().take().unwrap();
+        task.classes = crate::classes::Classes::load(&dir.join("scripts"));
+        task.weapons = crate::weapons::Weapons::load(&dir.join("weapons"));
+        for path in [&class_path, &weapon_path] {
+            std::fs::rename(path, path.with_extension("saved")).unwrap();
+            std::fs::create_dir(path).unwrap();
+        }
+        assert_eq!(
+            task.nc_store(StoreOp::ClassDelete("FIXTURE".into())),
+            StoreAnswer::Done(false)
+        );
+        assert_eq!(
+            task.nc_store(StoreOp::WeaponDelete("bell".into())),
+            StoreAnswer::Done(false)
+        );
+        assert_eq!(
+            task.nc_store(StoreOp::ClassGet("fixture".into())),
+            StoreAnswer::Class(Some(class_source.into()))
+        );
+        assert_eq!(
+            task.nc_store(StoreOp::ClassNames),
+            StoreAnswer::Names(vec!["Fixture".into()])
+        );
+        assert!(
+            matches!(task.nc_store(StoreOp::WeaponGet("Bell".into())), StoreAnswer::Weapon(Some((image, source))) if image == "bell.png" && source.contains("say2 ding;"))
+        );
+        assert_eq!(
+            task.nc_store(StoreOp::WeaponNames),
+            StoreAnswer::Names(vec!["Bell".into()])
+        );
+        for path in [&class_path, &weapon_path] {
+            std::fs::remove_dir(path).unwrap();
+            std::fs::rename(path.with_extension("saved"), path).unwrap();
+        }
+        assert!(crate::classes::Classes::load(&dir.join("scripts"))
+            .get("fixture")
+            .is_some());
+        assert!(crate::weapons::Weapons::load(&dir.join("weapons"))
+            .get("bell")
+            .is_some());
+        assert_eq!(
+            task.nc_store(StoreOp::ClassDelete("fixture".into())),
+            StoreAnswer::Done(true)
+        );
+        assert_eq!(
+            task.nc_store(StoreOp::WeaponDelete("BELL".into())),
+            StoreAnswer::Done(true)
+        );
+        assert!(!class_path.exists());
+        assert!(!weapon_path.exists());
+        assert!(crate::classes::Classes::load(&dir.join("scripts"))
+            .get("fixture")
+            .is_none());
+        assert!(crate::weapons::Weapons::load(&dir.join("weapons"))
+            .get("bell")
+            .is_none());
+
+        // An externally removed file still converges to a successful delete.
+        task.classes.set("gone", class_source).unwrap();
+        task.weapons
+            .set(crate::weapons::Weapon::new("gone", "bell.png", ""))
+            .unwrap();
+        std::fs::remove_file(dir.join("scripts/gone.txt")).unwrap();
+        std::fs::remove_file(dir.join("weapons").join(crate::weapons::file_name("gone"))).unwrap();
+        assert_eq!(
+            task.nc_store(StoreOp::ClassDelete("gone".into())),
+            StoreAnswer::Done(true)
+        );
+        assert_eq!(
+            task.nc_store(StoreOp::WeaponDelete("gone".into())),
+            StoreAnswer::Done(true)
+        );
+        assert_eq!(
+            task.nc_store(StoreOp::ClassNames),
+            StoreAnswer::Names(vec![])
+        );
+        assert_eq!(
+            task.nc_store(StoreOp::WeaponNames),
+            StoreAnswer::Names(vec![])
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn script_attributes_reach_mirror_and_survive_npcserver_reload() {
         use seihai_core::protocol::npcprops::{NPCPROP_GATTRIB1, NPCPROP_GATTRIB10};
         use seihai_core::scripting::engine::Era;

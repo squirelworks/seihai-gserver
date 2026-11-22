@@ -143,8 +143,9 @@ pub enum StoreAnswer {
     Class(Option<String>),
     /// A weapon's image and script.
     Weapon(Option<(String, String)>),
-    /// A save or delete: whether it was made (a delete: whether the name
-    /// existed).
+    /// Whether a save or delete completed. Deleting a known name whose
+    /// backing file is already absent succeeds; other file errors leave
+    /// the live entry intact and return false.
     Done(bool),
 }
 

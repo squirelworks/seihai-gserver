@@ -120,6 +120,8 @@ pub struct Classes {
     /// `scripts/`, where NPC Control's changes are written.
     dir: Option<PathBuf>,
     by_name: BTreeMap<String, Class>,
+    /// Preserve the actual loaded path, including the extension's case.
+    files: BTreeMap<String, PathBuf>,
 }
 
 impl Classes {
@@ -160,7 +162,9 @@ impl Classes {
             {
                 eprintln!("class {}: no GS2 bytecode: {e}", class.name);
             }
-            c.by_name.insert(class.name.to_ascii_lowercase(), class);
+            let key = class.name.to_ascii_lowercase();
+            c.files.insert(key.clone(), path);
+            c.by_name.insert(key, class);
         }
         c
     }
@@ -185,28 +189,45 @@ impl Classes {
             return Err(std::io::Error::other("not a class name"));
         };
         std::fs::create_dir_all(dir)?;
-        std::fs::write(dir.join(format!("{name}.txt")), latin1(source))?;
-        self.by_name
-            .insert(name.to_ascii_lowercase(), Class::new(&name, source));
+        let key = name.to_ascii_lowercase();
+        let path = self
+            .files
+            .get(&key)
+            .cloned()
+            .unwrap_or_else(|| dir.join(format!("{name}.txt")));
+        std::fs::write(&path, latin1(source))?;
+        self.files.insert(key.clone(), path);
+        self.by_name.insert(key, Class::new(&name, source));
         Ok(())
     }
 
     /// NPC Control's class delete: the class and its file go. False when
-    /// the world had no such class.
+    /// the world had no such class or its backing file could not be
+    /// removed. An already absent file counts as deleted.
     pub fn remove(&mut self, name: &str) -> bool {
-        let Some(class) = self.by_name.remove(&name.to_ascii_lowercase()) else {
+        let key = name.to_ascii_lowercase();
+        let Some(class) = self.by_name.get(&key) else {
             return false;
         };
         if let Some(dir) = &self.dir {
-            let path = dir.join(format!("{}.txt", class.name));
+            let path = self
+                .files
+                .get(&key)
+                .cloned()
+                .unwrap_or_else(|| dir.join(format!("{}.txt", class.name)));
             if let Err(e) = std::fs::remove_file(&path) {
-                eprintln!(
-                    "class {}: could not remove {}: {e}",
-                    class.name,
-                    path.display()
-                );
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    eprintln!(
+                        "class {}: could not remove {}: {e}",
+                        class.name,
+                        path.display()
+                    );
+                    return false;
+                }
             }
         }
+        self.by_name.remove(&key);
+        self.files.remove(&key);
         true
     }
 
@@ -238,6 +259,28 @@ mod tests {
     use seihai_core::protocol::ClientVersion;
 
     const SOURCE: &str = "if (created) {\n  setstring client.classok,1;\n}\n";
+
+    #[test]
+    fn save_and_delete_use_the_loaded_extension_case() {
+        let dir =
+            std::env::temp_dir().join(format!("seihai-class-path-case-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("Fixture.TXT");
+        std::fs::write(&path, SOURCE).unwrap();
+        let mut classes = Classes::load(&dir);
+        let replacement = "if (created) { this.on = 1; }";
+        classes.set("fixture", replacement).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), replacement);
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        assert_eq!(
+            Classes::load(&dir).get("FIXTURE").unwrap().source,
+            replacement
+        );
+        assert!(classes.remove("fIxTuRe"));
+        assert!(!path.exists());
+        assert!(Classes::load(&dir).get("fixture").is_none());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn a_gs2_build_gets_133_with_the_bytecode() {
