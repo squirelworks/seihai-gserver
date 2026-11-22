@@ -1615,4 +1615,112 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn repeated_colors_compare_the_final_normalized_value() {
+        let beta = ClientVersion::NewWorldB1;
+        let classic = ClientVersion::V205;
+        let original = [2, 4, 4, 4, 4, 7, 9, 18];
+        let intermediate = [1, 4, 4, 4, 4, 6, 8, 17];
+        let distinct = [3, 4, 4, 4, 4, 7, 10, 18];
+        let colors = |slots: &[u8]| {
+            let mut raw = vec![gchar(COLORS)];
+            raw.extend(slots.iter().copied().map(gchar));
+            raw
+        };
+        let mut props = Props::default();
+        let seed = colors(&original);
+        let (five, tail) = colors_to_five(&seed, &ClientProfile::of(beta));
+        props.apply_colors(&five, beta, tail.as_deref());
+        assert_eq!(props.values()[&COLORS], original.map(gchar));
+
+        let mut session = SessionState::for_version(beta);
+        session.apply_body(&message(beta, 7, &props.all(), &JOINED).unwrap());
+        assert_eq!(session.others.len(), 1);
+        assert_eq!(session.others[0].looks.colors, Some([2, 4, 4, 4, 4]));
+
+        assert!(props.apply(&colors(&original[..5]), classic).is_empty());
+        let mut classic_revert = colors(&intermediate[..5]);
+        classic_revert.extend(colors(&original[..5]));
+        let change = props.apply(&classic_revert, classic);
+        assert!(message(beta, 7, &change, &[]).is_none());
+        assert!(change.is_empty());
+        assert_eq!(props.values()[&COLORS], original.map(gchar));
+
+        for final_slots in [original, distinct] {
+            let mut raw = colors(&intermediate);
+            raw.extend(colors(&final_slots));
+            raw.extend([gchar(17), gchar(final_slots[0])]);
+            let (five, tail) = colors_to_five(&raw, &ClientProfile::of(beta));
+            assert_eq!(tail.as_deref(), Some(&final_slots.map(gchar)[5..]));
+            let change = props.apply_colors(&five, beta, tail.as_deref());
+            assert_eq!(props.values()[&COLORS], final_slots.map(gchar));
+            let packet = message(beta, 7, &change, &[]).unwrap();
+            if final_slots == original {
+                assert!(!change.values.contains_key(&COLORS));
+            } else {
+                assert_eq!(change.values[&COLORS], final_slots.map(gchar));
+            }
+            session.apply_body(&packet);
+            assert_eq!(
+                session.others[0].looks.colors,
+                Some(final_slots[..5].try_into().unwrap())
+            );
+            assert_eq!(session.others[0].sprite, Some(final_slots[0]));
+        }
+    }
+
+    #[test]
+    fn repeated_legacy_bow_drops_only_the_reverted_change() {
+        let version = ClientVersion::V139;
+        let mut original = vec![gchar(10), gchar(17)];
+        original.extend_from_slice(b"bow.gif");
+        let intermediate = [gchar(10), gchar(3)];
+        let mut distinct = vec![gchar(10), gchar(18)];
+        distinct.extend_from_slice(b"long.gif");
+        let mut props = Props::default();
+        props.apply(&original, version);
+        assert_eq!(props.all().bow.as_deref(), Some(&original[1..]));
+        let mut session = SessionState::for_version(version);
+        session.apply_body(&message(version, 7, &props.all(), &JOINED).unwrap());
+        assert_eq!(session.others.len(), 1);
+
+        assert_eq!(
+            session.others[0].looks.bow_slot_gani.as_deref(),
+            Some("bow.gif")
+        );
+
+        assert!(props.apply(&original, version).is_empty());
+        let mut raw = intermediate.to_vec();
+        raw.extend_from_slice(&original);
+        let change = props.apply(&raw, version);
+        assert!(message(version, 7, &change, &[]).is_none());
+        assert!(change.is_empty());
+        assert_eq!(props.all().bow.as_deref(), Some(&original[1..]));
+
+        raw.extend([gchar(17), gchar(1)]);
+        let change = props.apply(&raw, version);
+        let packet = message(version, 7, &change, &[]).unwrap();
+        assert_eq!(prop_in(&packet, version, 10), None);
+        session.apply_body(&packet);
+        assert_eq!(session.others[0].sprite, Some(1));
+
+        let mut raw = intermediate.to_vec();
+        raw.extend_from_slice(&distinct);
+        raw.extend([gchar(17), gchar(2)]);
+        let change = props.apply(&raw, version);
+        assert_eq!(change.bow.as_deref(), Some(&distinct[1..]));
+        assert_eq!(props.all().bow.as_deref(), Some(&distinct[1..]));
+        let packet = message(version, 7, &change, &[]).unwrap();
+        assert_eq!(
+            prop_in(&packet, version, 10).as_deref(),
+            Some(&distinct[1..])
+        );
+        session.apply_body(&packet);
+        assert_eq!(session.others[0].sprite, Some(2));
+        assert_eq!(
+            session.others[0].looks.bow_slot_gani.as_deref(),
+            Some("long.gif")
+        );
+    }
 }
