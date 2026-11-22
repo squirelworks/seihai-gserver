@@ -73,7 +73,9 @@
 //! - `NPC_TRIGGER_ACTION`: the project bridge sends 48 with server player 0
 //!   and no named NPC to every same-level player whose profile reads it.
 //!   Half-tile coordinates above 223, an empty action, comma/LF in its name
-//!   or LF in parameters are refused; parameters keep their commas and CR.
+//!   or LF/NUL in parameters are refused; NUL action bytes are refused too.
+//!   A scratch-codec common transport envelope refuses oversized actions
+//!   before enqueueing; real connection state is untouched. Commas and CR remain.
 //!   The NPC-server already ran the action, so it is never echoed to it.
 //!   Client-origin 38 still uses the existing player relay and NPC link path.
 //! - `SEND_TO_NC` (`0x4D`): the text as `PLO_RC_CHAT` (74) to every logged-in
@@ -3511,6 +3513,8 @@ impl WorldTask {
             || action.contains(&b',')
             || action.contains(&b'\n')
             || params.contains(&b'\n')
+            || action.contains(&0)
+            || params.contains(&0)
         {
             self.note(
                 "NPC_TRIGGER_ACTION",
@@ -3529,6 +3533,13 @@ impl WorldTask {
         // Reuse the fields, not the client's packet id or newline.
         payload.extend_from_slice(&client[1..client.len() - 1]);
         let message = crate::wire::msg(crate::wire::ids::PLO_TRIGGERACTION, &payload);
+        if !crate::codec::Codec::fits_npc_action(&message) {
+            self.note(
+                "NPC_TRIGGER_ACTION",
+                "action does not fit the common client transport envelope",
+            );
+            return;
+        }
         let level = latin1_text(level).to_ascii_lowercase();
         for player in self.players.values() {
             if player.level == level && player.profile.reads(crate::wire::ids::PLO_TRIGGERACTION) {

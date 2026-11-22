@@ -109,6 +109,22 @@ pub struct Codec {
 }
 
 impl Codec {
+    /// Common transport envelope for the project NPC action bridge. Scratch
+    /// codecs use the existing encoder; no real connection state is advanced.
+    /// XOR keys/iterator positions change bytes, not encoded lengths.
+    pub(crate) fn fits_npc_action(body: &[u8]) -> bool {
+        let mut compressed = Self::new(EncryptionGen::Gen5, 0, None);
+        compressed.compress_all = true;
+        [
+            Self::new(EncryptionGen::Gen2, 0, None),
+            Self::new(EncryptionGen::Gen5, 0, None).gen4(),
+            Self::new(EncryptionGen::Gen5, 0, None),
+            compressed,
+        ]
+        .iter_mut()
+        .all(|codec| codec.encode(body).is_ok())
+    }
+
     /// The codec after a login with `key`. `version` is the build the token
     /// named, if the server knows it (it picks 5.12's step count).
     pub fn new(gen: EncryptionGen, key: u8, version: Option<ClientVersion>) -> Self {
@@ -520,5 +536,83 @@ mod bench {
             }
             eprintln!("{row}");
         }
+    }
+
+    fn action_transport(mode: u8, key: u8) -> Codec {
+        match mode {
+            0 => Codec::new(EncryptionGen::Gen2, key, None),
+            1 => Codec::new(EncryptionGen::Gen5, key, None).gen4(),
+            2 => Codec::new(EncryptionGen::Gen5, key, None),
+            3 => {
+                let mut codec = Codec::new(EncryptionGen::Gen5, key, None);
+                codec.compress_all = true;
+                codec
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn npc_action_preflight_uses_existing_encoded_limits_and_disposable_state() {
+        let mut header = Vec::new();
+        push_len(&mut header, MAX_OUT_FRAME).unwrap();
+        assert_eq!(header, (MAX_OUT_FRAME as u16).to_be_bytes());
+        assert!(push_len(&mut Vec::new(), MAX_OUT_FRAME + 1).is_err());
+
+        for body in [b"P       edge\n".to_vec(), vec![b'x'; 131_070]] {
+            let expected = (0..4).all(|mode| action_transport(mode, 0).encode(&body).is_ok());
+            assert_eq!(Codec::fits_npc_action(&body), expected);
+            for mode in 0..4 {
+                let baseline = action_transport(mode, 0).encode(&body).unwrap().len();
+                for key in [0, 0x33, 127] {
+                    let mut codec = action_transport(mode, key);
+                    codec.encode(b"P       before\n").unwrap();
+                    assert_eq!(codec.encode(&body).unwrap().len(), baseline);
+                }
+            }
+            for version in [
+                ClientVersion::V222,
+                ClientVersion::V512,
+                ClientVersion::V512Mac,
+                ClientVersion::V603R7,
+            ] {
+                for key in [0, 0x33, 127] {
+                    let mut codec = Codec::new(EncryptionGen::Gen5, key, Some(version));
+                    let mode = if codec.compress_all { 3 } else { 2 };
+                    let expected = action_transport(mode, 0).encode(&body).unwrap().len();
+                    codec.encode(b"P       before\n").unwrap();
+                    assert_eq!(codec.encode(&body).unwrap().len(), expected);
+                }
+            }
+        }
+        let mut actual = Codec::new(EncryptionGen::Gen5, 0x33, Some(ClientVersion::V222));
+        let mut untouched = Codec::new(EncryptionGen::Gen5, 0x33, Some(ClientVersion::V222));
+        assert_eq!(
+            actual.encode(b"P       first\n").unwrap(),
+            untouched.encode(b"P       first\n").unwrap()
+        );
+        assert!(Codec::fits_npc_action(b"P       checked\n"));
+        assert_eq!(
+            actual.encode(b"P       after\n").unwrap(),
+            untouched.encode(b"P       after\n").unwrap()
+        );
+    }
+
+    #[test]
+    fn existing_v222_codec_scrubs_nul_in_action_text() {
+        let client_message =
+            seihai_core::net::trigger_action_message(0.0, 0.0, "control", "nul\0here");
+        let mut payload = Vec::new();
+        crate::wire::gshort(0, &mut payload);
+        payload.extend_from_slice(&client_message[1..client_message.len() - 1]);
+        let body = crate::wire::msg(crate::wire::ids::PLO_TRIGGERACTION, &payload);
+        let mut server = Codec::new(EncryptionGen::Gen5, 0x33, Some(ClientVersion::V222));
+        let mut client = Gen5::new(0x33);
+        let wire = server.encode(&body).unwrap();
+        let plain = read_frame(&mut wire.as_slice(), &mut client).unwrap();
+        let mut state = seihai_core::protocol::SessionState::for_version(ClientVersion::V222);
+        state.apply_body(&plain);
+        assert_eq!(state.triggers.len(), 1);
+        assert_eq!(state.triggers[0].params, "nul?here");
     }
 }

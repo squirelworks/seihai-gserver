@@ -828,10 +828,51 @@ mod tests {
         assert!(!hub.connected());
     }
 
+    fn action_client_received(
+        version: seihai_core::protocol::ClientVersion,
+        receiver: &mut mpsc::UnboundedReceiver<Vec<Vec<u8>>>,
+        server: &mut crate::codec::Codec,
+        client: &mut seihai_core::protocol::Gen5,
+    ) -> (seihai_core::protocol::SessionState, usize) {
+        use seihai_core::protocol::{
+            read_frame, read_zlib_frame, split_messages, EncryptionGen, SessionState,
+        };
+        let mut state = SessionState::for_version(version);
+        let mut actions = 0;
+        while let Ok(frames) = receiver.try_recv() {
+            for body in frames {
+                let wire = server
+                    .encode(&body)
+                    .expect("bridge must refuse an unencodable action before enqueueing");
+                let plain = if version.encryption() == EncryptionGen::Gen5 {
+                    read_frame(&mut wire.as_slice(), client).unwrap()
+                } else {
+                    read_zlib_frame(&mut wire.as_slice()).unwrap()
+                };
+                actions += split_messages(&plain).iter().filter(|m| m.id == 48).count();
+                state.apply_body(&plain);
+            }
+        }
+        (state, actions)
+    }
+
+    fn sizing_action_packet(action: &[u8], params: &[u8]) -> Vec<u8> {
+        let client = seihai_core::net::trigger_action_message(
+            0.0,
+            0.0,
+            std::str::from_utf8(action).unwrap(),
+            std::str::from_utf8(params).unwrap(),
+        );
+        let mut payload = Vec::new();
+        crate::wire::gshort(0, &mut payload);
+        payload.extend_from_slice(&client[1..client.len() - 1]);
+        crate::wire::msg(crate::wire::ids::PLO_TRIGGERACTION, &payload)
+    }
+
     #[tokio::test]
     async fn script_actions_reach_eligible_clients_without_npc_echo() {
         use crate::world::{Joining, LevelSource, World};
-        use seihai_core::protocol::{ClientVersion, SessionState};
+        use seihai_core::protocol::{ClientVersion, Gen5};
         use seihai_core::scripting::engine::Era;
         use seihai_npcserver::{npcdb::NpcDef, scripts::Scripts};
 
@@ -901,7 +942,13 @@ mod tests {
             if name == "second" || name == "other" {
                 assert!(joined.gmap.is_some(), "actual same-map cells");
             }
-            clients.push((joined.id, version, receiver));
+            let codec = crate::codec::Codec::new(version.encryption(), 0x33, Some(version));
+            let cipher = if version.profile().protocol.gen5_round_down {
+                Gen5::new(0x33).round_down()
+            } else {
+                Gen5::new(0x33)
+            };
+            clients.push((joined.id, version, receiver, codec, cipher));
         }
         // A real outgoing-queue positive control makes absence of echo observable.
         while npc_out.try_recv().is_ok() {}
@@ -909,7 +956,7 @@ mod tests {
         assert!(
             matches!(npc_out.try_recv().unwrap(), Message::TriggerAction { action, .. } if action == b"control")
         );
-        for (_, _, receiver) in &mut clients {
+        for (_, _, receiver, _, _) in &mut clients {
             while receiver.try_recv().is_ok() {}
         }
 
@@ -935,13 +982,8 @@ mod tests {
             assert!(hub.to_world(WorldIn::FromNpc(action)));
         }
         world.save_all().await; // Ordered world-inbox barrier, with no saver installed.
-        for (index, (_, version, receiver)) in clients.iter_mut().enumerate() {
-            let mut state = SessionState::for_version(*version);
-            while let Ok(frames) = receiver.try_recv() {
-                for frame in frames {
-                    state.apply_body(&frame);
-                }
-            }
+        for (index, (_, version, receiver, codec, cipher)) in clients.iter_mut().enumerate() {
+            let (state, delivered) = action_client_received(*version, receiver, codec, cipher);
             if index < 2 {
                 assert_eq!(state.triggers.len(), 1);
                 let action = &state.triggers[0];
@@ -953,6 +995,7 @@ mod tests {
                 assert_eq!(action.params, "first,second");
             } else {
                 assert!(state.triggers.is_empty());
+                assert_eq!(delivered, 0, "ineligible peers must receive no packet 48");
             }
         }
         assert!(
@@ -969,6 +1012,8 @@ mod tests {
             (0, 0, b"bad,name".as_slice(), b"".as_slice()),
             (0, 0, b"bad\nname".as_slice(), b"".as_slice()),
             (0, 0, b"bad".as_slice(), b"bad\nparams".as_slice()),
+            (0, 0, b"bad\0name".as_slice(), b"".as_slice()),
+            (0, 0, b"bad".as_slice(), b"bad\0params".as_slice()),
         ] {
             assert!(hub.to_world(WorldIn::FromNpc(Message::NpcTriggerAction {
                 level: b"a.nw".to_vec(),
@@ -978,6 +1023,35 @@ mod tests {
                 params: params.to_vec()
             })));
         }
+        // Deterministic printable text exercises the existing encoded frame limit.
+        let mut word = 0x1357_2468u32;
+        let text: Vec<u8> = (0..131_070)
+            .map(|_| {
+                word ^= word << 13;
+                word ^= word >> 17;
+                word ^= word << 5;
+                let byte = 33 + (word % 93) as u8;
+                if byte == b',' {
+                    b'~'
+                } else {
+                    byte
+                }
+            })
+            .collect();
+        let bad = sizing_action_packet(&text[..65_535], &text[65_535..]);
+        assert!(
+            crate::codec::Codec::new(seihai_core::protocol::EncryptionGen::Gen2, 0, None)
+                .encode(&bad)
+                .is_err()
+        );
+        assert!(!crate::codec::Codec::fits_npc_action(&bad));
+        assert!(hub.to_world(WorldIn::FromNpc(Message::NpcTriggerAction {
+            level: b"a.nw".to_vec(),
+            x: 0,
+            y: 0,
+            action: text[..65_535].to_vec(),
+            params: text[65_535..].to_vec()
+        })));
         for (x, y, action, params) in [
             (0, 223, b"edge".as_slice(), b"\xff,one,,two\r".as_slice()),
             (223, 0, b"edge\r".as_slice(), b"".as_slice()),
@@ -990,18 +1064,26 @@ mod tests {
                 params: params.to_vec()
             })));
         }
+        // A large compressible action still fits: there is no arbitrary raw-text cap.
+        let long_action = vec![b'a'; 65_535];
+        let long_params = vec![b'b'; 65_535];
+        let large = sizing_action_packet(&long_action, &long_params);
+        assert!(large.len() > crate::codec::MAX_OUT_FRAME);
+        assert!(crate::codec::Codec::fits_npc_action(&large));
+        assert!(hub.to_world(WorldIn::FromNpc(Message::NpcTriggerAction {
+            level: b"a.nw".to_vec(),
+            x: 0,
+            y: 0,
+            action: long_action,
+            params: long_params
+        })));
         world.save_all().await;
-        for (index, (_, version, receiver)) in clients.iter_mut().enumerate() {
-            let mut state = SessionState::for_version(*version);
-            while let Ok(frames) = receiver.try_recv() {
-                for frame in frames {
-                    state.apply_body(&frame);
-                }
-            }
+        for (index, (_, version, receiver, codec, cipher)) in clients.iter_mut().enumerate() {
+            let (state, delivered) = action_client_received(*version, receiver, codec, cipher);
             if index < 2 {
                 assert_eq!(
                     state.triggers.len(),
-                    2,
+                    3,
                     "invalid actions must not create packets"
                 );
                 assert_eq!((state.triggers[0].x, state.triggers[0].y), (0.0, 111.5));
@@ -1009,9 +1091,14 @@ mod tests {
                 assert_eq!((state.triggers[1].x, state.triggers[1].y), (111.5, 0.0));
                 assert_eq!(state.triggers[1].action, "edge\r");
                 assert!(state.triggers[1].params.is_empty());
+                assert_eq!(state.triggers[2].action.len(), 65_535);
+                assert!(state.triggers[2].action.bytes().all(|b| b == b'a'));
+                assert_eq!(state.triggers[2].params.len(), 65_535);
+                assert!(state.triggers[2].params.bytes().all(|b| b == b'b'));
                 assert!(state.triggers.iter().all(|a| a.player == 0 && a.npc == 0));
             } else {
                 assert!(state.triggers.is_empty());
+                assert_eq!(delivered, 0, "ineligible peers must receive no packet 48");
             }
         }
         assert!(npc_out.try_recv().is_err());
