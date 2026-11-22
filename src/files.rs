@@ -107,9 +107,9 @@ impl FileStore {
         crate::gpak::key_in(&text, name)
     }
 
-    /// The file called `name`, if the world has it. A name not in the
-    /// index rescans the folders, at most every [`RESCAN`], so files put in
-    /// while the server runs are found.
+    /// The file called `name`, if the world has it. A missing name or a
+    /// cached path known to be missing/not a file rescans the folders, at
+    /// most every [`RESCAN`], so moved files and live additions are found.
     pub fn find(&self, name: &str) -> Option<Found> {
         if !valid_name(name) {
             return None;
@@ -118,7 +118,15 @@ impl FileStore {
         let path = {
             let mut ix = self.index.lock().unwrap();
             let stale = ix.scanned.is_none_or(|t| t.elapsed() >= RESCAN);
-            if !ix.by_name.contains_key(&key) && stale {
+            if stale
+                && ix
+                    .by_name
+                    .get(&key)
+                    .is_none_or(|path| match std::fs::metadata(path) {
+                        Ok(meta) => !meta.is_file(),
+                        Err(e) => e.kind() == std::io::ErrorKind::NotFound,
+                    })
+            {
                 ix.by_name = self.scan();
                 ix.scanned = Some(Instant::now());
             }
@@ -822,6 +830,18 @@ mod tests {
         assert_eq!(
             received(&store),
             [("SCENE.bin".to_string(), b"recreated asset".to_vec())]
+        );
+        assert_eq!(store.find("other.bin").unwrap().data, b"unrelated");
+
+        // A cached path replaced by a directory is known not to be a served file.
+        std::fs::remove_file(&old).unwrap();
+        std::fs::create_dir(&old).unwrap();
+        std::fs::write(&new, b"replacement asset").unwrap();
+        store.index.lock().unwrap().scanned = Some(Instant::now() - RESCAN);
+        assert!(old.is_dir());
+        assert_eq!(
+            received(&store),
+            [("SCENE.bin".to_string(), b"replacement asset".to_vec())]
         );
         assert_eq!(store.find("other.bin").unwrap().data, b"unrelated");
     }
