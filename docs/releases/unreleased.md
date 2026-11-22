@@ -2,6 +2,8 @@ Notes for the next seihai-gserver release.
 
 ## Added
 
+- Add a real-file relocation/deletion cache regression through file offers and client readback. Baseline execution is pending; the rescan fix is not yet applied.
+
 - Reconcile the plan, roadmap and parity notes with merged persistence, NPC-action and account-listing work, retaining unresolved native/lab/release criteria.
 
 - Account listings now omit directories named like account files, including in unconditioned RC replies. Existing account-name filtering and symlink-to-file following are unchanged; real-file/reopen and RC-reply tests cover the fix.
