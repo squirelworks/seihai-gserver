@@ -490,6 +490,10 @@ impl Store {
         let mut names: Vec<String> = rd
             .filter_map(|e| e.ok())
             .filter_map(|e| {
+                // Follow symlinks to files, as load does; directories are not accounts.
+                if !e.path().is_file() {
+                    return None;
+                }
                 let name = e.file_name().into_string().ok()?;
                 let stem = name.strip_suffix(".txt")?;
                 crate::login::valid_account_name(stem).then(|| stem.to_string())
@@ -618,5 +622,71 @@ CHEST House.nw 1 2
         assert!(b.check_password(b"pw"));
         assert!(s.load("alice").unwrap().is_none());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn store_lists_account_files_not_directories_and_reopens_them() {
+        struct Fixture(std::path::PathBuf);
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "seihai-account-file-list-{}-{stamp}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let fixture = Fixture(dir);
+        assert!(Store::new(fixture.0.join("missing"))
+            .list()
+            .unwrap()
+            .is_empty());
+        let store = Store::new(&fixture.0);
+        for name in ["Bob", "Alice"] {
+            store
+                .save(&Account::new(name, "authored.nw", 10.0, 12.0))
+                .unwrap();
+        }
+        std::fs::create_dir(fixture.0.join("phantom.txt")).unwrap();
+        std::fs::write(fixture.0.join("ignored.txt.tmp"), "not an account").unwrap();
+        std::fs::write(fixture.0.join("invalid name.txt"), "not an account").unwrap();
+        assert!(store.load("phantom").is_err());
+        let bans = crate::bans::Bans::new(&fixture.0);
+        let result = crate::rcaccounts::run(
+            &crate::rcaccounts::Ctx {
+                store: &store,
+                bans: &bans,
+                online: &[],
+                start: ("authored.nw", 10.0, 12.0),
+                admin: "authored-admin",
+                world: None,
+            },
+            crate::rcaccounts::Op::List {
+                pattern: "%".into(),
+                conditions: String::new(),
+            },
+        );
+        let messages = seihai_core::protocol::split_messages(&result.reply);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].id, crate::rcaccounts::PLO_RC_ACCOUNTLIST);
+        let mut expected = Vec::new();
+        for name in [b"alice".as_slice(), b"bob".as_slice()] {
+            crate::wire::gstring(name, &mut expected);
+        }
+        assert_eq!(messages[0].payload, expected);
+        assert_eq!(store.list().unwrap(), ["alice", "bob"]);
+        drop(store);
+        let reopened = Store::new(&fixture.0);
+        assert_eq!(reopened.list().unwrap(), ["alice", "bob"]);
+        for name in reopened.list().unwrap() {
+            let account = reopened.load(&name).unwrap().unwrap();
+            assert_eq!(account.level, "authored.nw");
+            assert_eq!((account.x, account.y), (10.0, 12.0));
+        }
+        assert!(fixture.0.join("phantom.txt").is_dir());
     }
 }
