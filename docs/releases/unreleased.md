@@ -2,6 +2,8 @@ Notes for the next seihai-gserver release.
 
 ## Added
 
+- Add a pinned-RC-encoder to production file-browser move regression with real files and existing-policy controls. Baseline execution is pending; move-field decoding is not corrected yet.
+
 - Repeated ordinary player props now keep their final value when a later field restores the previously stored value; no stale intermediate value is retained or sent. Seeded model and receiver-session regressions cover net no-ops, unrelated changes and distinct final values; specialised colour/bow/position paths are unchanged.
 
 - Filter each repeated chat property independently: later matches are filtered and later benign or differently matched text keeps its own result. Real-file/production-model regressions preserve other fields, parser-stop tails and both bow/gani property grammars.
