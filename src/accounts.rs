@@ -685,5 +685,4 @@ CHEST House.nw 1 2
         }
         assert!(fixture.0.join("phantom.txt").is_dir());
     }
-
 }
