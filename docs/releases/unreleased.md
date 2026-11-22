@@ -2,7 +2,7 @@ Notes for the next seihai-gserver release.
 
 ## Added
 
-- Add seeded production-model and receiver regressions for repeated ordinary props that return to their stored value. Baseline execution is pending; no model correction is applied yet.
+- Repeated ordinary player props now keep their final value when a later field restores the previously stored value; no stale intermediate value is retained or sent. Seeded model and receiver-session regressions cover net no-ops, unrelated changes and distinct final values; specialised colour/bow/position paths are unchanged.
 
 - Filter each repeated chat property independently: later matches are filtered and later benign or differently matched text keeps its own result. Real-file/production-model regressions preserve other fields, parser-stop tails and both bow/gani property grammars.
 

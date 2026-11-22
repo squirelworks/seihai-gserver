@@ -538,6 +538,9 @@ impl Props {
                 id => {
                     if self.values.get(&id) != Some(&p.raw) {
                         c.values.insert(id, p.raw.clone());
+                    } else {
+                        // A later occurrence can restore the value from before this update.
+                        c.values.remove(&id);
                     }
                 }
             }
