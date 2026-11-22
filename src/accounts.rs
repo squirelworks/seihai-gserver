@@ -490,6 +490,10 @@ impl Store {
         let mut names: Vec<String> = rd
             .filter_map(|e| e.ok())
             .filter_map(|e| {
+                // Follow symlinks to files, as load does; directories are not accounts.
+                if !e.path().is_file() {
+                    return None;
+                }
                 let name = e.file_name().into_string().ok()?;
                 let stem = name.strip_suffix(".txt")?;
                 crate::login::valid_account_name(stem).then(|| stem.to_string())

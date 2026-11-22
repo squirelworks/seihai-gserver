@@ -2,7 +2,7 @@ Notes for the next seihai-gserver release.
 
 ## Added
 
-- Add a real-file and RC-reply regression for account-directory listings. Baseline execution is pending; the directory-entry exclusion fix is not yet applied.
+- Account listings now omit directories named like account files, including in unconditioned RC replies. Existing account-name filtering and symlink-to-file following are unchanged; real-file/reopen and RC-reply tests cover the fix.
 
 - Deliver representable server-side NPC trigger actions to same-level clients that read packet 48, with server-origin fields and no NPC echo. Refuse unsupported coordinates/text and actions outside the common client transport envelope before enqueueing.
 
