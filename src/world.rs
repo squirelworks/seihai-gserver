@@ -68,12 +68,14 @@
 //!   `PLO_FLAGDEL` (31); a login gets the whole set.
 //! - `PM`: `PLO_PRIVATEMESSAGE` (37) from [`NPC_SERVER_ID`].
 //! - `NPC_SHAPE`: kept on the server NPC; no client message carries it.
-//! - `PLAY_SOUND`, `STOP_SOUND`, `STOP_MIDI`, `NPC_TRIGGER_ACTION`: no build
-//!   in the profile table reads a server sound, and a script's own
-//!   `NPC_TRIGGER_ACTION` is not passed back to clients (the NPC-server
-//!   already ran it). They are logged once and dropped. A client's
-//!   `PLI_TRIGGERACTION` (38) is different: the others in the level who
-//!   read 48 get it, and the link gets `TRIGGER_ACTION`.
+//! - `PLAY_SOUND`, `STOP_SOUND`, `STOP_MIDI`: no build in the profile table
+//!   reads a server sound. They are logged once and dropped.
+//! - `NPC_TRIGGER_ACTION`: the project bridge sends 48 with server player 0
+//!   and no named NPC to every same-level player whose profile reads it.
+//!   Half-tile coordinates above 223, an empty action, comma/LF in its name
+//!   or LF in parameters are refused; parameters keep their commas and CR.
+//!   The NPC-server already ran the action, so it is never echoed to it.
+//!   Client-origin 38 still uses the existing player relay and NPC link path.
 //! - `SEND_TO_NC` (`0x4D`): the text as `PLO_RC_CHAT` (74) to every logged-in
 //!   NPC Control session. `SEND_TO_RC` (`0x4E`): the same packet, on the RC
 //!   chat path (`to_rcs`), to every logged-in Remote Control session. An
@@ -3485,14 +3487,55 @@ impl WorldTask {
             Message::StopMidi { .. } => {
                 self.note("STOP_MIDI", "no client build reads a server sound")
             }
-            Message::NpcTriggerAction { .. } => self.note(
-                "NPC_TRIGGER_ACTION",
-                "PLO_TRIGGERACTION (48) has no capture yet",
-            ),
+            Message::NpcTriggerAction {
+                level,
+                x,
+                y,
+                action,
+                params,
+            } => self.npc_trigger_action(&level, x, y, &action, &params),
             Message::SendToNc { text } => self.send_to_nc(&text),
             Message::SendToRc { text } => self.send_to_rc(&text),
             other => eprintln!("npcserver: message 0x{:02x} is not the world's", other.id()),
         }
+    }
+
+    /// Bridge a script action through the existing project client-action format.
+    /// Player zero denotes the server and NPC zero means no named origin NPC.
+    fn npc_trigger_action(&mut self, level: &[u8], x: u16, y: u16, action: &[u8], params: &[u8]) {
+        // Validate before using the client helper, whose coordinate clamp must
+        // not silently move a script's action to another point.
+        if x > 223
+            || y > 223
+            || action.is_empty()
+            || action.contains(&b',')
+            || action.contains(&b'\n')
+            || params.contains(&b'\n')
+        {
+            self.note(
+                "NPC_TRIGGER_ACTION",
+                "action is outside the client bridge's representable domain",
+            );
+            return;
+        }
+        let client = seihai_core::net::trigger_action_message(
+            f32::from(x) / 2.0,
+            f32::from(y) / 2.0,
+            &latin1_text(action),
+            &latin1_text(params),
+        );
+        let mut payload = Vec::with_capacity(client.len());
+        crate::wire::gshort(0, &mut payload);
+        // Reuse the fields, not the client's packet id or newline.
+        payload.extend_from_slice(&client[1..client.len() - 1]);
+        let message = crate::wire::msg(crate::wire::ids::PLO_TRIGGERACTION, &payload);
+        let level = latin1_text(level).to_ascii_lowercase();
+        for player in self.players.values() {
+            if player.level == level && player.profile.reads(crate::wire::ids::PLO_TRIGGERACTION) {
+                let _ = player.outbox.send(vec![message.clone()]);
+            }
+        }
+        // The NPC-server already ran this action on its NPCs. Never echo it.
     }
 
     /// Log once that a link message is not passed on.
