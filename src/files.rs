@@ -107,9 +107,9 @@ impl FileStore {
         crate::gpak::key_in(&text, name)
     }
 
-    /// The file called `name`, if the world has it. A name not in the
-    /// index rescans the folders, at most every [`RESCAN`], so files put in
-    /// while the server runs are found.
+    /// The file called `name`, if the world has it. A missing name or a
+    /// cached path known to be missing/not a file rescans the folders, at
+    /// most every [`RESCAN`], so moved files and live additions are found.
     pub fn find(&self, name: &str) -> Option<Found> {
         if !valid_name(name) {
             return None;
@@ -118,7 +118,15 @@ impl FileStore {
         let path = {
             let mut ix = self.index.lock().unwrap();
             let stale = ix.scanned.is_none_or(|t| t.elapsed() >= RESCAN);
-            if !ix.by_name.contains_key(&key) && stale {
+            if stale
+                && ix
+                    .by_name
+                    .get(&key)
+                    .is_none_or(|path| match std::fs::metadata(path) {
+                        Ok(meta) => !meta.is_file(),
+                        Err(e) => e.kind() == std::io::ErrorKind::NotFound,
+                    })
+            {
                 ix.by_name = self.scan();
                 ix.scanned = Some(Instant::now());
             }
@@ -712,5 +720,129 @@ mod tests {
         let nl = cached[0].iter().position(|b| *b == b'\n').unwrap();
         assert_eq!(cached[0][0], 104 + 32);
         assert_eq!(cached[0][nl + 1], 45 + 32, "up to date follows the key");
+    }
+
+    #[test]
+    fn a_dead_cached_file_path_is_rescanned_after_the_existing_interval() {
+        struct Fixture(PathBuf);
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let stamp = std::time::SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "seihai-file-cache-relocation-{}-{stamp}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let fixture = Fixture(root);
+        for sub in ["files/old", "files/new", "levels"] {
+            std::fs::create_dir_all(fixture.0.join(sub)).unwrap();
+        }
+        let old = fixture.0.join("files/old/scene.bin");
+        let new = fixture.0.join("files/new/scene.bin");
+        std::fs::write(&old, b"initial asset").unwrap();
+        std::fs::write(fixture.0.join("files/other.bin"), b"unrelated").unwrap();
+        let store = FileStore::new(&fixture.0);
+        // The same find -> offer path as a file request, decoded by the real client model.
+        let received = |store: &FileStore| {
+            let found = store.find("SCENE.bin");
+            let mut client = SessionState::for_version(ClientVersion::V222);
+            client.file_has_modtime = has_modtime(ClientVersion::V222);
+            for frame in offer(
+                ClientVersion::V222,
+                b"SCENE.bin",
+                "SCENE.bin",
+                found.as_ref(),
+                None,
+                None,
+            ) {
+                client.apply_body(&frame);
+            }
+            client.incoming_files
+        };
+        assert_eq!(
+            received(&store),
+            [("SCENE.bin".to_string(), b"initial asset".to_vec())]
+        );
+        assert_eq!(
+            store.index.lock().unwrap().by_name.get("scene.bin"),
+            Some(&old)
+        );
+
+        // A valid cached path still reads current bytes without rescanning the tree.
+        std::fs::write(&old, b"updated in place").unwrap();
+        let expired = Instant::now() - RESCAN;
+        store.index.lock().unwrap().scanned = Some(expired);
+        assert_eq!(
+            received(&store),
+            [("SCENE.bin".to_string(), b"updated in place".to_vec())]
+        );
+        assert_eq!(store.index.lock().unwrap().scanned, Some(expired));
+
+        std::fs::rename(&old, &new).unwrap();
+        std::fs::write(&new, b"relocated asset").unwrap();
+        // Make the not-yet-expired state deterministic even on a paused CI runner.
+        let fresh = Instant::now() + Duration::from_secs(3600);
+        store.index.lock().unwrap().scanned = Some(fresh);
+        assert!(store.find("scene.bin").is_none());
+        assert_eq!(store.index.lock().unwrap().scanned, Some(fresh));
+        assert_eq!(
+            store.index.lock().unwrap().by_name.get("scene.bin"),
+            Some(&old)
+        );
+        // The moved file is eligible under the existing scanner, before testing the cache.
+        assert_eq!(
+            received(&FileStore::new(&fixture.0)),
+            [("SCENE.bin".to_string(), b"relocated asset".to_vec())]
+        );
+        store.index.lock().unwrap().scanned = Some(Instant::now() - RESCAN);
+        assert_eq!(
+            received(&store),
+            [("SCENE.bin".to_string(), b"relocated asset".to_vec())]
+        );
+        assert_eq!(
+            store.index.lock().unwrap().by_name.get("scene.bin"),
+            Some(&new)
+        );
+        assert_eq!(store.find("other.bin").unwrap().data, b"unrelated");
+
+        // A deletion leaves no stale entry; recreation uses the same miss throttle.
+        std::fs::remove_file(&new).unwrap();
+        store.index.lock().unwrap().scanned = Some(Instant::now() - RESCAN);
+        assert!(store.find("scene.bin").is_none());
+        assert!(!store
+            .index
+            .lock()
+            .unwrap()
+            .by_name
+            .contains_key("scene.bin"));
+        std::fs::write(&old, b"recreated asset").unwrap();
+        let fresh = Instant::now() + Duration::from_secs(3600);
+        store.index.lock().unwrap().scanned = Some(fresh);
+        assert!(store.find("scene.bin").is_none());
+        assert_eq!(store.index.lock().unwrap().scanned, Some(fresh));
+        store.index.lock().unwrap().scanned = Some(Instant::now() - RESCAN);
+        assert_eq!(
+            received(&store),
+            [("SCENE.bin".to_string(), b"recreated asset".to_vec())]
+        );
+        assert_eq!(store.find("other.bin").unwrap().data, b"unrelated");
+
+        // A cached path replaced by a directory is known not to be a served file.
+        std::fs::remove_file(&old).unwrap();
+        std::fs::create_dir(&old).unwrap();
+        std::fs::write(&new, b"replacement asset").unwrap();
+        store.index.lock().unwrap().scanned = Some(Instant::now() - RESCAN);
+        assert!(old.is_dir());
+        assert_eq!(
+            received(&store),
+            [("SCENE.bin".to_string(), b"replacement asset".to_vec())]
+        );
+        assert_eq!(store.find("other.bin").unwrap().data, b"unrelated");
     }
 }

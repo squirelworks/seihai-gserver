@@ -2,6 +2,8 @@ Notes for the next seihai-gserver release.
 
 ## Added
 
+- File requests recover missing/non-file cached paths through the existing rescan interval after assets move or are replaced. Valid cached hits and scanner/name behavior are retained; real-file offer/client readback regressions cover recovery and throttling.
+
 - Reconcile the plan, roadmap and parity notes with merged persistence, NPC-action and account-listing work, retaining unresolved native/lab/release criteria.
 
 - Account listings now omit directories named like account files, including in unconditioned RC replies. Existing account-name filtering and symlink-to-file following are unchanged; real-file/reopen and RC-reply tests cover the fix.
