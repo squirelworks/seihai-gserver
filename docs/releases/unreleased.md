@@ -2,6 +2,8 @@ Notes for the next seihai-gserver release.
 
 ## Added
 
+- Add a real-file and RC-reply regression for account-directory listings. Baseline execution is pending; the directory-entry exclusion fix is not yet applied.
+
 - Deliver representable server-side NPC trigger actions to same-level clients that read packet 48, with server-origin fields and no NPC echo. Refuse unsupported coordinates/text and actions outside the common client transport envelope before enqueueing.
 
 - NPC Control class/weapon deletion now retains the live entry and refuses a success acknowledgment when deleting its backing file fails. Retry uses the original loaded path; class saves also preserve a loaded filename's extension case.
