@@ -2,6 +2,8 @@ Notes for the next seihai-gserver release.
 
 ## Added
 
+- Add real-file and production-model regressions for repeated chat-property filtering. Baseline execution is pending; the per-occurrence correction is not yet applied.
+
 - File requests recover missing/non-file cached paths through the existing rescan interval after assets move or are replaced. Valid cached hits and scanner/name behavior are retained; real-file offer/client readback regressions cover recovery and throttling.
 
 - Reconcile the plan, roadmap and parity notes with merged persistence, NPC-action and account-listing work, retaining unresolved native/lab/release criteria.
