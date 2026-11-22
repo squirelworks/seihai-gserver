@@ -827,4 +827,197 @@ mod tests {
         assert!(hub.state.lock().unwrap().players.is_empty());
         assert!(!hub.connected());
     }
+
+    #[tokio::test]
+    async fn script_actions_reach_eligible_clients_without_npc_echo() {
+        use crate::world::{Joining, LevelSource, World};
+        use seihai_core::protocol::{ClientVersion, SessionState};
+        use seihai_core::scripting::engine::Era;
+        use seihai_npcserver::{npcdb::NpcDef, scripts::Scripts};
+
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "seihai-script-action-{}-{stamp}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(
+            dir.join("world.gmap"),
+            "GRMAP001\nWIDTH 2\nHEIGHT 1\nLEVELNAMES\n\"b.nw\",\"a.nw\",\nLEVELNAMESEND\n",
+        )
+        .unwrap();
+        for name in ["a.nw", "b.nw", "house.nw"] {
+            std::fs::write(dir.join(name), "GLEVNW01\n").unwrap();
+        }
+        let hub = Arc::new(Hub::new(b"ordinary-action-test".to_vec(), "Lab", &dir));
+        let (to_npc, mut npc_out) = mpsc::unbounded_channel();
+        hub.state.lock().unwrap().link = Some((1, to_npc));
+        let world = World::new(
+            8,
+            LevelSource {
+                dir: dir.clone(),
+                blank_tile: 0x1ff,
+                blank_mod_time: 1,
+            },
+        );
+        world.set_npc(hub.clone());
+        world.start();
+        let mut clients = Vec::new();
+        for (name, level, version) in [
+            ("first", "a.nw", ClientVersion::V222),
+            ("second", "a.nw", ClientVersion::V603R7),
+            ("old", "a.nw", ClientVersion::V139),
+            ("other", "b.nw", ClientVersion::V222),
+            ("outside", "house.nw", ClientVersion::V222),
+        ] {
+            let (outbox, receiver) = mpsc::unbounded_channel();
+            let joined = world
+                .join(
+                    Joining {
+                        account: name.into(),
+                        name: name.into(),
+                        level: level.into(),
+                        version,
+                        gen: version.encryption(),
+                        props: Vec::new(),
+                        chests: Vec::new(),
+                        flags: Vec::new(),
+                        kills: 0,
+                        deaths: 0,
+                        staff: false,
+                        weapons: Vec::new(),
+                        colors_tail: None,
+                        machines: Vec::new(),
+                        ip: None,
+                    },
+                    outbox,
+                )
+                .await
+                .unwrap()
+                .unwrap();
+            if name == "second" || name == "other" {
+                assert!(joined.gmap.is_some(), "actual same-map cells");
+            }
+            clients.push((joined.id, version, receiver));
+        }
+        // A real outgoing-queue positive control makes absence of echo observable.
+        while npc_out.try_recv().is_ok() {}
+        hub.trigger_action(clients[0].0, "a.nw", 20, 24, b"control");
+        assert!(
+            matches!(npc_out.try_recv().unwrap(), Message::TriggerAction { action, .. } if action == b"control")
+        );
+        for (_, _, receiver) in &mut clients {
+            while receiver.try_recv().is_ok() {}
+        }
+
+        let mut scripts = Scripts::new(Era::V217);
+        scripts.load(&[NpcDef {
+            id: 1,
+            name: "action".into(),
+            level: b"A.NW".to_vec(),
+            x: 5.0,
+            y: 6.0,
+            script: "if (created) { triggeraction 10,12,pushed,first,second; }".into(),
+            ..Default::default()
+        }]);
+        let produced = scripts.start();
+        assert!(produced.notes.is_empty(), "{:?}", produced.notes);
+        let actions: Vec<_> = produced
+            .messages
+            .into_iter()
+            .filter(|m| matches!(m, Message::NpcTriggerAction { .. }))
+            .collect();
+        assert_eq!(actions.len(), 1);
+        for action in actions {
+            assert!(hub.to_world(WorldIn::FromNpc(action)));
+        }
+        world.save_all().await; // Ordered world-inbox barrier, with no saver installed.
+        for (index, (_, version, receiver)) in clients.iter_mut().enumerate() {
+            let mut state = SessionState::for_version(*version);
+            while let Ok(frames) = receiver.try_recv() {
+                for frame in frames {
+                    state.apply_body(&frame);
+                }
+            }
+            if index < 2 {
+                assert_eq!(state.triggers.len(), 1);
+                let action = &state.triggers[0];
+                assert_eq!(
+                    (action.player, action.npc, action.x, action.y),
+                    (0, 0, 10.0, 12.0)
+                );
+                assert_eq!(action.action, "pushed");
+                assert_eq!(action.params, "first,second");
+            } else {
+                assert!(state.triggers.is_empty());
+            }
+        }
+        assert!(
+            npc_out.try_recv().is_err(),
+            "script actions must not be echoed to the NPC-server"
+        );
+
+        // Refusal followed by a valid action must preserve the original point
+        // and the entire Latin-1/comma-bearing parameter remainder.
+        for (x, y, action, params) in [
+            (224, 0, b"bad".as_slice(), b"".as_slice()),
+            (0, 65535, b"bad".as_slice(), b"".as_slice()),
+            (0, 0, b"".as_slice(), b"".as_slice()),
+            (0, 0, b"bad,name".as_slice(), b"".as_slice()),
+            (0, 0, b"bad\nname".as_slice(), b"".as_slice()),
+            (0, 0, b"bad".as_slice(), b"bad\nparams".as_slice()),
+        ] {
+            assert!(hub.to_world(WorldIn::FromNpc(Message::NpcTriggerAction {
+                level: b"a.nw".to_vec(),
+                x,
+                y,
+                action: action.to_vec(),
+                params: params.to_vec()
+            })));
+        }
+        for (x, y, action, params) in [
+            (0, 223, b"edge".as_slice(), b"\xff,one,,two\r".as_slice()),
+            (223, 0, b"edge\r".as_slice(), b"".as_slice()),
+        ] {
+            assert!(hub.to_world(WorldIn::FromNpc(Message::NpcTriggerAction {
+                level: b"A.NW".to_vec(),
+                x,
+                y,
+                action: action.to_vec(),
+                params: params.to_vec()
+            })));
+        }
+        world.save_all().await;
+        for (index, (_, version, receiver)) in clients.iter_mut().enumerate() {
+            let mut state = SessionState::for_version(*version);
+            while let Ok(frames) = receiver.try_recv() {
+                for frame in frames {
+                    state.apply_body(&frame);
+                }
+            }
+            if index < 2 {
+                assert_eq!(
+                    state.triggers.len(),
+                    2,
+                    "invalid actions must not create packets"
+                );
+                assert_eq!((state.triggers[0].x, state.triggers[0].y), (0.0, 111.5));
+                assert_eq!(state.triggers[0].params, "ÿ,one,,two\r");
+                assert_eq!((state.triggers[1].x, state.triggers[1].y), (111.5, 0.0));
+                assert_eq!(state.triggers[1].action, "edge\r");
+                assert!(state.triggers[1].params.is_empty());
+                assert!(state.triggers.iter().all(|a| a.player == 0 && a.npc == 0));
+            } else {
+                assert!(state.triggers.is_empty());
+            }
+        }
+        assert!(npc_out.try_recv().is_err());
+        drop(world);
+        tokio::task::yield_now().await;
+        drop(hub);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }
