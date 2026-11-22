@@ -1,5 +1,7 @@
 Notes for the next seihai-gserver release.
 
+- Deliver representable server-side NPC trigger actions to same-level clients that read packet 48, with server-origin fields and no NPC echo; reject unsupported coordinates/text before serialization.
+
 ## Added
 
 - NPC Control class/weapon deletion now retains the live entry and refuses a success acknowledgment when deleting its backing file fails. Retry uses the original loaded path; class saves also preserve a loaded filename's extension case.
