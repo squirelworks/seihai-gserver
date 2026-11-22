@@ -1516,7 +1516,7 @@ impl Conn {
                     log(format!("deletes weapon {name}"));
                     format!("Weapon {name} deleted by {account}")
                 } else {
-                    format!("error: no weapon {name}")
+                    format!("error: weapon {name} not deleted")
                 };
                 let mut r = crate::nc::console_line(line.as_bytes());
                 r.extend(self.nc_weapon_list().await);

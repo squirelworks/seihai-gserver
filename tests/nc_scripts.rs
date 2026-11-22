@@ -190,9 +190,16 @@ fn an_nc_edits_classes_and_weapons() {
         weapon_get_message("Bow").unwrap(),
     ])
     .unwrap();
+    wait_for(&mut nc, "weapon delete failure", |e| {
+        if let NcEvent::Message { id: 74, payload } = e {
+            assert!(!payload.starts_with(b"Weapon Bow deleted"));
+            return payload == b"error: weapon Bow not deleted";
+        }
+        false
+    });
     wait_for(&mut nc, "retained weapon after failed delete", |e| {
         if let NcEvent::Message { id: 74, payload } = e {
-            assert!(!payload.starts_with(b"Bow deleted"));
+            assert!(!payload.starts_with(b"Weapon Bow deleted"));
         }
         matches!(e, NcEvent::Weapon(ws) if ws.name == "Bow" && ws.image == "bow.png")
     });
