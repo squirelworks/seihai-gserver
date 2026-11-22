@@ -61,10 +61,19 @@ pub enum Op {
     /// Internal completion of an unsupported large upload; never a chunk write.
     RefuseLargeUpload,
     Down(String),
-    Up { name: String, data: Vec<u8> },
-    Move { name: String, to: String },
+    Up {
+        name: String,
+        data: Vec<u8>,
+    },
+    Move {
+        name: String,
+        to: String,
+    },
     Delete(String),
-    Rename { from: String, to: String },
+    Rename {
+        from: String,
+        to: String,
+    },
 }
 
 /// A `GSTRING` and what follows it.
