@@ -8,7 +8,7 @@
 //!
 //! ```text
 //!  1 name        pstring                   8 shape data     int14 length + data
-//!  2 velocity    3 f32                     9 chat           pstring
+//!  2 scale       3 f32 (not a velocity)    9 chat           pstring
 //!  3 shape       pstring (.dts .dif ...)  10 script classes pstring
 //!  4 skin        pstring                  11 attr[1..8]     8 x (flag -> pstring)
 //!  5 transform   3 f32 position, 3 f32    12 nickname       pstring + R, G, B, A bytes
@@ -28,7 +28,7 @@ type R<T> = Result<T, OutOfBits>;
 /// GameObject dirty bits (the server's masks; the wire has only the flags).
 pub mod bits {
     pub const NAME: u32 = 0x1;
-    pub const VELOCITY: u32 = 0x2;
+    pub const SCALE: u32 = 0x2;
     pub const SHAPE: u32 = 0x8;
     pub const SKIN: u32 = 0x10;
     pub const TRANSFORM: u32 = 0x20;
@@ -131,7 +131,7 @@ impl Transform {
 #[derive(Debug, Clone, PartialEq)]
 pub struct GameObject {
     pub name: Vec<u8>,
-    pub velocity: [f32; 3],
+    pub scale: [f32; 3],
     pub shape: Vec<u8>,
     pub skin: Vec<u8>,
     pub transform: Transform,
@@ -146,7 +146,7 @@ impl Default for GameObject {
     fn default() -> Self {
         GameObject {
             name: Vec::new(),
-            velocity: [0.0; 3],
+            scale: [1.0; 3],
             shape: Vec::new(),
             skin: Vec::new(),
             transform: Transform::default(),
@@ -192,8 +192,8 @@ impl GameObject {
         if self.name != before.name {
             m |= NAME;
         }
-        if self.velocity != before.velocity {
-            m |= VELOCITY;
+        if self.scale != before.scale {
+            m |= SCALE;
         }
         if self.shape != before.shape {
             m |= SHAPE;
@@ -226,8 +226,8 @@ impl GameObject {
     pub fn full_mask(&self) -> u32 {
         use bits::*;
         let mut m = NAME | TRANSFORM | FLAGS;
-        if self.velocity != [0.0; 3] {
-            m |= VELOCITY;
+        if self.scale != [1.0; 3] {
+            m |= SCALE;
         }
         if !self.shape.is_empty() {
             m |= SHAPE;
@@ -255,8 +255,8 @@ impl GameObject {
         if w.flag(mask & NAME != 0) {
             w.pstring_alone(&self.name);
         }
-        if w.flag(mask & VELOCITY != 0) {
-            floats(w, &self.velocity);
+        if w.flag(mask & SCALE != 0) {
+            floats(w, &self.scale);
         }
         if w.flag(mask & SHAPE != 0) {
             w.pstring_alone(&self.shape);
@@ -305,8 +305,8 @@ impl GameObject {
             m |= NAME;
         }
         if r.flag()? {
-            self.velocity = read_floats(r)?;
-            m |= VELOCITY;
+            self.scale = read_floats(r)?;
+            m |= SCALE;
         }
         if r.flag()? {
             self.shape = r.pstring()?;
@@ -778,7 +778,7 @@ mod tests {
         let mut o = lab_player();
         o.chat = b"hi".to_vec();
         o.attr[2] = b"three".to_vec();
-        o.velocity = [1.0, 2.0, 3.0];
+        o.scale = [1.0, 2.0, 3.0];
         let mut w = BitWriter::new();
         o.write(&mut w, o.full_mask());
         let bytes = w.into_bytes();

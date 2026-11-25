@@ -334,6 +334,7 @@ impl Connection {
 
     /// The GameObject-era client game section.
     fn read_game(&mut self, r: &mut BitReader<'_>) -> bool {
+        let camera_control = self.control_key.and_then(|k| self.slots.get(&k)).is_some_and(|s| matches!(s.ghost, Ghost::Camera(_)));
         let mut read = || -> Result<ClientState, super::bits::OutOfBits> {
             r.flag()?; // first person
             let position = [r.f32()?, r.f32()?, r.f32()?];
@@ -343,6 +344,17 @@ impl Connection {
             let mut changed = 0;
             if r.flag()? {
                 changed = self.client_object.read(r, &mut self.client_move_type)?;
+                // A Camera as the control object: its update has two more
+                // sections, mode and followed object, which a live 5.12
+                // writes (T3D-023, lab 2026-11-25).
+                if camera_control {
+                    if r.flag()? {
+                        r.int(1)?;
+                    }
+                    if r.flag()? && r.flag()? {
+                        r.int(12)?;
+                    }
+                }
             }
             if r.flag()? {
                 r.int(8)?; // field of view
@@ -537,6 +549,10 @@ impl Connection {
         }
         match (command, self.mission) {
             (b"MissionStartPhase1Ack", Mission::Phase1Sent) => {
+                // Ghosts go only after this ack. A 5.12 on a return visit
+                // dropped ghosts it got before it, then stalled in phase 1 on
+                // "Received unknown camera object" (lab, 2026-11-25).
+                self.ghosting_allowed = true;
                 self.send_command(b"MissionStartPhase2", &[]);
                 self.set_mission(Mission::Phase2Sent);
             }
@@ -564,9 +580,20 @@ impl Connection {
         self.events.send(Event::RemoteCommand(all));
     }
 
-    /// Queues a guaranteed event (a terrain chunk).
-    pub fn send_event(&mut self, ev: Event) {
+    /// Queues a guaranteed event (a terrain chunk, a lab event). An event
+    /// of 16384 bits or more is refused: its int14 length would wrap, and
+    /// 5.12 runs what an under-counted event leaves and crashes (fuzz tier 1).
+    pub fn send_event(&mut self, ev: Event) -> bool {
+        let bits = ev.payload_bits();
+        if bits >= 1 << 14 {
+            self.log(format!(
+                "{} of {bits} bits is longer than an event can say, not sent",
+                ev.class_name().unwrap_or("event")
+            ));
+            return false;
+        }
         self.events.send(ev);
+        true
     }
 
     /// Queues a text for the client: `weapon` (s1, empty for the client
@@ -888,7 +915,7 @@ impl Connection {
     }
 
     fn ghost_work_pending(&self) -> bool {
-        if self.profile.tge && !self.ghosting_allowed {
+        if !self.ghosting_allowed {
             return false;
         }
         self.slots.values().any(|s| {
@@ -899,8 +926,9 @@ impl Connection {
     /// The ghost section: deletes, then creates, then updates, under the
     /// packet limit. The index width is the bits of the highest index.
     fn write_ghosts(&mut self, w: &mut BitWriter, note: &mut Note) {
-        // Protocol 19: nothing before the datablocks they name are loaded.
-        if self.profile.tge && !self.ghosting_allowed {
+        // Protocol 19: nothing before the datablocks they name are loaded;
+        // protocols 21 and 24: nothing before MissionStartPhase1Ack.
+        if !self.ghosting_allowed {
             w.flag(false);
             return;
         }
@@ -1233,50 +1261,55 @@ pub(crate) mod tests {
         }
     }
 
-    /// The five server packets of `udp-session.md` §8, byte for byte: the
-    /// session a real 5.12 client drew its world from.
+    /// Runs `c` and a fake client a few rounds, acking the mission phases.
+    fn run_512(c: &mut Connection, client: &mut FakeClient, mut now: u64, rounds: usize) -> u64 {
+        for _ in 0..rounds {
+            let p = client.packet();
+            c.receive(&p, now);
+            now += 60;
+            c.update(now);
+            for d in sends(&c.take_out()) {
+                client.take(&d);
+            }
+            for (cmd, ack, mark) in [
+                (&b"MissionStartPhase1"[..], &b"MissionStartPhase1Ack"[..], &b"sent1"[..]),
+                (b"MissionStartPhase2", b"MissionStartPhase2Ack", b"sent2"),
+            ] {
+                if client.answered(cmd) && !client.answered(mark) {
+                    client.commands.push(Command {
+                        name: mark.to_vec(),
+                        args: vec![],
+                    });
+                    client.events.send_command(ack, &[]);
+                }
+            }
+        }
+        now
+    }
+
+    /// The session of `udp-session.md` §8 that a real 5.12 drew its world
+    /// from, with one change: the ghosts wait for `MissionStartPhase1Ack`.
+    /// The first packet is the recorded one up to its ghost section, which
+    /// is now empty (a 5.12 on a return visit dropped ghosts sent before
+    /// the ack and stalled in phase 1, lab 2026-11-25).
     #[test]
-    fn a_512_session_matches_the_recorded_server_packets() {
+    fn a_512_session_ghosts_only_after_the_phase_1_ack() {
         let mut c = Connection::new(&PROTOCOL_24, 0x400, 0);
         c.set_ghost(1, Ghost::Sun(Sun::default()));
         c.set_ghost(2, Ghost::GameObject(lab_player()));
         c.set_control_object(2);
         let mut client = FakeClient::new(&PROTOCOL_24);
-
-        let want = [
-            "05084002080108000d004ab8b835569a421aeccdd95ebc001880203062007b4107a69e6c9a277e6c9a277e6c9a277e9b99997e9a99997e9a99997e00
-             00007f3433337d3433337d6666667d0000007f4600d7411b621d9df74656de642377ba307287fdee4bc7d00400000000000000000000fc0100000000
-             000000000000fc01000000003a3072f7ffffff1f0900",
-            "09104006080908400d084ab8b835569a421aeccdd97eff0260008201",
-            "0d18400e989300002000000000",
-            "1120401e0800",
-            "1528403e0800",
-        ];
-        let mut now = 0;
-        for (i, w) in want.iter().enumerate() {
-            let p = client.packet();
-            c.receive(&p, now);
-            now = if i == 2 { 1180 } else { now + 60 };
-            c.update(now);
-            let out = sends(&c.take_out());
-            assert_eq!(out.len(), 1, "packet {}", i + 1);
-            assert_eq!(out[0], hex(w), "packet {}", i + 1);
-            client.take(&out[0]);
-            if client.answered(b"MissionStartPhase1") && !client.answered(b"sent1") {
-                client.commands.push(Command {
-                    name: b"sent1".to_vec(),
-                    args: vec![],
-                });
-                client.events.send_command(b"MissionStartPhase1Ack", &[]);
-            }
-            if client.answered(b"MissionStartPhase2") && !client.answered(b"sent2") {
-                client.commands.push(Command {
-                    name: b"sent2".to_vec(),
-                    args: vec![],
-                });
-                client.events.send_command(b"MissionStartPhase2Ack", &[]);
-            }
-        }
+        let recorded = hex("05084002080108000d004ab8b835569a421aeccdd95ebc001880203062007b41");
+        c.receive(&client.packet(), 0);
+        c.update(60);
+        let first = sends(&c.take_out()).remove(0);
+        // The control, camera and event sections as recorded; no ghosts.
+        assert_eq!(first[..26], recorded[..26]);
+        assert!(first.len() < recorded.len());
+        assert!(!c.ghost_delivered(1));
+        client.take(&first);
+        run_512(&mut c, &mut client, 60, 10);
+        assert!(c.ghost_delivered(1) && c.ghost_delivered(2));
         assert_eq!(c.mission(), Mission::Done);
         assert!(c.control_delivered());
     }
@@ -1299,26 +1332,28 @@ pub(crate) mod tests {
     #[test]
     fn a_lost_create_is_sent_whole_again() {
         let mut c = Connection::new(&PROTOCOL_24, 0x400, 0);
-        c.set_ghost(1, Ghost::Sun(Sun::default()));
         let mut client = FakeClient::new(&PROTOCOL_24);
-        c.receive(&client.packet(), 0);
-        c.update(60);
+        // Ghosts go after the phase 1 ack: get there first.
+        let now = run_512(&mut c, &mut client, 0, 2);
+        c.set_ghost(1, Ghost::Sun(Sun::default()));
+        c.receive(&client.packet(), now);
+        c.update(now + 60);
         let first = sends(&c.take_out()).remove(0);
         // Dropped on the way. The keep-alive gets through, so the
-        // client's next packet acks 2 and not 1: 1 is lost.
-        c.update(1100);
+        // client's next packet acks it and not the create: that is lost.
+        let now = now + 60;
+        c.update(now + 1100);
         let keep_alive = sends(&c.take_out()).remove(0);
         assert!(keep_alive.len() < first.len());
         client.take(&keep_alive);
-        c.receive(&client.packet(), 1150);
+        c.receive(&client.packet(), now + 1150);
         assert!(!c.ghost_delivered(1));
-        c.update(1200);
+        c.update(now + 1200);
         let again = sends(&c.take_out()).remove(0);
-        // The phase 1 command and the Sun's create, again.
+        // The Sun's create, again.
         assert_eq!(again.len(), first.len(), "{again:02x?}");
         client.take(&again);
-        assert!(client.answered(b"MissionStartPhase1"));
-        c.receive(&client.packet(), 1250);
+        c.receive(&client.packet(), now + 1250);
         assert!(c.ghost_delivered(1));
     }
 

@@ -3,7 +3,7 @@
 //! One entry per line, words separated by spaces, `#` starts a comment:
 //!
 //! ```text
-//! object <name> <shape> <x> <y> <z> [<axis x> <axis y> <axis z> <angle>]
+//! object <name> <shape> <x> <y> <z> [<axis x> <axis y> <axis z> <angle> [<sx> <sy> <sz>]]
 //! sun <dir x> <dir y> <dir z> <r> <g> <b> <a> <ambient r> <g> <b> <a>
 //! sky <textures> [<visible distance> [<fog r> <g> <b>]]
 //!                           six names, comma separated, no spaces ("-" for none)
@@ -93,20 +93,28 @@ impl Scene {
                 continue;
             };
             let ok = match (*first, w.len()) {
-                ("object", 6 | 10) => {
+                ("object", 6 | 10 | 13) => {
                     let mut o = GameObject {
                         name: w[1].as_bytes().to_vec(),
                         shape: w[2].as_bytes().to_vec(),
                         ..GameObject::default()
                     };
                     let pos = floats::<3>(&w[3..6]);
-                    let rot = if w.len() == 10 {
+                    let rot = if w.len() >= 10 {
                         floats::<4>(&w[6..10])
                     } else {
                         Some([0.0, 0.0, 1.0, 0.0])
                     };
-                    match (pos, rot) {
-                        (Some(p), Some(r)) => {
+                    // GameObject section 2 is the scale: the Linux 4.20 drew
+                    // (2, 2, 2) twice the size (lab, 2026-11-25).
+                    let scale = if w.len() == 13 {
+                        floats::<3>(&w[10..13])
+                    } else {
+                        Some([1.0; 3])
+                    };
+                    match (pos, rot, scale) {
+                        (Some(p), Some(r), Some(sc)) => {
+                            o.scale = sc;
                             o.transform = Transform {
                                 position: p,
                                 axis: [r[0], r[1], r[2]],

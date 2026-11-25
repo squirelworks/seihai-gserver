@@ -223,6 +223,13 @@ impl Event {
         })
     }
 
+    /// The payload's length in bits.
+    pub fn payload_bits(&self) -> usize {
+        let mut w = BitWriter::new();
+        self.write(&mut w);
+        w.bit_len()
+    }
+
     /// The payload, with strings that never share a prefix.
     fn write(&self, w: &mut BitWriter) {
         match self {

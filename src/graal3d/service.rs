@@ -235,6 +235,8 @@ pub trait WorldInput: Send {
     /// The player's TCP position follows its 3D object: classic `X`/`Y`
     /// props, in half tiles, as the player's own prop update.
     fn position(&self, player: u16, raw: &[u8]);
+    /// The player's chat prop, from what it said in 3D.
+    fn chat(&self, player: u16, text: &[u8]);
 }
 
 /// The server's world task, for the running service.
@@ -252,6 +254,13 @@ impl WorldInput for ServerWorld {
     }
     fn position(&self, player: u16, raw: &[u8]) {
         self.0.world.props(player, raw, None);
+    }
+    fn chat(&self, player: u16, text: &[u8]) {
+        // CURCHAT (12): a GCHAR length, then the text (at most 223 bytes).
+        let text = &text[..text.len().min(223)];
+        let mut raw = vec![12 + 32, text.len() as u8 + 32];
+        raw.extend_from_slice(text);
+        self.0.world.props(player, &raw, None);
     }
 }
 
@@ -1035,11 +1044,35 @@ impl Service {
                 a.transform = st.object.transform;
             }
         }
+        let chat_changed = st.changed & bits::CHAT != 0 && a.chat != st.object.chat;
         if st.changed & bits::CHAT != 0 {
             a.chat = st.object.chat.clone();
         }
-        if st.changed & bits::VELOCITY != 0 {
-            a.velocity = st.object.velocity;
+        // What else the client changes on its own object reaches the others:
+        // scale (section 2; the Linux 4.20 drew (2, 2, 2) twice the size),
+        // shape, skin, attributes, and nickname with its colour.
+        if st.changed & bits::SCALE != 0 {
+            a.scale = st.object.scale;
+        }
+        if st.changed & bits::SHAPE != 0 {
+            a.shape = st.object.shape.clone();
+        }
+        if st.changed & bits::SKIN != 0 {
+            a.skin = st.object.skin.clone();
+        }
+        for i in 0..8 {
+            if st.changed & (bits::ATTR1 << i) != 0 {
+                a.attr[i] = st.object.attr[i].clone();
+            }
+        }
+        if st.changed & bits::NICKNAME != 0 {
+            a.nickname = st.object.nickname.clone();
+            a.nick_color = st.object.nick_color;
+        }
+        // 3D chat becomes the player's chat prop, so 2D clients see it.
+        if chat_changed {
+            let chat = st.object.chat.clone();
+            self.world.chat(player, &chat);
         }
         if *a == before {
             return;
@@ -1180,6 +1213,12 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(format!("weapon {player} {}", String::from_utf8_lossy(name)));
+        }
+        fn chat(&self, player: u16, text: &[u8]) {
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("chat {player} {}", String::from_utf8_lossy(text)));
         }
         fn position(&self, player: u16, raw: &[u8]) {
             let half = |b: u8| f32::from(b - 32) / 2.0;
