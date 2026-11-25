@@ -137,9 +137,34 @@ pub async fn start_graal3d(
         }
         Err(e) => return Err(e),
     };
-    let (scene, errors) = graal3d::scene::Scene::parse(&text);
+    let (mut scene, errors) = graal3d::scene::Scene::parse(&text);
     for e in errors {
         eprintln!("Graal3D: graal3dworld.txt {e} (not understood)");
+    }
+    for note in scene.load_terrain(&server.cfg.world) {
+        eprintln!("Graal3D: terrain {note}");
+    }
+    // Every file the world names, looked up as a 3D client asks for it,
+    // and checked for the faults that crashed real clients.
+    let find = |name: &str| {
+        server
+            .files
+            .find(name)
+            .or_else(|| graal3d::extensionless_texture(&server.files, name))
+            .map(|f| (f.name, f.data))
+    };
+    let heights_info = scene
+        .terrain
+        .as_ref()
+        .and_then(|_| server.files.find("heights.info"))
+        .map(|f| f.data);
+    for note in graal3d::assets::check_scene(
+        &mut scene,
+        &find,
+        heights_info,
+        server.cfg.graal3d_shapecheck,
+    ) {
+        eprintln!("Graal3D: {note}");
     }
     let addr = std::net::SocketAddr::new(server.cfg.bind, port);
     g.start(

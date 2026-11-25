@@ -121,6 +121,10 @@ pub struct Config {
     pub graal3d: bool,
     /// Its UDP port; 0 (the default) is `port` + 1, the port the clients use.
     pub graal3d_port: u16,
+    /// What a 3D world's bad `.3ds` or `.dts` does at start-up: `skip` (the
+    /// default) leaves its object out, `warn` sends it anyway, `off` checks
+    /// nothing (`graal3d::assets`).
+    pub graal3d_shapecheck: crate::graal3d::assets::ShapeCheck,
     /// Which NewWorld beta a `G2N15041` login is served as: 1 (the
     /// default) or 2. The two betas send the same login line and the same
     /// props, and nothing they send on a plain level tells them apart (lab,
@@ -192,6 +196,7 @@ impl Config {
             graal3d: false,
             newworld_beta: 1,
             graal3d_port: 0,
+            graal3d_shapecheck: crate::graal3d::assets::ShapeCheck::Skip,
             anticheat: crate::anticheat::Policy::default(),
             gpaks: Vec::new(),
             rules: crate::rules::Rules::default(),
@@ -313,6 +318,10 @@ impl Config {
             "listserver_ip" => self.listserver_ip = v.to_string(),
             "graal3d" => self.graal3d = flag(v)?,
             "graal3d_port" => self.graal3d_port = num(v)?,
+            "graal3d_shapecheck" => {
+                self.graal3d_shapecheck = crate::graal3d::assets::ShapeCheck::parse(v.trim())
+                    .ok_or_else(|| format!("graal3d_shapecheck: `{v}` is not skip, warn or off"))?
+            }
             "newworld_beta" => {
                 self.newworld_beta = match v.trim() {
                     "1" => 1,

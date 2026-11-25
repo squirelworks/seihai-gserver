@@ -121,6 +121,9 @@ pub enum Event {
         index: u32,
         total: u32,
     },
+    /// `TerrainRequestUpdatesEvent`: the stamp of each of the 256 terrain
+    /// chunks the client holds (index y * 16 + x, 0 for none).
+    TerrainRequest(Vec<u32>),
     /// An event the server built itself (a protocol 19 datablock), sent
     /// as `class` with this payload. Never read.
     Raw {
@@ -144,6 +147,7 @@ impl Event {
             Event::BigDataChunk { .. } => "BigDataChunkEvent",
             Event::ConnectionMessage { .. } => "ConnectionMessageEvent",
             Event::SimDataBlock { .. } => "SimDataBlockEvent",
+            Event::TerrainRequest(_) => "TerrainRequestUpdatesEvent",
             Event::Raw { class, .. } => class,
             Event::Other { name, .. } => return name.as_deref(),
         })
@@ -205,6 +209,13 @@ impl Event {
                 index: r.int(12)?,
                 total: r.int(13)?,
             },
+            Some("TerrainRequestUpdatesEvent") => {
+                let mut stamps = Vec::with_capacity(256);
+                for _ in 0..256 {
+                    stamps.push(r.u32()?);
+                }
+                Event::TerrainRequest(stamps)
+            }
             _ => Event::Other {
                 class_id,
                 name: name.map(str::to_owned),
@@ -286,6 +297,11 @@ impl Event {
                 w.int(*class_id, 12);
                 w.int(*index, 12);
                 w.int(*total, 13);
+            }
+            Event::TerrainRequest(stamps) => {
+                for i in 0..256 {
+                    w.u32(stamps.get(i).copied().unwrap_or(0));
+                }
             }
             Event::Raw { payload, .. } => w.append(payload),
             Event::Other { .. } => {}

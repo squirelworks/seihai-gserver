@@ -20,8 +20,23 @@
 //!                           one those clients get the Camera
 //! weapon3d <name> <file>    a script the client runs in 3D mode, sent over the
 //!                           text channel (addweapon, weaponscript)
+//! terrain <folder> [<square size>] [repeat]
+//!                           streamed terrain (protocols 21 and 24): the folder
+//!                           of heights<x>-<y>.dat chunks; square size 1 to 64
+//!                           metres (default 8)
+//! water <x> <y> <z> <sx> <sy> <sz> [<surface texture> [<liquid type>]]
+//!                           a WaterBlock from its corner; the surface is at
+//!                           z + sz (protocols 21 and 24)
+//! replicator <class> <x> <y> <z> <radius> <min> <max> <shapes> [<seed> [<x0> <y0> <x1> <y1>]]
+//!                           ground cover (protocols 21 and 24): class
+//!                           DynamicShapeReplicator, DynamicGrass or
+//!                           DynamicGrassReplicator; radius in 8-unit cells
+//!                           (1 to 64), min and max objects a cell (0 to 20),
+//!                           shapes comma separated, the box the cover may
+//!                           grow in (default: anywhere)
 //! ```
 
+use super::ground::{Replicator, Terrain, Water, ANYWHERE, MAX_SQUARE_SIZE, REPLICATOR_CLASSES};
 use super::objects::{GameObject, Ghost, Sky, Sun, Transform};
 use std::path::PathBuf;
 
@@ -51,6 +66,8 @@ pub struct Scene {
     pub tge_control: TgeControl,
     pub tge_player_shape: Vec<u8>,
     pub weapons: Vec<Weapon3d>,
+    /// The `terrain` line; its chunks are read by [`Scene::load_terrain`].
+    pub terrain: Option<Terrain>,
 }
 
 fn floats<const N: usize>(words: &[&str]) -> Option<[f32; N]> {
@@ -194,6 +211,107 @@ impl Scene {
                     s.tge_player_shape = w[1].as_bytes().to_vec();
                     true
                 }
+                ("terrain", 2..=4) => {
+                    let mut size = 8;
+                    let mut repeat = false;
+                    let mut ok = true;
+                    for word in &w[2..] {
+                        if *word == "repeat" {
+                            repeat = true;
+                        } else {
+                            match word.parse::<u32>() {
+                                Ok(n) if (1..=MAX_SQUARE_SIZE).contains(&n) => size = n,
+                                _ => ok = false,
+                            }
+                        }
+                    }
+                    let safe = std::path::Path::new(w[1])
+                        .components()
+                        .all(|c| matches!(c, std::path::Component::Normal(_)));
+                    if ok && safe {
+                        // One TerrainBlock a world: 5.12 lays every chunk on
+                        // the last block only, so a later line replaces it.
+                        s.terrain = Some(Terrain::new(w[1], size, repeat));
+                    }
+                    ok && safe
+                }
+                ("water", 7..=9) => {
+                    let liquid = match w.get(8) {
+                        Some(t) => t.parse::<u32>().ok(),
+                        None => Some(0),
+                    };
+                    match (floats::<6>(&w[1..7]), liquid) {
+                        (Some(v), Some(liquid_type)) => {
+                            s.objects.push(Ghost::Water(Water {
+                                position: [v[0], v[1], v[2]],
+                                scale: [v[3], v[4], v[5]],
+                                surface_texture: w
+                                    .get(7)
+                                    .map_or_else(Vec::new, |t| t.as_bytes().to_vec()),
+                                liquid_type,
+                            }));
+                            true
+                        }
+                        _ => false,
+                    }
+                }
+                ("replicator", 9 | 10 | 14) => {
+                    let class = REPLICATOR_CLASSES
+                        .iter()
+                        .find(|c| c.eq_ignore_ascii_case(w[1]))
+                        .copied();
+                    let small = |t: &str, lo: u8, hi: u8| {
+                        t.parse::<u8>().ok().filter(|v| (lo..=hi).contains(v))
+                    };
+                    let seed = match w.get(9) {
+                        Some(t) => t.parse::<u32>().ok(),
+                        None => Some(0),
+                    };
+                    let area = if w.len() == 14 {
+                        let v: Vec<i16> = w[10..14].iter().filter_map(|t| t.parse().ok()).collect();
+                        <[i16; 4]>::try_from(v).ok()
+                    } else {
+                        Some(ANYWHERE)
+                    };
+                    let count = s
+                        .objects
+                        .iter()
+                        .filter(|o| matches!(o, Ghost::Replicator(_)))
+                        .count();
+                    match (
+                        class,
+                        floats::<3>(&w[2..5]),
+                        small(w[5], 1, 64),
+                        small(w[6], 0, 20),
+                        small(w[7], 0, 20),
+                        seed,
+                        area,
+                    ) {
+                        (
+                            Some(class),
+                            Some(position),
+                            Some(radius),
+                            Some(min),
+                            Some(max),
+                            Some(seed),
+                            Some(area),
+                        ) => {
+                            s.objects.push(Ghost::Replicator(Replicator {
+                                class,
+                                name: format!("G3DReplicator{}", count + 1).into_bytes(),
+                                position,
+                                radius,
+                                min: min.min(max),
+                                max: max.max(min),
+                                shapes: w[8].as_bytes().to_vec(),
+                                seed,
+                                area,
+                            }));
+                            true
+                        }
+                        _ => false,
+                    }
+                }
                 ("weapon3d", 3) => {
                     let file = PathBuf::from(w[2]);
                     let safe = file
@@ -214,6 +332,18 @@ impl Scene {
             }
         }
         (s, errors)
+    }
+
+    /// Reads the `terrain` line's chunks from under `world_dir`; one note
+    /// per chunk left out.
+    pub fn load_terrain(&mut self, world_dir: &std::path::Path) -> Vec<String> {
+        match &mut self.terrain {
+            Some(t) => {
+                let dir = world_dir.join(&t.folder);
+                t.load(&dir)
+            }
+            None => Vec::new(),
+        }
     }
 }
 

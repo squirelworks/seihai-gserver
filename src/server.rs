@@ -1854,7 +1854,11 @@ impl Session {
                     let crc = crate::wire::read_gint5(crc) as u32;
                     let raw = crate::files::verify_name(rest);
                     let name = seihai_core::protocol::latin1(raw);
-                    let found = server.files.find(&name);
+                    let found = server.files.find(&name).or_else(|| {
+                        self.graal3d
+                            .then(|| crate::graal3d::extensionless_texture(&server.files, &name))
+                            .flatten()
+                    });
                     let key = server.files.package_key(&name);
                     let mut sent =
                         crate::files::verify(self.profile, raw, &name, found.as_ref(), crc, key);

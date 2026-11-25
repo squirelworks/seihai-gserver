@@ -232,6 +232,9 @@ pub trait WorldInput: Send {
     fn trigger_action(&self, player: u16, raw: &[u8]);
     /// The client's 3D scripts took a weapon (getweapon).
     fn give_weapon(&self, player: u16, name: &[u8]);
+    /// The player's TCP position follows its 3D object: classic `X`/`Y`
+    /// props, in half tiles, as the player's own prop update.
+    fn position(&self, player: u16, raw: &[u8]);
 }
 
 /// The server's world task, for the running service.
@@ -246,6 +249,9 @@ impl WorldInput for ServerWorld {
     }
     fn give_weapon(&self, player: u16, name: &[u8]) {
         self.0.world.give_weapon(player, name);
+    }
+    fn position(&self, player: u16, raw: &[u8]) {
+        self.0.world.props(player, raw, None);
     }
 }
 
@@ -263,6 +269,45 @@ const CAMERA: Key = 0x2_0000;
 pub const DEFAULT_CAMERA_OFFSET: [f32; 3] = [0.0, -5.0, 2.0];
 /// The plain Sky of protocols 19 and 21, when the world has none.
 const PLAIN_SKY: Key = 0x3_0000;
+/// The streamed terrain's TerrainBlock (protocols 21 and 24).
+const TERRAIN: Key = 0x4_0000;
+
+/// Where the `n`th player to join stands (0: the spawn point). Later ones
+/// take the first point no linked player stands on, of 8 points 2 units
+/// out, then 16 at 4 units, and so on, so two players never share a point.
+pub fn spawn_point(spawn: [f32; 3], taken: &[[f32; 3]]) -> [f32; 3] {
+    let free = |p: [f32; 3]| {
+        taken
+            .iter()
+            .all(|t| (t[0] - p[0]).hypot(t[1] - p[1]) >= 1.0)
+    };
+    if free(spawn) {
+        return spawn;
+    }
+    for ring in 1..=32u32 {
+        let points = 8 * ring;
+        let radius = 2.0 * ring as f32;
+        for i in 0..points {
+            let a = std::f32::consts::TAU * i as f32 / points as f32;
+            let p = [
+                spawn[0] + radius * a.cos(),
+                spawn[1] + radius * a.sin(),
+                spawn[2],
+            ];
+            if free(p) {
+                return p;
+            }
+        }
+    }
+    spawn
+}
+
+/// A Torque (x, y) as a TCP tile position: tile (x, -y). `None` off the
+/// 64 x 64 map.
+pub fn tile_position(p: [f32; 3]) -> Option<(f32, f32)> {
+    let (x, y) = (p[0], -p[1]);
+    ((0.0..64.0).contains(&x) && (0.0..64.0).contains(&y)).then_some((x, y))
+}
 
 /// The Skies a protocol 19 or 21 client gets: the world's, each with its
 /// material list padded to the 7 names the client reads, or a plain Sky
@@ -340,6 +385,13 @@ pub struct Service {
     /// the others (seihai-gserver#188).
     tge_seen: BTreeMap<u16, tge::PlayerState>,
     moved_until: HashMap<u16, u64>,
+    /// After a server move: the position the client was still reporting.
+    /// Its reports of that spot are set aside until it reports another.
+    stale_report: HashMap<u16, [f32; 3]>,
+    /// The last position each client reported.
+    last_report: HashMap<u16, [f32; 3]>,
+    /// The half-tile TCP position last set for each player.
+    tcp_position: HashMap<u16, (u8, u8)>,
     unmatched: HashSet<String>,
     /// Datagrams to send, for the task (or a test) to take.
     outbox: Vec<(SocketAddr, Vec<u8>)>,
@@ -366,6 +418,9 @@ impl Service {
             avatars: BTreeMap::new(),
             tge_seen: BTreeMap::new(),
             moved_until: HashMap::new(),
+            stale_report: HashMap::new(),
+            last_report: HashMap::new(),
+            tcp_position: HashMap::new(),
             unmatched: HashSet::new(),
             outbox: Vec::new(),
         }
@@ -540,16 +595,25 @@ impl Service {
         self.by_player.insert(id, from);
         self.hub.lock().linked.insert(id);
 
+        let taken: Vec<[f32; 3]> = self
+            .avatars
+            .iter()
+            .filter(|(p, _)| **p != id)
+            .map(|(_, a)| a.transform.position)
+            .collect();
+        let mut start = self.scene.spawn;
+        start.position = spawn_point(start.position, &taken);
         let avatar = GameObject {
             name: format!("G3DPlayer_{}", player.account).into_bytes(),
             shape: self.scene.player_shape.clone(),
-            transform: self.scene.spawn,
+            transform: start,
             nickname: player.nickname.clone(),
             flags: flags::SHADOW,
             ..GameObject::default()
         };
         self.avatars.insert(id, avatar.clone());
         self.ghost_world(from);
+        self.follow_on_tcp(id);
         self.broadcast_avatar(id, Some(from));
         self.outbox
             .push((from, handshake::connect_accept(req.sequence, profile)));
@@ -573,6 +637,9 @@ impl Service {
             .filter(|p| Some(**p) != me)
             .filter_map(|p| self.tge_avatar(*p).map(|g| (*p, g)))
             .collect();
+        let start = me
+            .and_then(|p| self.avatars.get(&p))
+            .map_or(self.scene.spawn.position, |a| a.transform.position);
         let scene = &self.scene;
         let s = self.sessions.get_mut(&at).expect("just added");
         let id = s.player;
@@ -594,14 +661,14 @@ impl Service {
             let control = if player {
                 Ghost::TgePlayer(tge::Player {
                     state: tge::PlayerState {
-                        position: scene.spawn.position,
+                        position: start,
                         ..tge::PlayerState::default()
                     },
                     shape: scene.tge_player_shape.clone(),
                 })
             } else {
                 Ghost::TgeCamera(tge::Camera {
-                    position: scene.spawn.position,
+                    position: start,
                     ..tge::Camera::default()
                 })
             };
@@ -627,6 +694,11 @@ impl Service {
             for (key, sky) in padded_skies(&scene.objects) {
                 s.conn.set_ghost(key, Ghost::Sky(sky));
             }
+        }
+        // The terrain's settings; its chunks follow the client's request.
+        if let Some(t) = &scene.terrain {
+            s.conn
+                .set_ghost(TERRAIN, Ghost::Terrain(Box::new(t.clone())));
         }
         for (other, a) in &self.avatars {
             s.conn
@@ -685,6 +757,7 @@ impl Service {
             }
             let at = self.by_player.get(&p).copied();
             self.broadcast_avatar(p, at);
+            self.follow_on_tcp(p);
         }
     }
 
@@ -754,8 +827,48 @@ impl Service {
                 Out::Text(t) => self.client_text(player, &t),
                 Out::ClientState(st) => self.client_state(player, *st),
                 Out::Mission(m) => self.mission(at, m),
+                Out::TerrainRequest(stamps) => self.terrain_request(at, &stamps),
             }
         }
+    }
+
+    /// Sends every chunk whose stamp differs from the client's.
+    fn terrain_request(&mut self, at: SocketAddr, stamps: &[u32]) {
+        let Some(t) = &self.scene.terrain else {
+            return;
+        };
+        let events = t.answer(stamps);
+        let Some(s) = self.sessions.get_mut(&at) else {
+            return;
+        };
+        log(&format!(
+            "{}: sending {} terrain chunks",
+            s.account,
+            events.len()
+        ));
+        for ev in events {
+            s.conn.send_event(ev);
+        }
+    }
+
+    /// Sets the player's TCP position from its 3D object, when that is on
+    /// the map and moved by half a tile or more, so serverside scripts and
+    /// 2D players in its level see where it is.
+    fn follow_on_tcp(&mut self, player: u16) {
+        let Some(a) = self.avatars.get(&player) else {
+            return;
+        };
+        let Some((x, y)) = tile_position(a.transform.position) else {
+            return;
+        };
+        let half = ((x * 2.0) as u8, (y * 2.0) as u8);
+        if self.tcp_position.get(&player) == Some(&half) {
+            return;
+        }
+        self.tcp_position.insert(player, half);
+        // X (15) and Y (16), GCHAR encoded.
+        let raw = [15 + 32, half.0 + 32, 16 + 32, half.1 + 32];
+        self.world.position(player, &raw);
     }
 
     fn mission(&mut self, at: SocketAddr, m: Mission) {
@@ -904,7 +1017,18 @@ impl Service {
             return;
         };
         let before = a.clone();
-        let held = self.moved_until.get(&player).is_some_and(|t| now < *t);
+        let near = |p: [f32; 3], q: [f32; 3]| p.iter().zip(q).all(|(a, b)| (a - b).abs() < 0.01);
+        self.last_report.insert(player, st.position);
+        // After a server move the client goes on reporting where it was;
+        // those reports are set aside until it reports somewhere else.
+        let stale = self
+            .stale_report
+            .get(&player)
+            .is_some_and(|p| near(*p, st.position));
+        if !stale {
+            self.stale_report.remove(&player);
+        }
+        let held = stale || self.moved_until.get(&player).is_some_and(|t| now < *t);
         if !held {
             a.transform.position = st.position;
             if st.changed & bits::TRANSFORM != 0 {
@@ -922,6 +1046,7 @@ impl Service {
         }
         let at = self.by_player.get(&player).copied();
         self.broadcast_avatar(player, at);
+        self.follow_on_tcp(player);
     }
 
     /// Moves a player's own object for everyone, its own screen included
@@ -944,6 +1069,9 @@ impl Service {
         }
         a.transform.position = to;
         self.moved_until.insert(player, now + SERVER_MOVE_HOLD_MS);
+        if let Some(p) = self.last_report.get(&player) {
+            self.stale_report.insert(player, *p);
+        }
         // A protocol 19 player's own Player moves too, so the next move it
         // sends starts from there.
         if let Some(st) = self.tge_seen.get_mut(&player) {
@@ -961,6 +1089,7 @@ impl Service {
             }
         }
         self.broadcast_avatar(player, None);
+        self.follow_on_tcp(player);
         true
     }
 
@@ -984,9 +1113,18 @@ impl Service {
             self.avatars.remove(&s.player);
             self.tge_seen.remove(&s.player);
             self.moved_until.remove(&s.player);
+            self.stale_report.remove(&s.player);
+            self.last_report.remove(&s.player);
+            self.tcp_position.remove(&s.player);
+            let mut deleted = 0;
             for other in self.sessions.values_mut() {
                 other.conn.remove_ghost(avatar_key(s.player));
+                deleted += 1;
             }
+            log(&format!(
+                "{}: object deleted on {deleted} other clients",
+                s.account
+            ));
         }
         log(&format!(
             "{}: link from {} closed ({reason}), {} moves received",
@@ -1042,6 +1180,14 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(format!("weapon {player} {}", String::from_utf8_lossy(name)));
+        }
+        fn position(&self, player: u16, raw: &[u8]) {
+            let half = |b: u8| f32::from(b - 32) / 2.0;
+            self.0.lock().unwrap().push(format!(
+                "position {player} {} {}",
+                half(raw[1]),
+                half(raw[3])
+            ));
         }
     }
 
@@ -1267,6 +1413,124 @@ mod tests {
         assert!(hub.is_linked(9), "the newest guest first");
         assert!(handshake(&mut s, b, 24, b"guest").is_some());
         assert!(hub.is_linked(4), "then the one without a link");
+    }
+
+    #[test]
+    fn later_players_start_around_the_spawn_point() {
+        let spawn = [0.0, 0.0, 1.0];
+        assert_eq!(spawn_point(spawn, &[]), spawn);
+        let second = spawn_point(spawn, &[spawn]);
+        assert!((second[0].hypot(second[1]) - 2.0).abs() < 1e-4);
+        assert_eq!(second[2], 1.0);
+        let mut taken = vec![spawn];
+        for _ in 0..8 {
+            taken.push(spawn_point(spawn, &taken));
+        }
+        // The ninth later player is on the 4-unit ring.
+        let next = spawn_point(spawn, &taken);
+        assert!((next[0].hypot(next[1]) - 4.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn torque_positions_map_to_tiles() {
+        assert_eq!(tile_position([5.0, -6.0, 1.0]), Some((5.0, 6.0)));
+        assert_eq!(tile_position([5.0, 6.0, 1.0]), None);
+        assert_eq!(tile_position([70.0, -6.0, 1.0]), None);
+    }
+
+    #[test]
+    fn a_terrain_is_ghosted_and_its_changed_chunks_sent() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("g3d-svc-terrain-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("t")).unwrap();
+        let mut stamps = vec![0u32; 256];
+        for (i, name) in ["heights0-0.dat", "heights1-0.dat", "heights0-1.dat"]
+            .iter()
+            .enumerate()
+        {
+            let inflated = [2u8, i as u8, 0];
+            let mut e = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+            e.write_all(&inflated).unwrap();
+            std::fs::write(dir.join("t").join(name), e.finish().unwrap()).unwrap();
+            if i == 0 {
+                stamps[0] = crate::graal3d::ground::stamp(&inflated);
+            }
+        }
+        let hub = Arc::new(Graal3d::new());
+        let (mut scene, errors) = Scene::parse(
+            "terrain t 8
+water 0 0 0 1024 1024 2 water
+             replicator DynamicGrass 0 0 0 4 1 3 grass.dts
+spawn 0 0 1
+",
+        );
+        assert!(errors.is_empty(), "{errors:?}");
+        assert!(scene.load_terrain(&dir).is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
+        let mut s = Service::new(hub.clone(), scene, dir, Box::new(Recorder::default()));
+        hub.tcp_joined(1, tcp("one"));
+        hub.tcp_joined(2, tcp("old"));
+        let a: SocketAddr = "127.0.0.1:40000".parse().unwrap();
+        let b: SocketAddr = "127.0.0.1:40001".parse().unwrap();
+        handshake(&mut s, a, 24, b"one").unwrap();
+        handshake(&mut s, b, 19, b"old").unwrap();
+        let mut clients = [(a, FakeClient::new(&PROTOCOL_24))];
+        let now = run(&mut s, &mut clients, 0, 10);
+        // Terrain, water, replicator, both players and its Camera.
+        assert_eq!(s.connection(&a).unwrap().ghost_count(), 6);
+        // Protocol 19 gets none of the ground: a Sky and its Camera.
+        assert_eq!(s.connection(&b).unwrap().ghost_count(), 2);
+
+        // A client holding chunk (0, 0) gets the other two.
+        clients[0]
+            .1
+            .events
+            .send(crate::graal3d::events::Event::TerrainRequest(stamps));
+        run(&mut s, &mut clients, now, 6);
+        let chunks = clients[0]
+            .1
+            .got
+            .iter()
+            .filter(|e| e.class_name() == Some("TerrainChunkEvent"))
+            .count();
+        assert_eq!(chunks, 2);
+    }
+
+    #[test]
+    fn a_3d_players_tcp_position_follows_its_object() {
+        let (mut s, hub, calls) = service(
+            "playershape labcube.3ds
+spawn 3 -4 1
+",
+        );
+        hub.tcp_joined(1, tcp("one"));
+        let a: SocketAddr = "127.0.0.1:40000".parse().unwrap();
+        handshake(&mut s, a, 24, b"one").unwrap();
+        assert!(s.move_avatar(1, "5 -6.5 1"));
+        // Off the map: left alone.
+        assert!(s.move_avatar(1, "5 6 1"));
+        let calls = calls.lock().unwrap().clone();
+        let pos: Vec<&String> = calls.iter().filter(|c| c.starts_with("position")).collect();
+        assert_eq!(pos, ["position 1 3 4", "position 1 5 6.5"]);
+    }
+
+    #[test]
+    fn after_a_server_move_the_old_reports_are_set_aside() {
+        let (mut s, hub, _) = service(
+            "playershape labcube.3ds
+spawn 0 0 1
+",
+        );
+        hub.tcp_joined(1, tcp("one"));
+        let a: SocketAddr = "127.0.0.1:40000".parse().unwrap();
+        handshake(&mut s, a, 24, b"one").unwrap();
+        let mut clients = [(a, FakeClient::new(&PROTOCOL_24))];
+        // The fake client reports 0 0 0 in every packet.
+        let now = run(&mut s, &mut clients, 0, 6);
+        assert!(s.move_avatar(1, "5 6 7"));
+        // Well past the two-second hold.
+        run(&mut s, &mut clients, now, 60);
+        assert_eq!(s.avatars[&1].transform.position, [5.0, 6.0, 7.0]);
     }
 
     #[test]

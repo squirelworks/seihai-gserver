@@ -83,6 +83,8 @@ pub enum Out {
     Text(BigData),
     ClientState(Box<ClientState>),
     Mission(Mission),
+    /// The client's terrain chunk stamps (index y * 16 + x, 0 for none).
+    TerrainRequest(Vec<u32>),
     Log(String),
 }
 
@@ -491,6 +493,11 @@ impl Connection {
                     ));
                 }
             }
+            Event::TerrainRequest(stamps) => {
+                let held = stamps.iter().filter(|s| **s != 0).count();
+                self.log(format!("terrain request: holds {held} of 256 chunks"));
+                self.out.push(Out::TerrainRequest(stamps.clone()));
+            }
             Event::SimDataBlock { .. } | Event::Raw { .. } | Event::Other { .. } => {
                 self.log(format!(
                     "event ignored: {}",
@@ -555,6 +562,11 @@ impl Connection {
         let mut all = vec![Arg::Tag(tag)];
         all.extend(args.iter().map(|a| Arg::Text(a.to_vec())));
         self.events.send(Event::RemoteCommand(all));
+    }
+
+    /// Queues a guaranteed event (a terrain chunk).
+    pub fn send_event(&mut self, ev: Event) {
+        self.events.send(ev);
     }
 
     /// Queues a text for the client: `weapon` (s1, empty for the client

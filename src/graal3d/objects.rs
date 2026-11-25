@@ -538,6 +538,10 @@ pub enum Ghost {
     TgeCamera(tge::Camera),
     /// Protocol 19: a stock TGE Player.
     TgePlayer(tge::Player),
+    /// Protocols 21 and 24: the streamed terrain's settings.
+    Terrain(Box<super::ground::Terrain>),
+    Water(super::ground::Water),
+    Replicator(super::ground::Replicator),
 }
 
 /// Protocol 19 masks: position and rotation, and the datablock (creates).
@@ -552,6 +556,9 @@ impl Ghost {
             Ghost::Sky(_) => "Sky",
             Ghost::Camera(_) | Ghost::TgeCamera(_) => "Camera",
             Ghost::TgePlayer(_) => "Player",
+            Ghost::Terrain(_) => "TerrainBlock",
+            Ghost::Water(_) => "WaterBlock",
+            Ghost::Replicator(r) => r.class,
         }
     }
 
@@ -563,6 +570,9 @@ impl Ghost {
             Ghost::Sky(s) => String::from_utf8_lossy(&s.name).into(),
             Ghost::TgeCamera(_) => "camera".into(),
             Ghost::TgePlayer(_) => "player".into(),
+            Ghost::Terrain(_) => "Terrain".into(),
+            Ghost::Water(_) => "water".into(),
+            Ghost::Replicator(r) => String::from_utf8_lossy(&r.name).into(),
         }
     }
 
@@ -578,7 +588,11 @@ impl Ghost {
     pub fn full_mask(&self) -> u32 {
         match self {
             Ghost::GameObject(o) | Ghost::Camera(o) => o.full_mask(),
-            Ghost::Sun(_) | Ghost::Sky(_) => 1,
+            Ghost::Sun(_)
+            | Ghost::Sky(_)
+            | Ghost::Terrain(_)
+            | Ghost::Water(_)
+            | Ghost::Replicator(_) => 1,
             Ghost::TgeCamera(_) | Ghost::TgePlayer(_) => TGE_MOVE | TGE_DATABLOCK,
         }
     }
@@ -591,6 +605,9 @@ impl Ghost {
             }
             (Ghost::Sun(a), Ghost::Sun(b)) => u32::from(a != b),
             (Ghost::Sky(a), Ghost::Sky(b)) => u32::from(a != b),
+            (Ghost::Terrain(a), Ghost::Terrain(b)) => u32::from(a != b),
+            (Ghost::Water(a), Ghost::Water(b)) => u32::from(a != b),
+            (Ghost::Replicator(a), Ghost::Replicator(b)) => u32::from(a != b),
             (Ghost::TgeCamera(a), Ghost::TgeCamera(b)) => {
                 if a == b {
                     0
@@ -623,6 +640,9 @@ impl Ghost {
             Ghost::Sky(s) => s.write(w),
             Ghost::TgeCamera(c) => c.write_update(w, mask & TGE_DATABLOCK != 0),
             Ghost::TgePlayer(p) => p.write_update(w, mask & TGE_DATABLOCK != 0, controlled),
+            Ghost::Terrain(t) => t.write_block(w),
+            Ghost::Water(o) => o.write(w),
+            Ghost::Replicator(o) => o.write(w),
         }
     }
 }

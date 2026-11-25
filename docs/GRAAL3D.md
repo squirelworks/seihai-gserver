@@ -15,7 +15,8 @@ In `config/server.txt`:
 
 ```text
 graal3d = true
-graal3d_port = 14901   # optional; the default is the TCP port + 1
+graal3d_port = 14901        # optional; the default is the TCP port + 1
+graal3d_shapecheck = skip   # optional; or warn, or off (see "Start-up check")
 ```
 
 With it on:
@@ -27,8 +28,13 @@ With it on:
   server;
 - 3D-capable clients (3.153, 4.04r2, 4.20r6, 4.20r8, 5.x, 6.0x) get
   `PLO_SERVERLISTCONNECTED`, an answer to every file request (missing files
-  are refused instead of left unanswered), and texture lookups without an
-  extension (`.png`, `.jpg`, `.jpeg`, `.bmp`, `.gif`, `.dds` are tried);
+  are refused instead of left unanswered), and image lookups that try other
+  extensions: a bare name, or a name with the wrong image extension, also
+  finds the same stem as `.png`, `.jpg`, `.jpeg`, `.gif`, `.bmp`, `.tga` or
+  `.dds`, in that order, for file requests and "is my copy current?" checks
+  alike. The 5.x clients ask for Sky and terrain textures with no extension;
+  3.153 asks for Sky textures as `.gif` (lab, 2026-11-25), so a `.png`
+  answers it;
 - a UDP connect request is held until the same account (or a guest) from the
   same IP is logged in over TCP, and the link is closed with a disconnect
   when that TCP session ends.
@@ -49,6 +55,9 @@ camera <x> <y> <z> [<axis x> <axis y> <axis z> <angle>]
 tgecontrol player|camera
 tgeplayershape <file.dts>
 weapon3d <name> <file>
+terrain <folder> [<square size>] [repeat]
+water <x> <y> <z> <sx> <sy> <sz> [<surface texture> [<liquid type>]]
+replicator <class> <x> <y> <z> <radius> <min> <max> <shapes> [<seed> [<x0> <y0> <x1> <y1>]]
 ```
 
 A sample:
@@ -66,6 +75,103 @@ without an error, but 5.12 and 4.20r6 draw none of it (lab 2026-11-20).
 
 `weapon3d` files are relative to the world folder and are sent as script
 source over the text channel.
+
+## Terrain, water and ground cover (protocols 21 and 24)
+
+These three go to 4.20r6, 4.20r8 and 5.x only. Protocol 19 (3.153, 4.04r2)
+has stock TGE terrain, a different layout, and gets none of them. The wire
+layouts are from Graal_analysis `torque/terrain-512.md` and
+`torque/replicators-512.md`.
+
+**Terrain.** `terrain world/island` streams a 256 x 256 terrain centred on
+the origin, 8 metres a square unless the line gives a square size (1 to 64;
+a huge one killed a live 5.12). `repeat` tiles it past its edges. The folder
+(from the world folder) holds `heights<x>-<y>.dat`, x and y 0 to 15 with no
+padding: each one 16 x 16 squares as a zlib stream, at most 1023 bytes, the
+same file the client keeps in its own cache. Missing chunks are left out, and
+files that are too long or do not inflate are named at start-up. One terrain
+a world: a later `terrain` line replaces the first.
+
+Each client gets a `TerrainBlock` ghost. When it has the block it sends the
+stamp of every chunk it already holds, and the server sends every chunk whose
+stamp differs, so a returning client downloads only what changed. The client
+stamps its own re-encoding of each chunk, so write chunks in its form
+(`seihai-servertools gen terrain DIR --stream` does), or every chunk goes out
+again on every visit.
+
+Put `heights.info` (one texture name a line, in material order) and its
+textures in the file folders. Name the textures with their extension
+(`g3d_grass.png`): the Linux 4.20 client given bare names saved them without
+one and then could not load them. Terrain textures should be 256 x 256 24-bit.
+On a first visit 5.12 fetches only `heights.info` and draws the terrain white;
+it fetches the textures on the next visit.
+
+**Water.** `water -1024 -1024 -19.5 2048 2048 20 water_surface 0` is a
+`WaterBlock` from that corner, unrotated, of that size. Its surface is at
+z + the z size (0.5 here), not at z. The liquid types are stock TGE's (0
+water, 1 ocean, 2 river, 3 stagnant, 4 lava, ...); everything else takes
+stock TGE 1.x's defaults.
+
+**Ground cover.** `replicator DynamicGrass 0 0 0 4 1 3 grass.dts` ghosts a
+`DynamicShapeReplicator`, `DynamicGrass` or `DynamicGrassReplicator`: cover
+scattered on a grid of 8-unit cells around the client's own control object
+(not around the replicator). The radius is in cells (1 to 64), min and max
+are objects a cell (0 to 20), and the shapes are one comma-separated list
+with no spaces. The optional box `x0 y0 x1 y1` is the world x/y region a
+cell's corner must lie in; without one, cover may grow anywhere. Cover is
+placed by casting rays, so it needs real ground (streamed terrain or solid
+objects). The rest is fixed: scale 1, any turn about z, terrain only, slopes
+up to 90 degrees, shown.
+
+## Start-up check
+
+At start-up the server looks up every shape and texture the world file names
+(object and player shapes, replicator shapes, Sky and water textures, and with
+a `terrain` line `heights.info` and every texture it lists) and logs the ones
+the file folders do not have. Then it checks them for the faults that crashed
+or blanked a real client (Graal_analysis
+`torque/3d-fuzz-content-512-2026-11-25.md`):
+
+- a `.3ds` must hold at least one material (with none, 5.12 and 4.20r6 draw
+  nothing), every chunk must fit in its parent, every vertex and face list
+  must hold what it claims, and every face must use a vertex of its mesh. A
+  cut file, a face count past the list and a face index past the mesh each
+  killed 5.12;
+- a `.dts` must be version 24, the only one 5.12 drew; the memory buffer its
+  header claims must fit the file, its section starts must lie inside that
+  buffer, and its node, object, decal and sub-shape counts must fit it. A cut
+  file or a huge size word killed 5.12, and a bad login player shape killed
+  4.04r2 at login;
+- a PNG must claim 1 to 8192 pixels a side (30000 x 30000 killed 5.12). A
+  16-bit PNG, an image over 1024 a side, BMP, TGA, DDS and empty files get a
+  warning: 5.12 draws them white or not at all. Terrain textures other than
+  256 x 256 24-bit get a warning too.
+
+With `graal3d_shapecheck = skip` (the default) an object with a bad shape is
+left out of the world, a bad `playershape` is not used, and a bad
+`tgeplayershape` is not used either, so protocol 19 gets a Camera. `warn`
+logs and sends them anyway, for labs that send broken shapes on purpose;
+`off` checks nothing. A bad texture cannot be left out, so it is logged as an
+error.
+
+## Several players
+
+The first player stands on the world's `spawn`. Each later one takes the
+first point no linked player stands on, of 8 points 2 units out, then 16 at 4
+units, and so on, so two players never start on one point.
+
+A `g3dpos` trigger moves the player's own object on every screen. The client
+goes on reporting where it was for a while; those reports are set aside until
+it reports somewhere else (and for two seconds whatever it reports).
+
+When a player leaves, its object is deleted on every other client, and the
+log says on how many.
+
+Every 3D player is also an ordinary TCP player, and its TCP position follows
+its 3D object: Torque (x, y) is map tile (x, -y), set as the player's own
+classic `X`/`Y` props whenever it moves half a tile or more. So serverside
+scripts and 2D players in its level see where it is. Positions off the 64 x 64
+map are left alone.
 
 ## What each protocol gets
 
@@ -107,7 +213,18 @@ same as `camera 0 -5 2 1 0 0 0.38`.
 - Server flags (`server.`) are not sent.
 - The `graal3dstringprefix = false` mode is not ported.
 - bzip2 text channel bodies are not decoded.
-- No TerrainBlock, and no movetype on GameObjects.
+- No movetype on GameObjects.
+- 2D players are not shown in 3D yet: seihai-gserver-v2 shows a TCP-only
+  player in a 3D player's level as a `G2DPlayer_<account>` GameObject; this
+  server does not.
+- No per-build capability rows: the terrain, water and ground cover go to
+  every protocol 21/24 client. seihai-core's `VersionProfile::three_d`
+  (Graal_analysis `version-profiles/three-d.toml`) is not in a tagged
+  seihai-core release yet.
+- No trace file, no lab `rawobject`/`rawevent` lines, no mutation lab, and
+  no Sharp3D route.
+- The terrain, water and ground cover have not been run against a real
+  client from this server; the layouts were run live from seihai-gserver-v2.
 - 3.153 has been seen to crash on the first frame in the C++ fork; the cause
   is unknown.
 - The Linux 4.20r6 (`G3D22126`) links as protocol 24, so the protocol 21
@@ -179,5 +296,6 @@ total when the link closes.
 `src/graal3d/`: `bits`, `huffman`, `link` and `events` are the Torque wire
 layer (shared in spirit with Ato; moving it into `seihai-core` is a
 follow-up), `handshake` holds the protocol tables, `objects` and `tge` the
-ghost and datablock layouts, `conn` one client's link, `scene` the world
+ghost and datablock layouts, `ground` the terrain, water and ground cover,
+`assets` the start-up check, `conn` one client's link, `scene` the world
 file, and `service` the UDP socket and its tie to the TCP server.
