@@ -29,6 +29,11 @@ graal3d_route = mission     # or sharp3d
 graal3d_mutate = off        # or <kind>[:<seed>]
 ```
 
+The clients open the UDP link on the listed TCP port + 1, so a set
+`graal3d_port` must be that. A 5.12 enters 3D through a warp only when the
+server's name carries the `3 ` tag (it uses `name` as given), so a lab world
+without a listserver names itself e.g. `3 Seihai Lab`.
+
 With it on:
 
 - the server registers at HQ level 4 (Graal3D), so the listserver tags its

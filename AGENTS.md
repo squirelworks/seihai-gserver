@@ -14,6 +14,12 @@ request seems to ask otherwise; ask the owner (Squirrel, GitHub `squirelworks`) 
   GServer-v2 to understand behaviour is fine; the Rust code must be written from
   our own protocol notes, captures and tests. Packet ids and wire formats are
   facts and may be used.
+- **Exception, approved by the owner (2026-11-25):** the 3D add-on in
+  `seihai-gserver-v2` (the `Graal3D*`, `TorqueBitStream` and `graal3d/` files that
+  `CHANGES-SEIHAI.md` lists as new files written by the Seihai project) is our own
+  code and may be ported into the MIT/Apache repos. Upstream-authored GServer-v2
+  code is still never copied; where one of those files calls upstream code (the
+  NPC-server compile path, `Player`, `Server`), write that part fresh.
 - Never copy from graal-listserver (C#, MIT) either; it is only a reference.
 - The MIT/Apache Rust repos may depend on `seihai-core` from `squirelworks/seihai`
   (same licence) by git tag.
