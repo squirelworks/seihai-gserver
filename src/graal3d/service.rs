@@ -257,8 +257,12 @@ fn flag_messages(frames: &[Vec<u8>]) -> Vec<(bool, Vec<u8>)> {
         while let Some(&first) = rest.first() {
             let id = first.wrapping_sub(32);
             let end = rest.iter().position(|b| *b == b'\n').unwrap_or(rest.len());
-            let body = &rest[1..end];
+            // An empty line (a newline first) has no id: skip it.
+            let body = rest.get(1..end).unwrap_or(&[]);
             rest = rest.get(end + 1..).unwrap_or(&[]);
+            if end == 0 {
+                continue;
+            }
             match id {
                 PLO_FLAGSET => out.push((true, body.to_vec())),
                 PLO_FLAGDEL => out.push((false, body.to_vec())),
@@ -2414,6 +2418,14 @@ spawn 0 0 1
         f.extend_from_slice(b"client.hello\n");
         hub.mirror(1, &[f]);
         assert!(hub.lock().players[&1].flags.is_empty());
+    }
+
+    #[test]
+    fn an_empty_line_in_a_frame_is_skipped() {
+        let set = [PLO_FLAGSET + 32];
+        let frame = [&b"\n"[..], &set, b"a=1\n\n"].concat();
+        assert_eq!(flag_messages(&[frame]), vec![(true, b"a=1".to_vec())]);
+        assert!(flag_messages(&[b"\n".to_vec(), Vec::new()]).is_empty());
     }
 
     #[test]
