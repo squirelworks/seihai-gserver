@@ -158,20 +158,63 @@ pub async fn start_graal3d(
         .as_ref()
         .and_then(|_| server.files.find("heights.info"))
         .map(|f| f.data);
-    for note in graal3d::assets::check_scene(
+    // Clients ask for heights.info by its bare name, so the one the file
+    // folders find must be the terrain's own.
+    if let Some(t) = &scene.terrain {
+        let own = server.cfg.world.join(&t.folder).join("heights.info");
+        if !own.is_file() && heights_info.is_some() {
+            eprintln!(
+                "Graal3D: ERROR terrain: the heights.info the clients get is not the one in {}",
+                t.folder
+            );
+        }
+    }
+    // Lab: the files of the rawobject and rawevent lines.
+    let read = |name: &str| -> Option<Vec<u8>> {
+        let p = std::path::Path::new(name);
+        p.components()
+            .all(|c| matches!(c, std::path::Component::Normal(_)))
+            .then(|| std::fs::read(server.cfg.world.join(p)).ok())
+            .flatten()
+    };
+    for o in &mut scene.objects {
+        if let graal3d::objects::Ghost::Raw(r) = o {
+            for e in graal3d::raw::load_files(&mut r.fields, &read) {
+                eprintln!("Graal3D: rawobject {}: {e}", r.class);
+            }
+        }
+    }
+    for ev in &mut scene.raw_events {
+        for e in graal3d::raw::load_files(&mut ev.fields, &read) {
+            eprintln!("Graal3D: rawevent {}: {e}", ev.class);
+        }
+    }
+    let checked = graal3d::assets::check_scene_files(
         &mut scene,
         &find,
         heights_info,
         server.cfg.graal3d_shapecheck,
-    ) {
+    );
+    for note in &checked.notes {
         eprintln!("Graal3D: {note}");
     }
+    g.set_refused(checked.refused);
+    let trace = server.cfg.graal3d_trace.as_str();
+    let opts = graal3d::service::Options {
+        terrain_all: server.cfg.graal3d_terrainall,
+        push_terrain: server.cfg.graal3d_pushterrain,
+        terrain_files: checked.terrain_files,
+        trace: (!trace.is_empty()).then(|| std::path::PathBuf::from(trace)),
+        sharp3d: server.cfg.graal3d_sharp3d,
+        mutation: server.cfg.graal3d_mutate,
+    };
     let addr = std::net::SocketAddr::new(server.cfg.bind, port);
     g.start(
         addr,
         scene,
         server.cfg.world.clone(),
         Box::new(graal3d::service::ServerWorld(server.clone())),
+        opts,
     )
     .await
 }

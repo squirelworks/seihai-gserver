@@ -284,7 +284,38 @@ pub fn check_scene(
     heights_info: Option<Vec<u8>>,
     mode: ShapeCheck,
 ) -> Vec<String> {
+    check_scene_files(scene, find, heights_info, mode).notes
+}
+
+/// What [`check_scene_files`] found.
+#[derive(Debug, Default)]
+pub struct Checked {
+    /// One line per finding.
+    pub notes: Vec<String>,
+    /// Lower-case names of the files that would crash a client, under
+    /// [`ShapeCheck::Skip`]: a 3D client asking for one is answered as if
+    /// the server had no such file, which it survives (an oversized terrain
+    /// PNG fetched by name crashed 5.12).
+    pub refused: std::collections::BTreeSet<String>,
+    /// `heights.info`, then each texture it names once, as found: what
+    /// `graal3d_pushterrain` sends. A refused texture is never pushed.
+    pub terrain_files: Vec<String>,
+}
+
+/// [`check_scene`], with the refused files and the terrain's files.
+pub fn check_scene_files(
+    scene: &mut Scene,
+    find: &Lookup<'_>,
+    heights_info: Option<Vec<u8>>,
+    mode: ShapeCheck,
+) -> Checked {
     let mut notes = Vec::new();
+    let refused = std::cell::RefCell::new(std::collections::BTreeSet::new());
+    let refuse = |name: &str| {
+        if mode == ShapeCheck::Skip {
+            refused.borrow_mut().insert(name.to_ascii_lowercase());
+        }
+    };
     let shape_ok = |label: &str, shape: &[u8], notes: &mut Vec<String>| -> bool {
         let name = String::from_utf8_lossy(shape).into_owned();
         if name.is_empty() {
@@ -304,6 +335,7 @@ pub fn check_scene(
                 true
             }
             Verdict::Bad(e) => {
+                refuse(&name);
                 let keep = mode == ShapeCheck::Warn;
                 let what = if keep { "sent anyway" } else { "left out" };
                 notes.push(format!("{label}: {name}: {e} ({what})"));
@@ -345,27 +377,45 @@ pub fn check_scene(
         scene.tge_player_shape.clear();
     }
 
-    let texture = |label: &str, name: &str, terrain: bool, notes: &mut Vec<String>| {
+    // Whether the texture is there and safe to send.
+    let texture = |label: &str, name: &str, terrain: bool, notes: &mut Vec<String>| -> bool {
         if name.is_empty() || name == "-" {
-            return;
+            return false;
         }
         match find_texture(find, name) {
-            None => notes.push(format!(
-                "{label}: texture {name} is not in the file folders (the client draws it white)"
-            )),
+            None => {
+                notes.push(format!(
+                    "{label}: texture {name} is not in the file folders (the client draws it white)"
+                ));
+                false
+            }
             Some((found, data)) => {
                 if mode == ShapeCheck::Off {
-                    return;
+                    return true;
                 }
                 match check_texture(&found, &data, terrain) {
-                    Verdict::Ok => {}
-                    Verdict::Warn(e) => notes.push(format!("{label}: {found}: {e}")),
-                    // A texture cannot be left out; say so loudly.
-                    Verdict::Bad(e) => notes.push(format!("{label}: {found}: ERROR {e}")),
+                    Verdict::Ok => true,
+                    Verdict::Warn(e) => {
+                        notes.push(format!("{label}: {found}: {e}"));
+                        true
+                    }
+                    // A texture cannot be left out of the world; under skip
+                    // the client is told the server has no such file.
+                    Verdict::Bad(e) => {
+                        refuse(&found);
+                        let what = if mode == ShapeCheck::Skip {
+                            " (refused when asked for)"
+                        } else {
+                            ""
+                        };
+                        notes.push(format!("{label}: {found}: ERROR {e}{what}"));
+                        mode != ShapeCheck::Skip
+                    }
                 }
             }
         }
     };
+    let mut terrain_files = Vec::new();
     for o in &scene.objects {
         match o {
             Ghost::Sky(s) => {
@@ -373,12 +423,14 @@ pub fn check_scene(
                     texture("sky", t, false, &mut notes);
                 }
             }
-            Ghost::Water(wb) => texture(
-                "water",
-                &String::from_utf8_lossy(&wb.surface_texture),
-                false,
-                &mut notes,
-            ),
+            Ghost::Water(wb) => {
+                texture(
+                    "water",
+                    &String::from_utf8_lossy(&wb.surface_texture),
+                    false,
+                    &mut notes,
+                );
+            }
             _ => {}
         }
     }
@@ -389,19 +441,35 @@ pub fn check_scene(
                     .into(),
             ),
             Some(info) => {
+                terrain_files.push("heights.info".to_string());
                 let text = String::from_utf8_lossy(&info).into_owned();
                 for line in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
+                    // A name listed again is the same file: check and push it once.
+                    if terrain_files.iter().any(|f| f == line) {
+                        continue;
+                    }
+                    if line.contains([' ', ',']) {
+                        notes.push(format!(
+                            "terrain: heights.info line {line:?} has a space or comma; the client reads one file name per line"
+                        ));
+                    }
                     if !line.contains('.') {
                         notes.push(format!(
                             "terrain: heights.info names {line} without an extension; a client that saves it so cannot load it later"
                         ));
                     }
-                    texture("terrain", line, true, &mut notes);
+                    if texture("terrain", line, true, &mut notes) {
+                        terrain_files.push(line.to_string());
+                    }
                 }
             }
         }
     }
-    notes
+    Checked {
+        notes,
+        refused: refused.into_inner(),
+        terrain_files,
+    }
 }
 
 #[cfg(test)]

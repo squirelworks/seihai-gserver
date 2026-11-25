@@ -293,6 +293,18 @@ pub enum WorldIn {
         account: String,
         reply: oneshot::Sender<Option<Leaving>>,
     },
+    /// The other players in each of these players' levels, for the 3D side
+    /// (`graal3d`): 2D players are shown on 3D screens.
+    LevelRoster {
+        players: Vec<u16>,
+        reply: oneshot::Sender<Roster>,
+    },
+    /// Files sent to a player unasked, as answers to its own requests
+    /// (the 3D side's `graal3d_pushterrain`).
+    PushFiles {
+        player: u16,
+        files: Vec<crate::files::Found>,
+    },
     /// An RC's props set (76) on the player online with `account`: the
     /// props go to the player as the NPC-server's do, and the flags
     /// replace the world's. Answers whether the player was online.
@@ -794,6 +806,21 @@ impl World {
         answer.blocking_recv().ok().flatten()
     }
 
+    /// [`WorldIn::PushFiles`].
+    pub fn push_files(&self, player: u16, files: Vec<crate::files::Found>) {
+        let _ = self.tx.send(WorldIn::PushFiles { player, files });
+    }
+
+    /// [`WorldIn::LevelRoster`]: the answer comes on the receiver.
+    pub fn level_roster(
+        &self,
+        players: Vec<u16>,
+    ) -> oneshot::Receiver<Vec<(u16, Vec<LevelPlayer>)>> {
+        let (reply, answer) = oneshot::channel();
+        let _ = self.tx.send(WorldIn::LevelRoster { players, reply });
+        answer
+    }
+
     /// [`WorldIn::ServerFlags`], from a blocking thread.
     pub fn server_flags_blocking(&self) -> Vec<String> {
         let (reply, answer) = oneshot::channel();
@@ -954,6 +981,22 @@ struct OnlineRc {
     /// (`rc::rc_nick`).
     nick: Vec<u8>,
     outbox: Outbox,
+}
+
+/// Each asked-for player and the others in its level.
+pub type Roster = Vec<(u16, Vec<LevelPlayer>)>;
+
+/// A player in another player's level, as the 3D side shows it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LevelPlayer {
+    pub id: u16,
+    /// Lower case.
+    pub account: String,
+    pub nick: Vec<u8>,
+    pub chat: Vec<u8>,
+    /// Tiles.
+    pub x: f32,
+    pub y: f32,
 }
 
 /// One player as the world holds them.
@@ -1319,6 +1362,56 @@ impl WorldTask {
                 }
             }
             WorldIn::Left { player } => self.leave(player),
+            WorldIn::PushFiles { player, files } => {
+                if let Some(p) = self.players.get(&player) {
+                    for f in files {
+                        let frames = crate::files::offer(
+                            p.profile,
+                            f.name.as_bytes(),
+                            &f.name,
+                            Some(&f),
+                            None,
+                            None,
+                        );
+                        if !frames.is_empty() {
+                            let _ = p.outbox.send(frames);
+                        }
+                    }
+                }
+            }
+            WorldIn::LevelRoster { players, reply } => {
+                let out = players
+                    .into_iter()
+                    .filter_map(|id| {
+                        let me = self.players.get(&id)?;
+                        let others = self
+                            .players
+                            .iter()
+                            .filter(|(o, p)| **o != id && p.level == me.level)
+                            .map(|(o, p)| LevelPlayer {
+                                id: *o,
+                                account: p.account.clone(),
+                                nick: p
+                                    .props
+                                    .values()
+                                    .get(&0)
+                                    .and_then(|r| gstring(r))
+                                    .map_or_else(Vec::new, <[u8]>::to_vec),
+                                chat: p
+                                    .props
+                                    .values()
+                                    .get(&CURCHAT)
+                                    .and_then(|r| gstring(r))
+                                    .map_or_else(Vec::new, <[u8]>::to_vec),
+                                x: p.props.x().unwrap_or(0.0),
+                                y: p.props.y().unwrap_or(0.0),
+                            })
+                            .collect();
+                        Some((id, others))
+                    })
+                    .collect();
+                let _ = reply.send(out);
+            }
             WorldIn::Snapshot { account, reply } => {
                 let l = self
                     .by_account

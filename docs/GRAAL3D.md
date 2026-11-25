@@ -17,6 +17,16 @@ In `config/server.txt`:
 graal3d = true
 graal3d_port = 14901        # optional; the default is the TCP port + 1
 graal3d_shapecheck = skip   # optional; or warn, or off (see "Start-up check")
+graal3d_pushterrain = false # optional; see "Each build's row"
+```
+
+Lab only (see "Lab options"):
+
+```text
+graal3d_terrainall = false  # the 5.x ground to every GameObject-era build
+graal3d_trace = g3d.tsv     # a trace file; empty: off
+graal3d_route = mission     # or sharp3d
+graal3d_mutate = off        # or <kind>[:<seed>]
 ```
 
 With it on:
@@ -151,8 +161,15 @@ With `graal3d_shapecheck = skip` (the default) an object with a bad shape is
 left out of the world, a bad `playershape` is not used, and a bad
 `tgeplayershape` is not used either, so protocol 19 gets a Camera. `warn`
 logs and sends them anyway, for labs that send broken shapes on purpose;
-`off` checks nothing. A bad texture cannot be left out, so it is logged as an
-error.
+`off` checks nothing. A bad texture cannot be left out of the world; under
+`skip` it is logged as an error and refused when a 3D client asks for it (the
+client is told the server has no such file, which it survives: an oversized
+terrain PNG fetched by name crashed 5.12). The same goes for a bad shape.
+
+The check also says when `heights.info` lists a name with a space or comma (the
+client reads one name per line), when the `heights.info` the clients get is not
+the one in the terrain's folder, and when the world has a second `terrain`
+line (one TerrainBlock a world; the later line wins).
 
 ## Several players
 
@@ -166,6 +183,14 @@ it reports somewhere else (and for two seconds whatever it reports).
 
 When a player leaves, its object is deleted on every other client, and the
 log says on how many.
+
+A 3D client draws only the objects it is ghosted, so a 2D (TCP only) player in
+a 3D player's level is ghosted to it as `G2DPlayer_<account>`: a GameObject
+with the world's `playershape` at the player's tile position, Torque (x, -y),
+at the spawn's height, with its nickname and chat. The levels are checked 5
+times a second; the object moves and talks as the player does and goes when
+the player leaves the level. Protocol 19 gets a stock Player in its place with
+`tgeplayershape` (and `tgecontrol player`), else nothing.
 
 Every 3D player is also an ordinary TCP player, and its TCP position follows
 its 3D object: Torque (x, y) is map tile (x, -y), set as the player's own
@@ -191,6 +216,25 @@ each move is acked. Every other linked player reaches a protocol 19 client
 as a stock TGE Player, and a protocol 19 player's moves reach the others
 (as a TGE Player on protocol 19, as its GameObject on protocols 21 and 24).
 
+## Each build's row
+
+At link time the server picks the client's row of seihai-core's
+`VersionProfile::three_d` (Graal_analysis `version-profiles/three-d.toml`):
+the login token's own row (the Linux 4.20 `G3D22126` has one), else its
+build's profile, else the protocol's default build (19: 4.04r2, 21: 4.20r6,
+24: 5.12). The log names the row and how many of its values are assumed rather
+than read. The 5.x `TerrainBlock`, `WaterBlock` and ground cover go only to
+builds whose row takes them, and terrain chunks only to those; a build that
+asks for Sky textures as `.gif` (3.153) is named in the log with the names it
+will ask for, and a build that crashes without a Sky gets a warning when the
+world has none.
+
+`graal3d_pushterrain = true` sends `heights.info` and its textures over TCP
+right after a link, once per account a run, to builds that take the terrain
+and fetch its textures (5.12 fetched the textures only on its second visit, so
+a first visit drew the terrain white). A refused texture is never pushed, and
+a name listed twice goes once.
+
 ## The camera (protocols 21 and 24)
 
 Every protocol 21/24 client gets a Camera ghost of its own,
@@ -208,28 +252,51 @@ same as `camera 0 -5 2 1 0 0 0.38`.
 
 ## Not done yet
 
-- `weapon3d` scripts are sent as source, not compiled to bytecode, and the
-  name-only form is not read.
+- `weapon3d` scripts are sent as source, not compiled to bytecode
+  (seihai-gserver-v2 compiles a file through its NPC-server); the name-only
+  form sends the server weapon's clientside source.
 - Server flags (`server.`) are not sent.
 - The `graal3dstringprefix = false` mode is not ported.
 - bzip2 text channel bodies are not decoded.
 - No movetype on GameObjects.
-- 2D players are not shown in 3D yet: seihai-gserver-v2 shows a TCP-only
-  player in a 3D player's level as a `G2DPlayer_<account>` GameObject; this
-  server does not.
-- No per-build capability rows: the terrain, water and ground cover go to
-  every protocol 21/24 client. seihai-core's `VersionProfile::three_d`
-  (Graal_analysis `version-profiles/three-d.toml`) is not in a tagged
-  seihai-core release yet.
-- No trace file, no lab `rawobject`/`rawevent` lines, no mutation lab, and
-  no Sharp3D route.
-- The terrain, water and ground cover have not been run against a real
-  client from this server; the layouts were run live from seihai-gserver-v2.
+- The terrain, water, ground cover, 2D players, Sharp3D route and mutations
+  have loopback tests here; the layouts were run live from seihai-gserver-v2.
 - 3.153 has been seen to crash on the first frame in the C++ fork; the cause
   is unknown.
 - The Linux 4.20r6 (`G3D22126`) links as protocol 24, so the protocol 21
   path has not been run; no Windows 4.20r6 was found.
 - 3.151, 3.153 and 4.20r8 have not been run against this server.
+
+## Lab options
+
+Never on a public server.
+
+- `graal3d_trace = <file>` appends one tab-separated line (milliseconds,
+  account, protocol, what) for each link, each event and control object
+  change a client sends, each 2D player shown or gone, each terrain push and
+  each mutation.
+- `graal3d_terrainall = true` sends the 5.x ground to every GameObject-era
+  client, whatever its row says.
+- `graal3d_route = sharp3d` gives protocol 24 clients the Sharp3D route: the
+  class table of a server a real 5.12 joined and drew (objects Sun,
+  GameObject, Camera, Sky; events BigDataStart, BigDataChunk,
+  ConnectionMessage, GhostAlwaysObject), the world as GhostAlwaysObjectEvents,
+  no mission start commands (the start is over once the client has every
+  object), and its Camera as the control object, named in every packet.
+- `rawobject <class> <fields...>` and `rawevent [late] <class> <fields...>` in
+  the world file ghost an object or send a guaranteed event of any class the
+  client's table has, built from fields: `f0`/`f1`, `i<N>:<v>`, `u8:`, `u16:`,
+  `u32:`, `f32:<v>`, `str:<text>` (`%20` a space, `-` empty), `hex:<bytes>`,
+  `file:<path>` and `zfile:<path>` (zlib), the byte fields with an optional
+  length prefix (`file@10:<path>`). `late` events go after the mission start.
+- `graal3d_mutate = <kind>[:<seed>]`: one seeded mutation a link.
+  `accept-protocol` and `accept-classtable` change the connect accept; the
+  others go in one packet 2 seconds after the mission start: `event-unknown-class`,
+  `event-bad-length`, `ghost-uncreated`, `ghost-double-delete`,
+  `ghost-index-width`, `control-wrong-class`, `control-deleted`. The log and
+  the trace get what changed and the packet's bytes. The seeds drive this
+  server's own generator, so a seed here does not give seihai-gserver-v2's
+  packet for the same seed.
 
 ## Lab runs
 
@@ -297,5 +364,8 @@ total when the link closes.
 layer (shared in spirit with Ato; moving it into `seihai-core` is a
 follow-up), `handshake` holds the protocol tables, `objects` and `tge` the
 ghost and datablock layouts, `ground` the terrain, water and ground cover,
-`assets` the start-up check, `conn` one client's link, `scene` the world
-file, and `service` the UDP socket and its tie to the TCP server.
+`assets` the start-up check, `caps` each build's row, `raw` the lab raw
+fields, `mutate` the lab mutations, `conn` one client's link, `scene` the
+world file, and `service` the UDP socket and its tie to the TCP server. Most
+of the 3D side is ported from the 3D add-on the Seihai project wrote for
+seihai-gserver-v2, at the owner's direction (2026-11-25).

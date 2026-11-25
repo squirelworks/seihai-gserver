@@ -161,7 +161,7 @@ pub fn chunk_event(x: u32, y: u32, c: &Chunk) -> Event {
     w.int(n as u32, 10);
     w.raw(&c.data[..n]);
     Event::Raw {
-        class: "TerrainChunkEvent",
+        class: "TerrainChunkEvent".into(),
         payload: w,
     }
 }

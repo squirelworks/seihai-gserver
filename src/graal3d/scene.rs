@@ -18,8 +18,10 @@
 //! tgecontrol player|camera  a protocol 19 client's control object (player)
 //! tgeplayershape <file>     the protocol 19 Player's shape, a TGE .dts; without
 //!                           one those clients get the Camera
-//! weapon3d <name> <file>    a script the client runs in 3D mode, sent over the
-//!                           text channel (addweapon, weaponscript)
+//! weapon3d <name> [<file>]  a script the client runs in 3D mode, sent over the
+//!                           text channel (addweapon, weaponscript): the
+//!                           file's text, or without one the server's weapon
+//!                           of that name (its clientside part)
 //! terrain <folder> [<square size>] [repeat]
 //!                           streamed terrain (protocols 21 and 24): the folder
 //!                           of heights<x>-<y>.dat chunks; square size 1 to 64
@@ -34,6 +36,14 @@
 //!                           (1 to 64), min and max objects a cell (0 to 20),
 //!                           shapes comma separated, the box the cover may
 //!                           grow in (default: anywhere)
+//! rawobject <class> <fields...>
+//!                           lab: a ghost of any class whose update is the
+//!                           fields (see [`super::raw`]), to every client
+//!                           whose class table has the class
+//! rawevent [late] <class> <fields...>
+//!                           lab: one guaranteed event of the class with the
+//!                           fields as its payload, when the world is
+//!                           ghosted, or with `late` after the mission start
 //! ```
 
 use super::ground::{Replicator, Terrain, Water, ANYWHERE, MAX_SQUARE_SIZE, REPLICATOR_CLASSES};
@@ -50,8 +60,8 @@ pub enum TgeControl {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Weapon3d {
     pub name: String,
-    /// Relative to the world folder.
-    pub file: PathBuf,
+    /// Relative to the world folder; `None`: the server's weapon.
+    pub file: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -68,6 +78,8 @@ pub struct Scene {
     pub weapons: Vec<Weapon3d>,
     /// The `terrain` line; its chunks are read by [`Scene::load_terrain`].
     pub terrain: Option<Terrain>,
+    /// Lab: the `rawevent` lines.
+    pub raw_events: Vec<super::raw::RawEvent>,
 }
 
 fn floats<const N: usize>(words: &[&str]) -> Option<[f32; N]> {
@@ -239,6 +251,12 @@ impl Scene {
                     if ok && safe {
                         // One TerrainBlock a world: 5.12 lays every chunk on
                         // the last block only, so a later line replaces it.
+                        if s.terrain.is_some() {
+                            errors.push(format!(
+                                "line {}: a second terrain line replaces the first (one TerrainBlock a world)",
+                                n + 1
+                            ));
+                        }
                         s.terrain = Some(Terrain::new(w[1], size, repeat));
                     }
                     ok && safe
@@ -320,11 +338,12 @@ impl Scene {
                         _ => false,
                     }
                 }
-                ("weapon3d", 3) => {
-                    let file = PathBuf::from(w[2]);
-                    let safe = file
-                        .components()
-                        .all(|c| matches!(c, std::path::Component::Normal(_)));
+                ("weapon3d", 2 | 3) => {
+                    let file = w.get(2).map(PathBuf::from);
+                    let safe = file.as_ref().is_none_or(|f| {
+                        f.components()
+                            .all(|c| matches!(c, std::path::Component::Normal(_)))
+                    });
                     if safe {
                         s.weapons.push(Weapon3d {
                             name: w[1].to_string(),
@@ -332,6 +351,41 @@ impl Scene {
                         });
                     }
                     safe
+                }
+                ("rawobject", 2..) => match super::raw::parse_fields(&w[2..]) {
+                    Ok(fields) => {
+                        s.objects.push(Ghost::Raw(super::raw::RawObject {
+                            class: w[1].to_string(),
+                            fields,
+                        }));
+                        true
+                    }
+                    Err(e) => {
+                        errors.push(format!("line {}: {e}", n + 1));
+                        continue;
+                    }
+                },
+                ("rawevent", 2..) => {
+                    let late = w[1] == "late";
+                    let at = usize::from(late) + 1;
+                    match w
+                        .get(at)
+                        .map(|c| (c, super::raw::parse_fields(&w[at + 1..])))
+                    {
+                        Some((class, Ok(fields))) => {
+                            s.raw_events.push(super::raw::RawEvent {
+                                class: class.to_string(),
+                                fields,
+                                late,
+                            });
+                            true
+                        }
+                        Some((_, Err(e))) => {
+                            errors.push(format!("line {}: {e}", n + 1));
+                            continue;
+                        }
+                        None => false,
+                    }
                 }
                 _ => false,
             };

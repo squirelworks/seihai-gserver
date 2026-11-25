@@ -542,6 +542,9 @@ pub enum Ghost {
     Terrain(Box<super::ground::Terrain>),
     Water(super::ground::Water),
     Replicator(super::ground::Replicator),
+    /// Lab: a `rawobject` line, to every client whose class table has its
+    /// class.
+    Raw(super::raw::RawObject),
 }
 
 /// Protocol 19 masks: position and rotation, and the datablock (creates).
@@ -549,7 +552,7 @@ pub const TGE_MOVE: u32 = 1;
 pub const TGE_DATABLOCK: u32 = 2;
 
 impl Ghost {
-    pub fn class_name(&self) -> &'static str {
+    pub fn class_name(&self) -> &str {
         match self {
             Ghost::GameObject(_) => "GameObject",
             Ghost::Sun(_) => "Sun",
@@ -559,6 +562,7 @@ impl Ghost {
             Ghost::Terrain(_) => "TerrainBlock",
             Ghost::Water(_) => "WaterBlock",
             Ghost::Replicator(r) => r.class,
+            Ghost::Raw(r) => &r.class,
         }
     }
 
@@ -573,6 +577,7 @@ impl Ghost {
             Ghost::Terrain(_) => "Terrain".into(),
             Ghost::Water(_) => "water".into(),
             Ghost::Replicator(r) => String::from_utf8_lossy(&r.name).into(),
+            Ghost::Raw(r) => format!("raw {}", r.class),
         }
     }
 
@@ -582,7 +587,7 @@ impl Ghost {
 
     /// Whether a client of that era takes this kind; a Sky goes to both.
     pub fn sent_to(&self, tge_era: bool) -> bool {
-        matches!(self, Ghost::Sky(_)) || self.is_tge() == tge_era
+        matches!(self, Ghost::Sky(_) | Ghost::Raw(_)) || self.is_tge() == tge_era
     }
 
     pub fn full_mask(&self) -> u32 {
@@ -592,7 +597,8 @@ impl Ghost {
             | Ghost::Sky(_)
             | Ghost::Terrain(_)
             | Ghost::Water(_)
-            | Ghost::Replicator(_) => 1,
+            | Ghost::Replicator(_)
+            | Ghost::Raw(_) => 1,
             Ghost::TgeCamera(_) | Ghost::TgePlayer(_) => TGE_MOVE | TGE_DATABLOCK,
         }
     }
@@ -608,6 +614,7 @@ impl Ghost {
             (Ghost::Terrain(a), Ghost::Terrain(b)) => u32::from(a != b),
             (Ghost::Water(a), Ghost::Water(b)) => u32::from(a != b),
             (Ghost::Replicator(a), Ghost::Replicator(b)) => u32::from(a != b),
+            (Ghost::Raw(a), Ghost::Raw(b)) => u32::from(a != b),
             (Ghost::TgeCamera(a), Ghost::TgeCamera(b)) => {
                 if a == b {
                     0
@@ -643,6 +650,7 @@ impl Ghost {
             Ghost::Terrain(t) => t.write_block(w),
             Ghost::Water(o) => o.write(w),
             Ghost::Replicator(o) => o.write(w),
+            Ghost::Raw(o) => super::raw::write_fields(w, &o.fields),
         }
     }
 }

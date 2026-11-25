@@ -22,13 +22,16 @@
 
 pub mod assets;
 pub mod bits;
+pub mod caps;
 pub mod conn;
 pub mod events;
 pub mod ground;
 pub mod handshake;
 pub mod huffman;
 pub mod link;
+pub mod mutate;
 pub mod objects;
+pub mod raw;
 pub mod scene;
 pub mod service;
 pub mod tge;
@@ -45,6 +48,29 @@ pub use service::{has_graal3d, Graal3d, TcpPlayer};
 pub fn extensionless_texture(
     files: &crate::files::FileStore,
     name: &str,
+) -> Option<crate::files::Found> {
+    texture_variant(files, name, &|_| false)
+}
+
+/// A file a 3D client asked for: the name itself, else
+/// [`extensionless_texture`]. A file the start-up check found would crash
+/// a client (`graal3d_shapecheck = skip`) is answered as missing.
+pub fn client_file(
+    files: &crate::files::FileStore,
+    name: &str,
+    hub: Option<&Graal3d>,
+) -> Option<crate::files::Found> {
+    let refused = |n: &str| hub.is_some_and(|h| h.refuses(n));
+    if let Some(f) = files.find(name) {
+        return (!refused(name)).then_some(f);
+    }
+    texture_variant(files, name, &refused)
+}
+
+fn texture_variant(
+    files: &crate::files::FileStore,
+    name: &str,
+    skip: &dyn Fn(&str) -> bool,
 ) -> Option<crate::files::Found> {
     let base = name.rsplit(['/', '\\']).next().unwrap_or(name);
     if base.is_empty() {
@@ -63,7 +89,7 @@ pub fn extensionless_texture(
     assets::IMAGE_EXTENSIONS
         .iter()
         .map(|ext| format!("{stem}{ext}"))
-        .filter(|n| !n.eq_ignore_ascii_case(name))
+        .filter(|n| !n.eq_ignore_ascii_case(name) && !skip(n))
         .find_map(|n| files.find(&n))
         .map(|mut f| {
             f.name = name.to_string();

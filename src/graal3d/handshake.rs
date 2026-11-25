@@ -52,6 +52,10 @@ pub struct Profile {
     pub datablocks: &'static [&'static str],
     /// Event classes (type 2 with datablocks, else 1).
     pub events: &'static [&'static str],
+    /// The Sharp3D route (`graal3d_route = sharp3d`): the world goes out
+    /// as GhostAlwaysObjectEvents, there are no mission start commands,
+    /// and a Camera is the control object.
+    pub ghost_always: bool,
 }
 
 impl Profile {
@@ -139,6 +143,7 @@ pub const PROTOCOL_19: Profile = Profile {
         "TerrainChunkEvent",
         "TerrainRequestUpdatesEvent",
     ],
+    ghost_always: false,
 };
 
 /// 4.20r6.
@@ -173,6 +178,7 @@ pub const PROTOCOL_21: Profile = Profile {
         "TerrainChunkEvent",
         "TerrainRequestUpdatesEvent",
     ],
+    ghost_always: false,
 };
 
 /// 4.20r8 and 5.x (5.00r7, 5.12): the line run end to end in the labs.
@@ -204,7 +210,30 @@ pub const PROTOCOL_24: Profile = Profile {
         "TerrainChunkEvent",
         "TerrainRequestUpdatesEvent",
     ],
+    ghost_always: false,
 };
+
+/// The Sharp3D route for protocol 24: the class table of a server a real
+/// 5.12 joined and drew (a capture of 2026-11-24), in its id order.
+pub const PROTOCOL_24_SHARP3D: Profile = Profile {
+    protocol: 24,
+    clients: "5.x, Sharp3D route",
+    tge: false,
+    objects: &["Sun", "GameObject", "Camera", "Sky"],
+    datablocks: &[],
+    events: &[
+        "BigDataStartEvent",
+        "BigDataChunkEvent",
+        "ConnectionMessageEvent",
+        "GhostAlwaysObjectEvent",
+    ],
+    ghost_always: true,
+};
+
+/// The Sharp3D route's profile for a protocol (24 only).
+pub fn sharp3d_profile(protocol: u32) -> Option<&'static Profile> {
+    (protocol == 24).then_some(&PROTOCOL_24_SHARP3D)
+}
 
 pub fn profile(protocol: u32) -> Option<&'static Profile> {
     [&PROTOCOL_19, &PROTOCOL_21, &PROTOCOL_24]
@@ -331,17 +360,46 @@ pub fn challenge_response(sequence: u32, digest: &Digest) -> Vec<u8> {
 
 /// The accept, with the class table Graal inserts before the protocol.
 pub fn connect_accept(sequence: u32, profile: &Profile) -> Vec<u8> {
+    connect_accept_tweaked(sequence, profile, &super::mutate::AcceptTweak::default())
+}
+
+/// The accept with a lab mutation's changes (`graal3d_mutate`).
+pub fn connect_accept_tweaked(
+    sequence: u32,
+    profile: &Profile,
+    tweak: &super::mutate::AcceptTweak,
+) -> Vec<u8> {
+    let mut entries = profile.class_entries();
+    let ev = profile.event_type();
+    for _ in 0..tweak.drop_events {
+        if let Some(i) = entries.iter().rposition(|e| e.class_type == ev) {
+            entries.remove(i);
+        }
+    }
+    for name in &tweak.extra_events {
+        let id = entries.iter().filter(|e| e.class_type == ev).count() as u32;
+        entries.push(ClassEntry {
+            class_type: ev,
+            server_id: id,
+            name: name.as_bytes().to_vec(),
+        });
+    }
+    if let Some((i, name)) = tweak.rename_object {
+        if let Some(e) = entries.iter_mut().filter(|e| e.class_type == 0).nth(i) {
+            e.name = name.as_bytes().to_vec();
+        }
+    }
     let mut w = BitWriter::new();
     w.u8(kind::CONNECT_ACCEPT);
     w.u32(sequence);
-    for e in profile.class_entries() {
+    for e in entries {
         w.flag(true);
         w.int(e.class_type, 12);
         w.int(e.server_id, 12);
         w.string(&e.name);
     }
     w.flag(false);
-    w.u32(profile.protocol);
+    w.u32(tweak.protocol.unwrap_or(profile.protocol));
     w.into_bytes()
 }
 
@@ -453,6 +511,7 @@ mod tests {
             objects: &[],
             datablocks: &[],
             events: &[],
+            ghost_always: false,
         };
         assert_eq!(connect_accept(0x400, &EMPTY), hex("24000400003000000000"));
     }

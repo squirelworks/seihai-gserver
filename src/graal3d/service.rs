@@ -25,8 +25,10 @@
 //! Player (or Camera) of its own instead, and every other linked player as
 //! a stock TGE Player; its moves reach the others the same way.
 
+use super::caps::{self, Caps};
 use super::conn::{ClientState, Connection, Key, Mission, Out};
 use super::handshake::{self, ConnectRequest};
+use super::mutate::{self, Mutation};
 use super::objects::{bits, flags, GameObject, Ghost, Sky, Transform};
 use super::scene::{Scene, TgeControl};
 use super::tge;
@@ -38,7 +40,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::net::UdpSocket;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 /// How often the service runs every connection.
 const FRAME: Duration = Duration::from_millis(10);
@@ -81,6 +83,35 @@ pub struct TcpPlayer {
     pub nickname: Vec<u8>,
     /// `name=value` or `name`, as the account keeps them.
     pub flags: Vec<String>,
+    /// The login's client token (`G3D14097`, ...) and the build's label
+    /// (`5.12`): they pick the client's row in [`super::caps`].
+    pub token: String,
+    pub label: String,
+}
+
+/// The 3D side's options (`graal3d_*` in `config/server.txt`), and what
+/// the start-up check found.
+#[derive(Debug, Clone, Default)]
+pub struct Options {
+    /// `graal3d_terrainall`: the 5.x TerrainBlock, WaterBlock, ground
+    /// cover and chunks go to every GameObject-era client, whatever its
+    /// build's row says.
+    pub terrain_all: bool,
+    /// `graal3d_pushterrain`: right after a 3D link, `heights.info` and
+    /// its textures go to the client over TCP unasked, once per account a
+    /// run (5.12 fetches the textures only on its second visit).
+    pub push_terrain: bool,
+    /// What the push sends: [`super::assets::Checked::terrain_files`].
+    pub terrain_files: Vec<String>,
+    /// `graal3d_trace`: a file that gets one tab-separated line for each
+    /// link, each event and control object change a client sends, and
+    /// each 2D player shown, for multi-client labs.
+    pub trace: Option<PathBuf>,
+    /// `graal3d_route = sharp3d`: protocol 24 clients get the Sharp3D
+    /// route.
+    pub sharp3d: bool,
+    /// `graal3d_mutate`: lab only, one seeded mutation a link.
+    pub mutation: Option<(Mutation, u32)>,
 }
 
 enum Cmd {
@@ -98,6 +129,9 @@ enum Cmd {
 struct Shared {
     players: HashMap<u16, TcpPlayer>,
     linked: HashSet<u16>,
+    /// Lower-case names of the files a 3D client is told the server does
+    /// not have (see [`super::assets::Checked::refused`]).
+    refused: std::collections::BTreeSet<String>,
 }
 
 /// The handle the rest of the server holds.
@@ -125,6 +159,21 @@ impl Graal3d {
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Shared> {
         self.shared.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Sets the files a 3D client is told the server does not have.
+    pub fn set_refused(&self, names: std::collections::BTreeSet<String>) {
+        self.lock().refused = names;
+    }
+
+    /// Whether `name` (any folder, any case) is a refused file.
+    pub fn refuses(&self, name: &str) -> bool {
+        let s = self.lock();
+        if s.refused.is_empty() {
+            return false;
+        }
+        let base = name.rsplit(['/', '\\']).next().unwrap_or(name);
+        s.refused.contains(&base.to_ascii_lowercase())
     }
 
     /// A 3D-capable client finished its TCP login.
@@ -184,6 +233,7 @@ impl Graal3d {
         scene: Scene,
         world_dir: PathBuf,
         world: Box<dyn WorldInput>,
+        opts: Options,
     ) -> std::io::Result<SocketAddr> {
         let socket = UdpSocket::bind(addr).await?;
         let local = socket.local_addr()?;
@@ -193,7 +243,7 @@ impl Graal3d {
             .unwrap()
             .take()
             .ok_or_else(|| std::io::Error::other("the 3D side is already running"))?;
-        let service = Service::new(self.clone(), scene, world_dir, world);
+        let service = Service::new(self.clone(), scene, world_dir, world).with_options(opts);
         tokio::spawn(service.run(socket, rx));
         Ok(local)
     }
@@ -237,6 +287,13 @@ pub trait WorldInput: Send {
     fn position(&self, player: u16, raw: &[u8]);
     /// The player's chat prop, from what it said in 3D.
     fn chat(&self, player: u16, text: &[u8]);
+    /// The other players in each of these players' levels: 2D players are
+    /// shown on 3D screens. `None`: not asked (tests).
+    fn level_roster(&self, _players: Vec<u16>) -> Option<oneshot::Receiver<crate::world::Roster>> {
+        None
+    }
+    /// Sends these files to the player over TCP, unasked.
+    fn push_files(&self, _player: u16, _names: &[String]) {}
 }
 
 /// The server's world task, for the running service.
@@ -262,12 +319,26 @@ impl WorldInput for ServerWorld {
         raw.extend_from_slice(text);
         self.0.world.props(player, &raw, None);
     }
+    fn level_roster(&self, players: Vec<u16>) -> Option<oneshot::Receiver<crate::world::Roster>> {
+        Some(self.0.world.level_roster(players))
+    }
+    fn push_files(&self, player: u16, names: &[String]) {
+        let files = names
+            .iter()
+            .filter_map(|n| super::client_file(&self.0.files, n, self.0.graal3d.as_deref()))
+            .collect();
+        self.0.world.push_files(player, files);
+    }
 }
 
 struct Session {
     player: u16,
     account: String,
     conn: Connection,
+    /// What the client's build takes.
+    caps: Option<Caps>,
+    /// The 2D players of its level, as last put on its screen.
+    shown_2d: BTreeMap<u16, GameObject>,
 }
 
 const AVATAR: Key = 0x1_0000;
@@ -280,6 +351,14 @@ pub const DEFAULT_CAMERA_OFFSET: [f32; 3] = [0.0, -5.0, 2.0];
 const PLAIN_SKY: Key = 0x3_0000;
 /// The streamed terrain's TerrainBlock (protocols 21 and 24).
 const TERRAIN: Key = 0x4_0000;
+/// A 2D (TCP only) player in a 3D player's level.
+const PLAYER_2D: Key = 0x5_0000;
+/// How often the 2D players are looked up, in milliseconds.
+const ROSTER_MS: u64 = 200;
+
+fn player_2d_key(p: u16) -> Key {
+    PLAYER_2D + Key::from(p)
+}
 
 /// Where the `n`th player to join stands (0: the spawn point). Later ones
 /// take the first point no linked player stands on, of 8 points 2 units
@@ -404,6 +483,12 @@ pub struct Service {
     unmatched: HashSet<String>,
     /// Datagrams to send, for the task (or a test) to take.
     outbox: Vec<(SocketAddr, Vec<u8>)>,
+    opts: Options,
+    trace_file: Option<std::fs::File>,
+    /// Accounts already sent the terrain's files (`graal3d_pushterrain`).
+    pushed_to: HashSet<String>,
+    roster: Option<oneshot::Receiver<crate::world::Roster>>,
+    next_roster: u64,
 }
 
 impl Service {
@@ -432,7 +517,58 @@ impl Service {
             tcp_position: HashMap::new(),
             unmatched: HashSet::new(),
             outbox: Vec::new(),
+            opts: Options::default(),
+            trace_file: None,
+            pushed_to: HashSet::new(),
+            roster: None,
+            next_roster: 0,
         }
+    }
+
+    /// Sets the options; opens the trace file.
+    pub fn with_options(mut self, opts: Options) -> Self {
+        if let Some(path) = &opts.trace {
+            match std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+            {
+                Ok(f) => {
+                    log(&format!("tracing every 3D client to {}", path.display()));
+                    self.trace_file = Some(f);
+                }
+                Err(e) => log(&format!(
+                    "cannot open graal3d_trace file {}: {e}",
+                    path.display()
+                )),
+            }
+        }
+        if let Some((m, seed)) = opts.mutation {
+            log(&format!(
+                "LAB MUTATION {}:{seed} on every 3D link (graal3d_mutate). Never on a public server.",
+                m.name()
+            ));
+        }
+        if opts.sharp3d {
+            log("protocol 24 clients get the Sharp3D route (graal3d_route = sharp3d)");
+        }
+        self.opts = opts;
+        self
+    }
+
+    /// One trace line: milliseconds, the account, the protocol (0: the
+    /// server's own relay), what happened.
+    fn trace(&mut self, account: &str, protocol: u32, what: &str) {
+        use std::io::Write;
+        let now = self.now();
+        if let Some(f) = &mut self.trace_file {
+            let _ = writeln!(f, "{now}\t{account}\t{protocol}\t{what}");
+        }
+    }
+
+    /// Whether a client with `caps` on `protocol` takes the 5.x terrain.
+    fn takes_terrain(&self, caps: Option<&Caps>, tge: bool) -> bool {
+        caps.is_some_and(Caps::takes_terrain) || (self.opts.terrain_all && !tge)
     }
 
     fn now(&self) -> u64 {
@@ -559,7 +695,7 @@ impl Service {
         // A repeat of a request already accepted: the accept again.
         if let Some(s) = self.sessions.get(&from) {
             if s.conn.sequence() == req.sequence {
-                let accept = handshake::connect_accept(req.sequence, s.conn.profile());
+                let accept = self.accept(req.sequence, s.conn.profile()).0;
                 self.outbox.push((from, accept));
                 return;
             }
@@ -572,7 +708,10 @@ impl Service {
             ));
             return;
         }
-        let profile = handshake::profile(req.current_protocol).expect("checked");
+        let mut profile = handshake::profile(req.current_protocol).expect("checked");
+        if self.opts.sharp3d {
+            profile = handshake::sharp3d_profile(req.current_protocol).unwrap_or(profile);
+        }
         let requested = String::from_utf8_lossy(req.account()).to_ascii_lowercase();
         // The client opens TCP and UDP together, and the TCP login may not
         // be done yet. Until it is, say nothing: the client repeats.
@@ -592,13 +731,21 @@ impl Service {
         if let Some(old) = self.by_player.get(&id).copied() {
             self.close(old, "Another 3D connection was opened.", true);
         }
-        let conn = Connection::new(profile, req.sequence, now);
+        let mut conn = Connection::new(profile, req.sequence, now);
+        conn.set_tracing(self.trace_file.is_some());
+        conn.set_mutation(self.opts.mutation);
+        let caps = caps::for_client(&player.token, &player.label, profile.protocol);
+        if let Some(c) = &caps {
+            log(&format!("{} is {}", player.account, c.describe()));
+        }
         self.sessions.insert(
             from,
             Session {
                 player: id,
                 account: player.account.clone(),
                 conn,
+                caps,
+                shown_2d: BTreeMap::new(),
             },
         );
         self.by_player.insert(id, from);
@@ -621,11 +768,18 @@ impl Service {
             ..GameObject::default()
         };
         self.avatars.insert(id, avatar.clone());
+        self.push_terrain(id, &player.account, caps.as_ref(), profile);
         self.ghost_world(from);
         self.follow_on_tcp(id);
         self.broadcast_avatar(id, Some(from));
-        self.outbox
-            .push((from, handshake::connect_accept(req.sequence, profile)));
+        let (accept, said) = self.accept(req.sequence, profile);
+        if !said.is_empty() {
+            let hex: String = accept.iter().map(|b| format!("{b:02x}")).collect();
+            let line = format!("{said}; packet {hex}");
+            log(&format!("{}: {line}", player.account));
+            self.trace(&player.account, profile.protocol, &line);
+        }
+        self.outbox.push((from, accept));
         log(&format!(
             "{} linked from {} (protocol {}, {})",
             player.account,
@@ -633,7 +787,70 @@ impl Service {
             profile.protocol,
             profile.clients
         ));
+        let at = start.position;
+        let line = format!(
+            "linked from {} ({}); {} other 3D players; spawn {:.2},{:.2},{:.2}",
+            from.ip(),
+            profile.clients,
+            self.sessions.len() - 1,
+            at[0],
+            at[1],
+            at[2]
+        );
+        self.trace(&player.account, profile.protocol, &line);
         self.drain_all();
+    }
+
+    /// The connect accept, with an accept mutation's changes and a line
+    /// saying what they are (empty without one).
+    fn accept(&self, sequence: u32, profile: &'static handshake::Profile) -> (Vec<u8>, String) {
+        match self.opts.mutation.filter(|(m, _)| m.in_accept()) {
+            Some((m, seed)) => {
+                let (tweak, said) = mutate::accept_tweak(m, seed, profile);
+                (
+                    handshake::connect_accept_tweaked(sequence, profile, &tweak),
+                    format!("mutation {}:{seed} in the connect accept: {said}", m.name()),
+                )
+            }
+            None => (handshake::connect_accept(sequence, profile), String::new()),
+        }
+    }
+
+    /// `graal3d_pushterrain`: the terrain's files over TCP, once per
+    /// account a run, to a build that takes the terrain and reads its
+    /// textures (4.20r8 never fetches them).
+    fn push_terrain(
+        &mut self,
+        id: u16,
+        account: &str,
+        caps: Option<&Caps>,
+        profile: &handshake::Profile,
+    ) {
+        if !self.opts.push_terrain
+            || self.scene.terrain.is_none()
+            || !self.takes_terrain(caps, profile.tge)
+        {
+            return;
+        }
+        if caps.is_some_and(|c| !c.row.terrain_textures) {
+            self.trace(
+                account,
+                profile.protocol,
+                "no terrain file push: this build never fetches terrain textures or heights.info",
+            );
+            return;
+        }
+        if !self.pushed_to.insert(account.to_string()) {
+            return;
+        }
+        let files = self.opts.terrain_files.clone();
+        self.world.push_files(id, &files);
+        let line = format!(
+            "pushed {} terrain files over TCP (graal3d_pushterrain)",
+            files.len()
+        );
+        log(&format!("{account}: {line}"));
+        self.trace(account, profile.protocol, &line);
     }
 
     fn ghost_world(&mut self, at: SocketAddr) {
@@ -686,6 +903,33 @@ impl Service {
             for (other, g) in others {
                 s.conn.set_ghost(avatar_key(other), g);
             }
+            // 3.153 asks for each Sky texture as <stem>.gif.
+            if let Some(c) = s.caps.filter(|c| c.row.sky_gif) {
+                for o in &scene.objects {
+                    if let Ghost::Sky(sky) = o {
+                        let names: Vec<String> = String::from_utf8_lossy(&sky.material_list)
+                            .split(',')
+                            .filter(|n| !n.is_empty() && *n != "-")
+                            .map(|n| {
+                                let stem = n.rsplit_once('.').map_or(n, |(a, _)| a);
+                                format!("{stem}.gif")
+                            })
+                            .collect();
+                        log(&format!(
+                            "{}'s build ({}) asks for the sky textures as .gif: {}",
+                            s.account,
+                            c.label,
+                            names.join(", ")
+                        ));
+                    }
+                }
+            }
+            for (i, o) in scene.objects.iter().enumerate() {
+                if matches!(o, Ghost::Raw(_)) {
+                    s.conn.set_ghost(i as Key + 1, o.clone());
+                }
+            }
+            self.send_raw_events(at, false);
             return;
         }
         // 4.20r6 (protocol 21) reads the scene's Sky and that Sky's seventh
@@ -694,9 +938,41 @@ impl Service {
         // (lab 2026-11-20, real Mac 4.20r6 in a Tiger VM). So it gets
         // protocol 19's Skies. 5.12 (protocol 24) draws without them.
         let p21 = s.conn.profile().protocol == 21;
+        let caps = s.caps;
+        let mut left_out = 0;
+        let terrain_all = self.opts.terrain_all;
+        let offers = |o: &Ghost| match &caps {
+            Some(c) => c.offers(o, terrain_all),
+            None => {
+                !matches!(
+                    o,
+                    Ghost::Terrain(_) | Ghost::Water(_) | Ghost::Replicator(_)
+                ) || terrain_all
+            }
+        };
         for (i, o) in scene.objects.iter().enumerate() {
-            if !(p21 && matches!(o, Ghost::Sky(_))) {
+            if p21 && matches!(o, Ghost::Sky(_)) {
+                continue;
+            }
+            if offers(o) {
                 s.conn.set_ghost(i as Key + 1, o.clone());
+            } else {
+                left_out += 1;
+            }
+        }
+        if left_out > 0 {
+            log(&format!(
+                "{}'s build ({}) does not take the 5.x terrain or water layout: {left_out} objects not sent",
+                s.account,
+                caps.map_or("unknown", |c| c.label)
+            ));
+        }
+        if let Some(c) = caps.filter(|c| c.row.requires_sky) {
+            if !scene.objects.iter().any(|o| matches!(o, Ghost::Sky(_))) && !p21 {
+                log(&format!(
+                    "{}'s build ({}) crashes without a Sky, and graal3dworld.txt has no sky line",
+                    s.account, c.label
+                ));
             }
         }
         if p21 {
@@ -706,14 +982,20 @@ impl Service {
         }
         // The terrain's settings; its chunks follow the client's request.
         if let Some(t) = &scene.terrain {
-            s.conn
-                .set_ghost(TERRAIN, Ghost::Terrain(Box::new(t.clone())));
+            let g = Ghost::Terrain(Box::new(t.clone()));
+            if offers(&g) {
+                s.conn.set_ghost(TERRAIN, g);
+            }
         }
         for (other, a) in &self.avatars {
             s.conn
                 .set_ghost(avatar_key(*other), Ghost::GameObject(a.clone()));
         }
-        s.conn.set_control_object(avatar_key(id));
+        // The Sharp3D route's control object is the Camera (below).
+        let sharp3d = s.conn.profile().ghost_always;
+        if !sharp3d {
+            s.conn.set_control_object(avatar_key(id));
+        }
         // Every protocol 21/24 client gets a Camera of its own. The 5.12
         // client draws its 3D view only through one: with just the control
         // object the window stays black (lab 2026-11-20, real 5.12 on
@@ -727,6 +1009,47 @@ impl Service {
         };
         s.conn.set_ghost(camera_key(id), Ghost::Camera(camera));
         s.conn.set_camera_object(camera_key(id));
+        if sharp3d {
+            s.conn.set_control_object(camera_key(id));
+        }
+        self.send_raw_events(at, false);
+    }
+
+    /// Lab: the world's `rawevent` lines (`late`: the ones for after the
+    /// mission start).
+    fn send_raw_events(&mut self, at: SocketAddr, late: bool) {
+        let events: Vec<_> = self
+            .scene
+            .raw_events
+            .iter()
+            .filter(|e| e.late == late)
+            .cloned()
+            .collect();
+        if events.is_empty() {
+            return;
+        }
+        let Some(s) = self.sessions.get_mut(&at) else {
+            return;
+        };
+        let mut sent = 0;
+        let mut missing = std::collections::BTreeSet::new();
+        for e in events {
+            if s.conn.send_raw_event(&e.class, &e.fields) {
+                sent += 1;
+            } else {
+                missing.insert(e.class);
+            }
+        }
+        let account = s.account.clone();
+        if sent > 0 {
+            let when = if late { " after the mission start" } else { "" };
+            log(&format!("{account} gets {sent} raw events{when}"));
+        }
+        for class in missing {
+            log(&format!(
+                "{account}: its client has no event class {class} (or the event is too long): not sent"
+            ));
+        }
     }
 
     /// Runs every connection: sends what is due, closes the quiet ones.
@@ -747,6 +1070,132 @@ impl Service {
             self.close(a, "The 3D connection timed out.", false);
         }
         self.share_tge_moves();
+        self.poll_roster(now);
+    }
+
+    /// Asks the world for the 2D players in each 3D player's level, 5
+    /// times a second, and shows what it answers.
+    fn poll_roster(&mut self, now: u64) {
+        if let Some(rx) = &mut self.roster {
+            match rx.try_recv() {
+                Ok(r) => {
+                    self.roster = None;
+                    self.show_2d_players(r);
+                }
+                Err(oneshot::error::TryRecvError::Empty) => return,
+                Err(oneshot::error::TryRecvError::Closed) => self.roster = None,
+            }
+        }
+        if now < self.next_roster || self.sessions.is_empty() {
+            return;
+        }
+        self.next_roster = now + ROSTER_MS;
+        let players: Vec<u16> = self.sessions.values().map(|s| s.player).collect();
+        self.roster = self.world.level_roster(players);
+    }
+
+    /// A 3D client draws only the objects it is ghosted, so a 2D player in
+    /// its level never showed. Each gets a GameObject at its tile
+    /// position, Torque (x, -y), at the spawn's height, with its nickname
+    /// and chat; it goes when the player leaves the level.
+    pub fn show_2d_players(&mut self, roster: crate::world::Roster) {
+        let z = self.scene.spawn.position[2];
+        let mut traces = Vec::new();
+        for (me, others) in roster {
+            let Some(at) = self.by_player.get(&me).copied() else {
+                continue;
+            };
+            let want: BTreeMap<u16, GameObject> = others
+                .into_iter()
+                .filter(|o| !self.by_player.contains_key(&o.id))
+                .map(|o| {
+                    let mut transform = self.scene.spawn;
+                    transform.position = [o.x, -o.y, z];
+                    (
+                        o.id,
+                        GameObject {
+                            name: format!("G2DPlayer_{}", o.account).into_bytes(),
+                            shape: self.scene.player_shape.clone(),
+                            transform,
+                            nickname: o.nick,
+                            chat: o.chat,
+                            flags: flags::SHADOW,
+                            ..GameObject::default()
+                        },
+                    )
+                })
+                .collect();
+            let tge_shape = self.scene.tge_player_shape.clone();
+            let tge_others = self.scene.tge_control == TgeControl::Player && !tge_shape.is_empty();
+            let Some(s) = self.sessions.get_mut(&at) else {
+                continue;
+            };
+            let protocol = s.conn.profile().protocol;
+            let tge = s.conn.profile().tge;
+            let gone: Vec<u16> = s
+                .shown_2d
+                .keys()
+                .filter(|id| !want.contains_key(id))
+                .copied()
+                .collect();
+            for id in gone {
+                s.conn.remove_ghost(player_2d_key(id));
+                if let Some(o) = s.shown_2d.remove(&id) {
+                    traces.push((
+                        s.account.clone(),
+                        protocol,
+                        format!("2D player gone: {}", String::from_utf8_lossy(&o.name)),
+                    ));
+                }
+            }
+            for (id, o) in want {
+                let before = s.shown_2d.get(&id);
+                if before == Some(&o) {
+                    continue;
+                }
+                if tge {
+                    // Protocol 19 has no GameObject: a stock Player on the
+                    // PlayerData its own Player uses, or nothing.
+                    if tge_others {
+                        s.conn.set_ghost(
+                            player_2d_key(id),
+                            Ghost::TgePlayer(tge::Player {
+                                state: tge::PlayerState {
+                                    position: o.transform.position,
+                                    ..tge::PlayerState::default()
+                                },
+                                shape: tge_shape.clone(),
+                            }),
+                        );
+                    }
+                } else {
+                    s.conn
+                        .set_ghost(player_2d_key(id), Ghost::GameObject(o.clone()));
+                }
+                let p = o.transform.position;
+                let chat = if o.chat.is_empty() {
+                    String::new()
+                } else {
+                    format!(" chat={}", String::from_utf8_lossy(&o.chat))
+                };
+                traces.push((
+                    s.account.clone(),
+                    protocol,
+                    format!(
+                        "2D player {} {}: at={:.3},{:.3},{:.3}{chat}",
+                        if before.is_none() { "shown" } else { "update" },
+                        String::from_utf8_lossy(&o.name),
+                        p[0],
+                        p[1],
+                        p[2]
+                    ),
+                ));
+                s.shown_2d.insert(id, o);
+            }
+        }
+        for (a, p, t) in traces {
+            self.trace(&a, p, &t);
+        }
     }
 
     /// Protocol 19 clients move their own Player with moves: send each
@@ -837,12 +1286,36 @@ impl Service {
                 Out::ClientState(st) => self.client_state(player, *st),
                 Out::Mission(m) => self.mission(at, m),
                 Out::TerrainRequest(stamps) => self.terrain_request(at, &stamps),
+                Out::Trace(t) => {
+                    let protocol = self
+                        .sessions
+                        .get(&at)
+                        .map_or(0, |s| s.conn.profile().protocol);
+                    self.trace(&account, protocol, &t);
+                }
             }
         }
     }
 
     /// Sends every chunk whose stamp differs from the client's.
     fn terrain_request(&mut self, at: SocketAddr, stamps: &[u32]) {
+        let Some(s) = self.sessions.get(&at) else {
+            return;
+        };
+        let (caps, tge, account) = (s.caps, s.conn.profile().tge, s.account.clone());
+        if self.scene.terrain.is_none() {
+            log(&format!(
+                "{account} asked for terrain chunks; the world has no terrain line"
+            ));
+            return;
+        }
+        if !self.takes_terrain(caps.as_ref(), tge) {
+            log(&format!(
+                "{account} asked for terrain chunks; its build ({}) does not take the 5.x terrain layout",
+                caps.map_or("unknown", |c| c.label)
+            ));
+            return;
+        }
         let Some(t) = &self.scene.terrain else {
             return;
         };
@@ -909,6 +1382,7 @@ impl Service {
                         }
                     }
                 }
+                self.send_raw_events(at, true);
             }
             _ => {}
         }
@@ -942,18 +1416,47 @@ impl Service {
 
     fn send_weapons(&mut self, at: SocketAddr) {
         let weapons = self.scene.weapons.clone();
+        if weapons.is_empty() {
+            return;
+        }
+        let server_weapons = weapons
+            .iter()
+            .any(|w| w.file.is_none())
+            .then(|| crate::weapons::Weapons::load(&self.world_dir.join("weapons")));
         for w in weapons {
-            let script = match std::fs::read(self.world_dir.join(&w.file)) {
-                Ok(s) => s,
-                Err(e) => {
-                    log(&format!(
-                        "weapon3d {}: cannot read {}: {e}",
-                        w.name,
-                        w.file.display()
-                    ));
-                    continue;
-                }
+            let script = match &w.file {
+                Some(file) => match std::fs::read(self.world_dir.join(file)) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        log(&format!(
+                            "weapon3d {}: cannot read {}: {e}",
+                            w.name,
+                            file.display()
+                        ));
+                        continue;
+                    }
+                },
+                // The server's weapon: its clientside part.
+                None => match server_weapons.as_ref().and_then(|ws| ws.get(&w.name)) {
+                    Some(sw) => {
+                        let src = sw.source.as_str();
+                        let client = src
+                            .find("//#CLIENTSIDE")
+                            .map_or(src, |i| &src[i + "//#CLIENTSIDE".len()..]);
+                        client.as_bytes().to_vec()
+                    }
+                    None => {
+                        log(&format!(
+                            "weapon3d {}: the server has no weapon of that name",
+                            w.name
+                        ));
+                        continue;
+                    }
+                },
             };
+            // The client's script reader takes LF lines; a CR stays in the
+            // token before it.
+            let script: Vec<u8> = script.into_iter().filter(|b| *b != b'\r').collect();
             if let Some(s) = self.sessions.get_mut(&at) {
                 // The client reads characters 1 to 5 of addweapon's text
                 // as a number; spaces read as 0.
@@ -1241,6 +1744,8 @@ mod tests {
             ip: ip(),
             nickname: b"Nick".to_vec(),
             flags: vec!["client.hello=1".into()],
+            token: String::new(),
+            label: String::new(),
         }
     }
 
@@ -1400,6 +1905,129 @@ mod tests {
             }
         }
         now
+    }
+
+    #[test]
+    fn a_2d_player_in_the_level_is_shown_and_taken_off() {
+        let (mut s, hub, _) = service("playershape p.dts\nspawn 0 0 3\n");
+        hub.tcp_joined(1, tcp("one"));
+        let a: SocketAddr = "127.0.0.1:40000".parse().unwrap();
+        handshake(&mut s, a, 24, b"one").unwrap();
+        let mut clients = [(a, FakeClient::new(&PROTOCOL_24))];
+        let now = run(&mut s, &mut clients, 0, 10);
+        let two = crate::world::LevelPlayer {
+            id: 7,
+            account: "two".into(),
+            nick: b"Two".to_vec(),
+            chat: b"hi".to_vec(),
+            x: 30.0,
+            y: 20.5,
+        };
+        // A linked 3D player is not shown twice.
+        let linked = crate::world::LevelPlayer {
+            id: 1,
+            ..two.clone()
+        };
+        s.show_2d_players(vec![(1, vec![two.clone(), linked])]);
+        let c = s.connection(&a).unwrap();
+        let Some(Ghost::GameObject(o)) = c.ghost(player_2d_key(7)) else {
+            panic!("no 2D player");
+        };
+        assert_eq!(o.name, b"G2DPlayer_two");
+        assert_eq!(o.transform.position, [30.0, -20.5, 3.0]);
+        assert_eq!(
+            (o.nickname.as_slice(), o.chat.as_slice()),
+            (&b"Two"[..], &b"hi"[..])
+        );
+        assert!(c.ghost(player_2d_key(1)).is_none());
+        run(&mut s, &mut clients, now, 4);
+        assert!(s.connection(&a).unwrap().ghost_delivered(player_2d_key(7)));
+        s.show_2d_players(vec![(1, vec![])]);
+        run(&mut s, &mut clients, now + 300, 4);
+        assert!(s.connection(&a).unwrap().ghost(player_2d_key(7)).is_none());
+    }
+
+    #[test]
+    fn terrain_goes_by_the_build_row_unless_terrainall() {
+        let dir = std::env::temp_dir();
+        for all in [false, true] {
+            let hub = Arc::new(Graal3d::new());
+            let (scene, errors) = Scene::parse("water 0 0 0 64 64 2 water\nspawn 0 0 1\n");
+            assert!(errors.is_empty());
+            let mut s = Service::new(
+                hub.clone(),
+                scene,
+                dir.clone(),
+                Box::new(Recorder::default()),
+            )
+            .with_options(Options {
+                terrain_all: all,
+                ..Options::default()
+            });
+            let mut old = tcp("old");
+            old.token = "G3D22126".into();
+            hub.tcp_joined(1, old);
+            let a: SocketAddr = "127.0.0.1:40000".parse().unwrap();
+            handshake(&mut s, a, 24, b"old").unwrap();
+            let takes = caps::for_client("G3D22126", "", 24).unwrap().takes_water();
+            let has = s.connection(&a).unwrap().ghost(1).is_some();
+            assert_eq!(has, takes || all, "terrainall {all}");
+        }
+    }
+
+    #[test]
+    fn the_sharp3d_route_makes_the_camera_the_control_object() {
+        let hub = Arc::new(Graal3d::new());
+        let (scene, _) = Scene::parse("spawn 0 0 1\n");
+        let mut s = Service::new(
+            hub.clone(),
+            scene,
+            PathBuf::from("."),
+            Box::new(Recorder::default()),
+        )
+        .with_options(Options {
+            sharp3d: true,
+            ..Options::default()
+        });
+        hub.tcp_joined(1, tcp("one"));
+        let a: SocketAddr = "127.0.0.1:40000".parse().unwrap();
+        let accept = handshake(&mut s, a, 24, b"one").unwrap();
+        assert!(s.connection(&a).unwrap().profile().ghost_always);
+        assert_eq!(
+            accept,
+            handshake::connect_accept(0x400, &handshake::PROTOCOL_24_SHARP3D)
+        );
+        let mut c = FakeClient::new(&handshake::PROTOCOL_24_SHARP3D);
+        c.camera_control = true;
+        let mut clients = [(a, c)];
+        run(&mut s, &mut clients, 0, 12);
+        let c = s.connection(&a).unwrap();
+        assert_eq!(c.mission(), Mission::Done);
+        assert!(c.control_delivered());
+    }
+
+    #[test]
+    fn an_accept_mutation_changes_the_accept() {
+        let hub = Arc::new(Graal3d::new());
+        let mut s = Service::new(
+            hub.clone(),
+            Scene::default(),
+            PathBuf::from("."),
+            Box::new(Recorder::default()),
+        )
+        .with_options(Options {
+            mutation: Some((Mutation::AcceptProtocol, 5)),
+            ..Options::default()
+        });
+        hub.tcp_joined(1, tcp("one"));
+        let a: SocketAddr = "127.0.0.1:40000".parse().unwrap();
+        let accept = handshake(&mut s, a, 24, b"one").unwrap();
+        let (tweak, _) = mutate::accept_tweak(Mutation::AcceptProtocol, 5, &PROTOCOL_24);
+        assert_eq!(
+            accept,
+            handshake::connect_accept_tweaked(0x400, &PROTOCOL_24, &tweak)
+        );
+        assert_ne!(accept, handshake::connect_accept(0x400, &PROTOCOL_24));
     }
 
     #[test]
