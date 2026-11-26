@@ -419,6 +419,16 @@ Never on a public server.
 | 4.20r8 (`G3D20126`), Windows under Wine | Linked as protocol 24, control object delivered, sky, water and objects drawn, terrain untextured (its row takes no terrain files), link held about 90 s. It draws no 2D players. |
 | `G3D27015`, native Linux (protocol 19, the 3.153 row) | Linked, Camera control object, mission start done, sky drawn, link held until quit. No first-frame crash. |
 
+2026-11-26, PR #208 and #209, real 5.12 in a Windows 10 VM, loopback:
+
+| Test | Result |
+|---|---|
+| Level warp (T3D-135), on #208 | No relink; sky and spawn switch; `clientr.g3dworld` follows. Objects of the new world under a key still being deleted were missing (fixed in #209). |
+| Level warp, on #209 | Every switch deletes the old world's objects and creates the new one's, both by the `g3dworld` trigger and by a TCP warp to a level named like the world file. A `weapon3d` both worlds have runs once. |
+| Objects for some players (T3D-136), two clients | An `objectfor` object reaches only its account; `g3dhide` / `g3dshow` hide and show it for that client only. |
+| Ground cover (T3D-048), on #208 | A `DynamicShapeReplicator` scatters over streamed terrain once its files are cached; a first visit showed none. The grass classes drew nothing with a `.3ds`. |
+| Ground cover, on #209, cold cache | The cover appears about 5 seconds after the mission start (the first resend) and stays. |
+
 2026-11-20, the same world (no `camera` line), real 5.12 (protocol 24):
 
 | Server | Where | Result |
