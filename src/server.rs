@@ -73,6 +73,57 @@ pub struct Server {
 }
 
 impl Server {
+    /// A world-editing login (`g3dedit,login`, `graal3d::edit`): whether
+    /// `account` exists, `password` is its password and it is `STAFF`.
+    /// The check takes a `password_checks` slot like a login, or asks the
+    /// listserver when it owns the passwords. No account file is made.
+    pub async fn check_staff(
+        &self,
+        account: &str,
+        password: &[u8],
+    ) -> crate::graal3d::service::StaffCheck {
+        use crate::graal3d::service::StaffCheck;
+        let store = self.store.clone();
+        let name = account.to_string();
+        let password = password.to_vec();
+        let link = self
+            .listlink
+            .clone()
+            .filter(|_| self.cfg.listserver_accounts);
+        let slot = match link {
+            Some(_) => None,
+            None => Some(self.password_checks.slot().await),
+        };
+        tokio::task::spawn_blocking(move || {
+            let _slot = slot;
+            let account = match store.load(&name) {
+                Ok(a) => a,
+                Err(_) => return StaffCheck::Unreachable,
+            };
+            let right = match &link {
+                Some(link) => match link
+                    .verify(&name, &password, 0)
+                    .recv_timeout(crate::listlink::VERIFY_TIMEOUT)
+                    .unwrap_or(crate::listlink::Verdict::Unreachable)
+                {
+                    crate::listlink::Verdict::Ok => true,
+                    crate::listlink::Verdict::Refused(_) => false,
+                    crate::listlink::Verdict::Unreachable => return StaffCheck::Unreachable,
+                },
+                None => account
+                    .as_ref()
+                    .is_some_and(|a| a.check_password(&password)),
+            };
+            match account {
+                Some(a) if right && a.staff => StaffCheck::Staff(a.name),
+                Some(_) if right => StaffCheck::NotStaff,
+                _ => StaffCheck::Wrong,
+            }
+        })
+        .await
+        .unwrap_or(StaffCheck::Unreachable)
+    }
+
     pub fn new(cfg: Config, allow: AllowList) -> Self {
         let store = Store::new(cfg.accounts_dir());
         let extra_tokens = allow.unknown_tokens();
@@ -2257,4 +2308,40 @@ fn filter_pm(
     let mut out = raw[..head].to_vec();
     out.extend(new);
     Some(out)
+}
+
+#[cfg(test)]
+mod staff_check_tests {
+    use super::*;
+    use crate::graal3d::service::StaffCheck;
+
+    #[tokio::test]
+    async fn an_editing_login_needs_the_password_and_staff() {
+        let dir =
+            std::env::temp_dir().join(format!("seihai-gserver-staffcheck-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let cfg = Config::defaults(&dir);
+        std::fs::create_dir_all(cfg.accounts_dir()).unwrap();
+        let server = Server::new(cfg, AllowList::default());
+        let mut boss = Account::new("Boss", "", 0.0, 0.0);
+        boss.set_password(b"pw");
+        boss.staff = true;
+        server.store.save(&boss).unwrap();
+        let mut plain = Account::new("plain", "", 0.0, 0.0);
+        plain.set_password(b"pw");
+        server.store.save(&plain).unwrap();
+
+        assert_eq!(
+            server.check_staff("boss", b"pw").await,
+            StaffCheck::Staff("boss".into())
+        );
+        assert_eq!(server.check_staff("boss", b"px").await, StaffCheck::Wrong);
+        assert_eq!(
+            server.check_staff("plain", b"pw").await,
+            StaffCheck::NotStaff
+        );
+        assert_eq!(server.check_staff("nobody", b"pw").await, StaffCheck::Wrong);
+        assert!(!server.cfg.accounts_dir().join("nobody.txt").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

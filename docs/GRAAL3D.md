@@ -315,8 +315,28 @@ sets `clientr.g3dedit_objects` to every object as
 the account, the edit and the backup. Everyone else's edits are refused,
 and the option is off by default.
 
-`docs/examples/g3deditor.gs2` is an editor weapon built on this: N and B
-pick an object, the arrows and Page Up/Down move it, Q and E turn it, C
+A real 5.12 always logs in as a guest (it has no account form; lab,
+2026-11-26), so it can never be a staff login. It signs in for editing
+instead:
+
+```text
+triggerserver("gui", <weapon>, "g3dedit", "login", <account>, <password>)
+triggerserver("gui", <weapon>, "g3dedit", "logout")
+```
+
+The server checks the password against the account file (or the listserver,
+with `listserver_accounts`), off the 3D task and in a `password_checks` slot
+like a login, and the account must be `STAFF`. The answer is
+`clientr.g3dedit`: `ok login <account>`, or `error ...` for a wrong
+password, an account that is not staff, or accounts that cannot be read.
+The sign-in lasts until that 3D connection ends or `logout`. After three
+wrong passwords the connection's other logins are refused until it
+reconnects. The password is never logged; the log names the account asked
+for and the result. It travels like any other trigger on the 3D link, which
+is not encrypted, so use editing logins on a LAN or lab server.
+
+`docs/examples/g3deditor.gs2` is an editor weapon built on this: L signs in
+(type the account, Enter, the password, Enter), N and B pick an object, the arrows and Page Up/Down move it, Q and E turn it, C
 copies it, Delete removes it, and the camera follows the selected object.
 Give it to staff as a `weapon3d` line (`weapon3d G3DEditor
 weapons/g3deditor.gs2`, the file copied into the world folder). Terrain is
