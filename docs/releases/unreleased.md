@@ -39,6 +39,7 @@ Notes for the next seihai-gserver release.
 
 ## Fixed
 
+- **3D: `triggerserver("gui", ...)` from a `weapon3d` reaches the weapon's serverside.** A real 5.12 sends it over the 3D link as a `t gui,<weapon>,<params>` line, and the server ignored it (lab capture, 2026-11-26). It now goes to the world as a serverside trigger, the same as `t weapon,...`.
 - **Listed by a listserver with a `gservers` allow-list.** The new `listserver_hq_password` setting is sent as `SERVERHQPASS` (23) before `NEWSERVER`, inside the encrypted link; such a listserver ignored `NEWSERVER` without it and never listed the server. Off when empty; a warning says when the link is plain. Loopback test against seihai-listserver with an allow-list row and HQ password.
 - **`seihai-rc nc discover` finds the NC.** An RC's player list now starts with the NPC-Server (`NPC-Server (Server)`, account `(npcserver)`, at the id kept for it), so an RC asks its `location` (94) and gets this server's own address (79), where NC logins are served. Before, the list had no `(Server)` player, so discover asked nothing. Loopback test with seihai-rc's gen5 and classic RC logins, then an NC login at the found address.
 

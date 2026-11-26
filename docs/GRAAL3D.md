@@ -301,7 +301,9 @@ sent as source. Without a file, the server weapon of that name is used. The
 5.x client's 3D key bindings call `moveForward2`, `moveBackward2`,
 `moveLeft2`, `moveRight2` and `jump`, which only such a script defines; a
 script moves the player's own object with `triggerserver(<kind>, <weapon>,
-"g3dpos", x, y, z)`.
+"g3dpos", x, y, z)`. Any other `triggerserver("weapon", ...)` or
+`triggerserver("gui", ...)` reaches the named server weapon's serverside, as
+from a 2D client.
 
 ## Each build's row
 

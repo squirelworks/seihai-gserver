@@ -10,7 +10,7 @@
 //! mission start through [`Connection`], and bridges the text channel:
 //!
 //! - from the client, `events` lines: `s name=value` (a flag), `w weapon`
-//!   (getweapon), `t weapon,<name>,<params>` (a serverside trigger), and
+//!   (getweapon), `t weapon,<name>,<params>` or `t gui,...` (a serverside trigger), and
 //!   `t <kind>,<weapon>,g3dpos,x,y,z`, which moves the player's own object;
 //! - to the client: its flags at link time, then every `PLO_FLAGSET` and
 //!   `PLO_FLAGDEL` it is sent over TCP, as `set` / `unset` texts (a client
@@ -1806,9 +1806,14 @@ impl Service {
                         if !self.move_avatar(player, &pos) {
                             log(&format!("player {player}: g3dpos not moved ({text})"));
                         }
-                    } else if let Some(rest) = arg.strip_prefix(b"weapon,") {
+                    } else if let Some(rest) = arg
+                        .strip_prefix(b"weapon,")
+                        .or_else(|| arg.strip_prefix(b"gui,"))
+                    {
                         // A serverside triggeraction from a weapon: GINT3 0,
-                        // x 0, y 0, then the action.
+                        // x 0, y 0, then the action. `triggerserver("gui",
+                        // ...)` names the weapon the same way; a 5.12 sends
+                        // both over the 3D link (lab capture, 2026-11-26).
                         let mut raw = vec![0x20u8; 5];
                         raw.extend_from_slice(b"serverside,");
                         raw.extend_from_slice(rest);
@@ -2950,7 +2955,7 @@ movetype interpolate
             b"",
             b"events",
             b"",
-            b"s client.walked=1\nw -bomb\nt weapon,-bomb,boom\n",
+            b"s client.walked=1\nw -bomb\nt weapon,-bomb,boom\nt gui,Probe,done,\"0,0,1\"\n",
         ) {
             text.push(ev);
         }
@@ -2966,6 +2971,10 @@ movetype interpolate
         assert!(calls.contains(&"weapon 1 -bomb".to_string()), "{calls:?}");
         assert!(
             calls.contains(&"trigger 1      serverside,-bomb,boom".to_string()),
+            "{calls:?}"
+        );
+        assert!(
+            calls.contains(&"trigger 1      serverside,Probe,done,\"0,0,1\"".to_string()),
             "{calls:?}"
         );
     }
