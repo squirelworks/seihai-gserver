@@ -288,9 +288,10 @@ impl Replicator {
         self.class != "DynamicShapeReplicator"
     }
 
-    /// The radius sent: a real 5.12 builds no grass quads at all below 8
-    /// cells (radius 4 drew nothing, 8 drew; lab, 2026-11-26), so the grass
-    /// classes get at least 8.
+    /// The radius sent: the grass classes get at least 8 cells. On a real
+    /// 5.12, radius 4 with 5 or 10 a cell drew nothing where 8 drew, but
+    /// radius 4 with 40 to 60 a cell drew (conformance C036), so the cause
+    /// is not radius alone; a larger radius only widens the patch.
     pub fn sent_radius(&self) -> u8 {
         if self.grass() {
             self.radius.max(GRASS_MIN_RADIUS)
