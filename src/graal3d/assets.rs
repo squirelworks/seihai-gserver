@@ -499,6 +499,23 @@ pub fn check_scene_files(
             }
         }
     }
+    // Two objects every player gets under one name both draw, but a
+    // script that looks an object up by name finds only one (lab T3D-154).
+    // `objectfor` lines are left out: one name per account set is a use.
+    let mut seen = std::collections::BTreeMap::new();
+    for (i, o) in scene.objects.iter().enumerate() {
+        if let Ghost::GameObject(g) = o {
+            if !scene.only.contains_key(&i) && !g.name.is_empty() {
+                *seen.entry(g.name.clone()).or_insert(0) += 1;
+            }
+        }
+    }
+    for (name, n) in seen.into_iter().filter(|(_, n)| *n > 1) {
+        notes.push(format!(
+            "object {}: {n} objects have this name; they all draw, but a script finds only one by name",
+            String::from_utf8_lossy(&name)
+        ));
+    }
     Checked {
         notes,
         refused: refused.into_inner(),
@@ -707,5 +724,20 @@ mod tests {
             ShapeCheck::Skip,
         );
         assert_eq!(notes.len(), 3, "{notes:?}");
+    }
+
+    #[test]
+    fn two_objects_under_one_name_are_noted() {
+        let (mut scene, _) = Scene::parse(
+            "object RED a.dts 0 0 0\nobject RED a.dts 1 1 1\nobject BLUE a.dts 2 2 2\nobjectfor one BLUE a.dts 3 3 3\n",
+        );
+        let found = |_: &str| -> Option<(String, Vec<u8>)> { None };
+        let notes = check_scene(&mut scene, &found, None, ShapeCheck::Off);
+        let dup: Vec<_> = notes
+            .iter()
+            .filter(|n| n.contains("have this name"))
+            .collect();
+        assert_eq!(dup.len(), 1, "{notes:?}");
+        assert!(dup[0].starts_with("object RED: 2 objects"));
     }
 }

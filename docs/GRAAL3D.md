@@ -410,6 +410,11 @@ T3D-155, 2026-11-26, real 5.12). The server does not push a changed file, so
 a player sees new textures, shapes or terrain after relinking. `g3dedit`
 changes only object lines, which reach linked clients at once.
 
+The client also judges its cached copy by the file's time: a file rolled
+back to an older copy is not sent to a client that holds the newer one
+(lab, T3D-154). To roll a file back, save the old content anew so it gets
+a fresh modification time (for example `touch` it).
+
 ## Server flags on a 5.12
 
 A 5.12 script reads `serverr.x` flags and bare names, but a `server.x`
