@@ -146,16 +146,29 @@ z + the z size (0.5 here), not at z. The liquid types are stock TGE's (0
 water, 1 ocean, 2 river, 3 stagnant, 4 lava, ...); everything else takes
 stock TGE 1.x's defaults.
 
-**Ground cover.** `replicator DynamicGrass 0 0 0 4 1 3 grass.dts` ghosts a
+**Ground cover.** `replicator DynamicShapeReplicator 0 0 0 4 1 3 rock.dts` ghosts a
 `DynamicShapeReplicator`, `DynamicGrass` or `DynamicGrassReplicator`: cover
 scattered on a grid of 8-unit cells around the client's own control object
 (not around the replicator). The radius is in cells (1 to 64), min and max
 are objects a cell (0 to 20), and the shapes are one comma-separated list
-with no spaces. The optional box `x0 y0 x1 y1` is the world x/y region a
+with no spaces. `DynamicGrass` and `DynamicGrassReplicator` are different:
+they build their own flat ground pieces from a **texture** named in that list
+(`replicator DynamicGrass 0 0 0 4 20 40 blades.png`), draw nothing for a
+`.3ds` or `.dts`, and take up to 100 a cell. The start-up check says so when
+a grass line names a shape. The optional box `x0 y0 x1 y1` is the world x/y region a
 cell's corner must lie in; without one, cover may grow anywhere. Cover is
 placed by casting rays, so it needs real ground (streamed terrain or solid
 objects). The rest is fixed: scale 1, any turn about z, terrain only, slopes
 up to 90 degrees, shown.
+
+A 5.12 grows cover only from the shapes and ground it has when it reads the
+replicator, and grows it again on each update. On a first visit those files
+arrive later, so the server sends each replicator's whole update again at
+the end of the mission start and 5, 15 and 30 seconds after it (and after a
+world switch). On a real 5.12 (lab, 2026-11-26) a `DynamicShapeReplicator`
+scattered its shape over streamed terrain; `DynamicGrass` and
+`DynamicGrassReplicator` drew nothing with a `.3ds` shape, as expected; with
+a texture they draw (Graal_analysis `torque/replicators-512.md`).
 
 ## Start-up check
 
@@ -236,7 +249,7 @@ The switch needs no relink. The client is sent deletes for every ghost of the
 old world (objects, Sky, terrain, other players), then the new world's, as on
 a first link; its own object and Camera stay and move to the new `spawn`
 (or the first free spot around it) and `camera`. Weapons of the new world's
-`weapon3d` lines are sent, and the terrain files are pushed again with
+`weapon3d` lines are sent (those the old world had too are left running), and the terrain files are pushed again with
 `graal3d_pushterrain` (once per account and world). The client gets
 `clientr.g3dworld` (`default` or the name) and a new `clientr.g3dpos`. Each
 player sees only the players in its own world. Clients ask for
@@ -410,6 +423,16 @@ Never on a public server.
 | 5.12, a `server.labflag=on` server flag | Sent as an `events` `s` line and as a `set` text; the 3D script reads it empty. |
 | 4.20r8 (`G3D20126`), Windows under Wine | Linked as protocol 24, control object delivered, sky, water and objects drawn, terrain untextured (its row takes no terrain files), link held about 90 s. It draws no 2D players. |
 | `G3D27015`, native Linux (protocol 19, the 3.153 row) | Linked, Camera control object, mission start done, sky drawn, link held until quit. No first-frame crash. |
+
+2026-11-26, PR #208 and #209, real 5.12 in a Windows 10 VM, loopback:
+
+| Test | Result |
+|---|---|
+| Level warp (T3D-135), on #208 | No relink; sky and spawn switch; `clientr.g3dworld` follows. Objects of the new world under a key still being deleted were missing (fixed in #209). |
+| Level warp, on #209 | Every switch deletes the old world's objects and creates the new one's, both by the `g3dworld` trigger and by a TCP warp to a level named like the world file. A `weapon3d` both worlds have runs once. |
+| Objects for some players (T3D-136), two clients | An `objectfor` object reaches only its account; `g3dhide` / `g3dshow` hide and show it for that client only. |
+| Ground cover (T3D-048), on #208 | A `DynamicShapeReplicator` scatters over streamed terrain once its files are cached; a first visit showed none. The grass classes drew nothing with a `.3ds`. |
+| Ground cover, on #209, cold cache | The cover appears about 5 seconds after the mission start (the first resend) and stays. |
 
 2026-11-20, the same world (no `camera` line), real 5.12 (protocol 24):
 
