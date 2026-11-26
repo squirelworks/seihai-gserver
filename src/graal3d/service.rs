@@ -27,6 +27,7 @@
 
 use super::caps::{self, Caps};
 use super::conn::{ClientState, Connection, Key, Mission, Out};
+use super::edit::{self, Edit};
 use super::handshake::{self, ConnectRequest};
 use super::mutate::{self, Mutation};
 use super::objects::{bits, flags, GameObject, Ghost, Sky, Transform};
@@ -113,6 +114,9 @@ pub struct TcpPlayer {
     /// (`5.12`): they pick the client's row in [`super::caps`].
     pub token: String,
     pub label: String,
+    /// A staff account (`STAFF`): may edit the 3D world when
+    /// `graal3d_edit = staff`.
+    pub staff: bool,
 }
 
 /// The 3D side's options (`graal3d_*` in `config/server.txt`), and what
@@ -140,6 +144,10 @@ pub struct Options {
     pub sharp3d: bool,
     /// `graal3d_mutate`: lab only, one seeded mutation a link.
     pub mutation: Option<(Mutation, u32)>,
+    /// `graal3d_edit = staff`: staff accounts' client scripts may move,
+    /// add and remove world objects with `g3dedit` triggers, and the
+    /// world files are saved ([`super::edit`]).
+    pub edit: bool,
 }
 
 enum Cmd {
@@ -1827,6 +1835,8 @@ impl Service {
                                 fields[3]
                             ));
                         }
+                    } else if fields.len() >= 4 && fields[2] == "g3dedit" {
+                        self.edit_world(player, &fields[3..]);
                     } else if fields.len() == 6 && fields[2] == "g3dpos" {
                         let pos = format!("{} {} {}", fields[3], fields[4], fields[5]);
                         if !self.move_avatar(player, &pos) {
@@ -2109,6 +2119,138 @@ impl Service {
 
     /// `g3dhide` / `g3dshow`: the world object named `name` goes from, or
     /// back to, player `p`'s screen only.
+    /// A `g3dedit` trigger ([`super::edit`]): applied to the player's
+    /// world and saved, or refused; the reply is `clientr.g3dedit`.
+    pub fn edit_world(&mut self, player: u16, fields: &[&str]) {
+        let reply = match self.try_edit(player, fields) {
+            Ok(r) => r,
+            Err(e) => {
+                log(&format!(
+                    "player {player}: g3dedit refused: {e} ({})",
+                    fields.join(",")
+                ));
+                format!("error {e}")
+            }
+        };
+        self.flag_to_client(player, true, format!("clientr.g3dedit={reply}").as_bytes());
+    }
+
+    fn try_edit(&mut self, player: u16, fields: &[&str]) -> Result<String, String> {
+        if !self.opts.edit {
+            return Err("world editing is off (graal3d_edit)".into());
+        }
+        let staff = self
+            .hub
+            .lock()
+            .players
+            .get(&player)
+            .is_some_and(|p| p.staff && !p.guest);
+        if !staff {
+            return Err("only staff accounts may edit the world".into());
+        }
+        let edit = edit::parse(fields)?;
+        let key = self
+            .world_of
+            .get(&player)
+            .filter(|k| self.scenes.contains_key(*k))
+            .cloned()
+            .unwrap_or_default();
+        let scene = self.scenes[&key].clone();
+        if edit == Edit::List {
+            let list: Vec<String> = scene
+                .objects
+                .iter()
+                .filter_map(|o| match o {
+                    Ghost::GameObject(g) => Some(edit::list_entry(&g.name, &g.shape, &g.transform)),
+                    _ => None,
+                })
+                .collect();
+            let n = list.len();
+            self.flag_to_client(
+                player,
+                true,
+                format!("clientr.g3dedit_objects={}", list.join(" ")).as_bytes(),
+            );
+            return Ok(format!("ok list {n}"));
+        }
+        let path = scene
+            .file
+            .clone()
+            .ok_or("this world was not read from a file")?;
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(e) => return Err(format!("{}: {e}", path.display())),
+        };
+        let (new_scene, change) = edited_scene(&scene, &edit)?;
+        let new_text = edit::edit_text(&text, &edit)?;
+        let backup =
+            edit::save(&path, &new_text).map_err(|e| format!("{}: {e}", path.display()))?;
+        let account = self
+            .by_player
+            .get(&player)
+            .and_then(|at| self.sessions.get(at))
+            .map(|s| s.account.clone())
+            .unwrap_or_default();
+        log(&format!(
+            "{account} (player {player}) edited 3D world {}: {} {}; saved {}{}",
+            if key.is_empty() { "default" } else { &key },
+            edit.op(),
+            edit.name().unwrap_or(""),
+            path.display(),
+            backup
+                .map(|b| format!(", backup {}", b.display()))
+                .unwrap_or_default()
+        ));
+        let new_scene = Arc::new(new_scene);
+        self.scenes.insert(key.clone(), new_scene.clone());
+        self.show_change(&key, &new_scene, change);
+        Ok(format!("ok {} {}", edit.op(), edit.name().unwrap_or("")))
+    }
+
+    /// Bring every client in world `key` up to date with an edit.
+    fn show_change(&mut self, key: &str, scene: &Scene, change: Change) {
+        let players: Vec<(u16, SocketAddr)> = self
+            .by_player
+            .iter()
+            .filter(|(p, _)| {
+                let w = self
+                    .world_of
+                    .get(p)
+                    .filter(|k| self.scenes.contains_key(*k))
+                    .map_or("", String::as_str);
+                w == key
+            })
+            .map(|(p, at)| (*p, *at))
+            .collect();
+        for (p, at) in players {
+            let shown = self.shown_objects(p, scene);
+            let Some(s) = self.sessions.get_mut(&at) else {
+                continue;
+            };
+            let put = |s: &mut Session, i: usize| {
+                if shown[i] {
+                    s.conn.set_ghost(i as Key + 1, scene.objects[i].clone());
+                } else {
+                    s.conn.remove_ghost(i as Key + 1);
+                }
+            };
+            match change {
+                Change::Updated(i) | Change::Added(i) => put(s, i),
+                Change::Removed(i) => {
+                    // Every later object moved down one key: each key is
+                    // deleted and made again, so no client keeps an old
+                    // shape under it.
+                    for k in i..scene.objects.len() {
+                        s.conn.remove_ghost(k as Key + 1);
+                        put(s, k);
+                    }
+                    s.conn.remove_ghost(scene.objects.len() as Key + 1);
+                }
+            }
+        }
+    }
+
     pub fn hide_object(&mut self, p: u16, name: &str, hide: bool) -> bool {
         let scene = self.scene_of(p);
         let Some(i) = scene.objects.iter().position(|o| match o {
@@ -2202,6 +2344,80 @@ fn canonical(ip: IpAddr) -> IpAddr {
     }
 }
 
+/// What an edit did to a world's object list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Change {
+    Updated(usize),
+    Added(usize),
+    Removed(usize),
+}
+
+/// `scene` with `edit` applied, and what changed.
+fn edited_scene(scene: &Scene, edit: &Edit) -> Result<(Scene, Change), String> {
+    let mut s = scene.clone();
+    let find = |s: &Scene, name: &str| {
+        s.objects.iter().position(|o| match o {
+            Ghost::GameObject(g) => g.name == name.as_bytes(),
+            _ => false,
+        })
+    };
+    let turn_of = |t: &Option<[f32; 4]>, tr: &mut Transform| {
+        if let Some(t) = t {
+            tr.axis = [t[0], t[1], t[2]];
+            tr.angle = t[3];
+        }
+    };
+    match edit {
+        Edit::List => Err("nothing to change".into()),
+        Edit::Move {
+            name,
+            position,
+            turn,
+        } => {
+            let i = find(&s, name).ok_or_else(|| format!("no object {name}"))?;
+            let Ghost::GameObject(g) = &mut s.objects[i] else {
+                unreachable!("found a GameObject")
+            };
+            g.transform.position = *position;
+            turn_of(turn, &mut g.transform);
+            Ok((s, Change::Updated(i)))
+        }
+        Edit::Add {
+            name,
+            shape,
+            position,
+            turn,
+        } => {
+            if find(&s, name).is_some() {
+                return Err(format!("there is already an object {name}"));
+            }
+            let mut g = GameObject {
+                name: name.as_bytes().to_vec(),
+                shape: shape.as_bytes().to_vec(),
+                ..GameObject::default()
+            };
+            g.transform = Transform {
+                position: *position,
+                axis: [0.0, 0.0, 1.0],
+                angle: 0.0,
+            };
+            turn_of(turn, &mut g.transform);
+            s.objects.push(Ghost::GameObject(g));
+            Ok((s.clone(), Change::Added(s.objects.len() - 1)))
+        }
+        Edit::Remove { name } => {
+            let i = find(&s, name).ok_or_else(|| format!("no object {name}"))?;
+            s.objects.remove(i);
+            s.only = std::mem::take(&mut s.only)
+                .into_iter()
+                .filter(|(k, _)| *k != i)
+                .map(|(k, v)| (if k > i { k - 1 } else { k }, v))
+                .collect();
+            Ok((s, Change::Removed(i)))
+        }
+    }
+}
+
 fn log(text: &str) {
     eprintln!("Graal3D: {text}");
 }
@@ -2261,6 +2477,7 @@ mod tests {
             flags: vec!["client.hello=1".into()],
             token: String::new(),
             label: String::new(),
+            staff: false,
         }
     }
 
@@ -2848,6 +3065,98 @@ spawn 0 0 1
         let one = object_names(&s, &a);
         assert!(one.contains(&"rock".to_string()), "{one:?}");
         assert!(!one.contains(&"house".to_string()), "{one:?}");
+    }
+
+    #[test]
+    fn staff_edit_the_world_live_and_it_is_saved() {
+        let dir =
+            std::env::temp_dir().join(format!("seihai-gserver-g3dedit-svc-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("graal3dworld.txt");
+        let text = "# yard\nobject house house.dif 1 2 3  # home\nobject door door.3ds 2 2 2\nobject well well.3ds 3 3 0\nspawn 0 0 1\n";
+        std::fs::write(&file, text).unwrap();
+        let (mut s, hub, _) = service(text);
+        Arc::make_mut(s.scenes.get_mut("").unwrap()).file = Some(file.clone());
+        let off = |s: &mut Service| s.opts.edit = false;
+        hub.tcp_joined(
+            1,
+            TcpPlayer {
+                staff: true,
+                ..tcp("boss")
+            },
+        );
+        hub.tcp_joined(2, tcp("two"));
+        let a: SocketAddr = "127.0.0.1:40000".parse().unwrap();
+        let b: SocketAddr = "127.0.0.1:40001".parse().unwrap();
+        handshake(&mut s, a, 24, b"boss").unwrap();
+        handshake(&mut s, b, 24, b"two").unwrap();
+        let mut clients = [
+            (a, FakeClient::new(&PROTOCOL_24)),
+            (b, FakeClient::new(&PROTOCOL_24)),
+        ];
+        let now = run(&mut s, &mut clients, 0, 12);
+
+        // Off by default: nothing changes.
+        off(&mut s);
+        assert!(s.try_edit(1, &["move", "house", "5", "6", "7"]).is_err());
+        s.opts.edit = true;
+        // Not staff: refused.
+        assert!(s.try_edit(2, &["move", "house", "5", "6", "7"]).is_err());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
+
+        // Move: both clients' ghost moves, the line changes, a backup is kept.
+        assert_eq!(
+            s.try_edit(1, &["move", "house", "5", "6", "7"]).unwrap(),
+            "ok move house"
+        );
+        let pos = |s: &Service, at: &SocketAddr, name: &str| {
+            let c = s.connection(at).unwrap();
+            c.ghost_keys().into_iter().find_map(|k| match c.ghost(k) {
+                Some(Ghost::GameObject(g)) if g.name == name.as_bytes() => {
+                    Some(g.transform.position)
+                }
+                _ => None,
+            })
+        };
+        assert_eq!(pos(&s, &b, "house"), Some([5.0, 6.0, 7.0]));
+        let saved = std::fs::read_to_string(&file).unwrap();
+        assert!(
+            saved.contains("object house house.dif 5 6 7  # home\n"),
+            "{saved}"
+        );
+        assert!(std::fs::read_dir(&dir).unwrap().any(|e| e
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with("graal3dworld.txt.bak-")));
+
+        // Add, then remove one in the middle: the later objects shift keys.
+        assert!(s
+            .try_edit(
+                1,
+                &["add", "rock", "rock.3ds", "1", "1", "0", "0", "0", "1", "0.5"]
+            )
+            .is_ok());
+        let now = run(&mut s, &mut clients, now, 6);
+        assert!(object_names(&s, &b).contains(&"rock".to_string()));
+        assert!(s.try_edit(1, &["remove", "door"]).is_ok());
+        run(&mut s, &mut clients, now, 6);
+        let names = object_names(&s, &b);
+        assert!(!names.contains(&"door".to_string()), "{names:?}");
+        assert!(
+            names.contains(&"well".to_string()) && names.contains(&"rock".to_string()),
+            "{names:?}"
+        );
+        assert_eq!(pos(&s, &a, "well"), Some([3.0, 3.0, 0.0]));
+        let saved = std::fs::read_to_string(&file).unwrap();
+        assert_eq!(
+            saved,
+            "# yard\nobject house house.dif 5 6 7  # home\nobject well well.3ds 3 3 0\nobject rock rock.3ds 1 1 0 0 0 1 0.5\nspawn 0 0 1\n"
+        );
+        assert!(s.try_edit(1, &["remove", "door"]).is_err());
+        assert_eq!(s.try_edit(1, &["list"]).unwrap(), "ok list 3");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

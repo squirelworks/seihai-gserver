@@ -694,6 +694,7 @@ impl Conn {
                     flags: account.flags.clone(),
                     token: login.token.clone(),
                     label: version.label().to_string(),
+                    staff: account.staff,
                 },
             );
         }

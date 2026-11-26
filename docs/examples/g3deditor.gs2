@@ -1,0 +1,153 @@
+// G3DEditor: an in-game 3D world editor for staff, as a weapon3d.
+//
+// The 5.12 client's own WorldEditor and TerrainEditor save nothing against
+// a remote server, so this script edits through the server instead: each
+// change is a g3dedit trigger, the server moves the object for every
+// client in the world and saves the world file (docs/GRAAL3D.md,
+// "Editing a world in game"). Needs graal3d_edit = staff and a STAFF
+// account; everyone else gets "error only staff accounts may edit".
+//
+// Keys:
+//   N / B          next / previous object
+//   arrows         move it east, west, north, south, 5 units a second
+//                  (shift: 1.25)
+//   Page Up / Down move it up / down
+//   Q / E          turn it 15 degrees left / right about +z
+//   C              copy it (a new object 2 units east)
+//   Delete         remove it
+//   R              read the object list again
+//
+// Moves are sent when the keys are let go, so one press-and-hold is one
+// save. The chat line says what is selected and the server's last answer.
+//#CLIENTSIDE
+function onCreated() {
+  this.sel = 0;
+  this.n = 0;
+  this.dirty = 0;
+  this.idle = 0;
+  this.held = "";
+  this.answer = "";
+  this.lastlist = "";
+  g3eList();
+  setTimer(0.05);
+}
+
+function g3eList() {
+  triggerserver("gui", "G3DEditor", "g3dedit", "list");
+}
+
+// clientr.g3dedit_objects: name:shape:x:y:z:ax:ay:az:angle, space separated.
+function g3eRead() {
+  temp.all = clientr.g3dedit_objects;
+  temp.objs = temp.all.tokenize(" ");
+  this.n = temp.objs.size();
+  this.names = new[this.n];
+  this.shapes = new[this.n];
+  this.xs = new[this.n];
+  this.ys = new[this.n];
+  this.zs = new[this.n];
+  this.angles = new[this.n];
+  for (temp.i = 0; temp.i < this.n; temp.i++) {
+    temp.f = temp.objs[temp.i].tokenize(":");
+    this.names[temp.i] = temp.f[0];
+    this.shapes[temp.i] = temp.f[1];
+    this.xs[temp.i] = temp.f[2] + 0;
+    this.ys[temp.i] = temp.f[3] + 0;
+    this.zs[temp.i] = temp.f[4] + 0;
+    this.angles[temp.i] = temp.f[8] + 0;
+  }
+  if (this.sel >= this.n) this.sel = 0;
+  g3eShow();
+}
+
+// A key that went down since the last tick.
+function g3ePressed(code) {
+  temp.code = code + 0;
+  temp.down = keydown2(temp.code, true);
+  temp.tag = "," @ temp.code @ ",";
+  temp.was = (this.held.pos(temp.tag) >= 0);
+  if (temp.down && !temp.was) this.held = this.held @ temp.tag;
+  if (!temp.down && temp.was) this.held = this.held.substring(0, this.held.pos(temp.tag)) @ this.held.substring(this.held.pos(temp.tag) + temp.tag.length());
+  return temp.down && !temp.was;
+}
+
+function onTimeout() {
+  // A new list after a list request (the server sends one per request;
+  // an unchanged world gives the same text, and nothing needs reading).
+  if (clientr.g3dedit_objects != this.lastlist) {
+    this.lastlist = clientr.g3dedit_objects;
+    if (!this.dirty) g3eRead();
+  }
+  if (clientr.g3dedit != this.answer) {
+    this.answer = clientr.g3dedit;
+    g3eShow();
+  }
+  if (this.n > 0) g3eKeys();
+  setTimer(0.05);
+}
+
+function g3eKeys() {
+  temp.step = 1;
+  if (keydown2(16, false)) temp.step = 0.25;
+  temp.i = this.sel;
+  temp.moved = 0;
+  // Held keys move every tick; the rest act once a press.
+  if (keydown2(39, true)) { this.xs[temp.i] += temp.step * 0.25; temp.moved = 1; }
+  if (keydown2(37, true)) { this.xs[temp.i] -= temp.step * 0.25; temp.moved = 1; }
+  if (keydown2(38, true)) { this.ys[temp.i] += temp.step * 0.25; temp.moved = 1; }
+  if (keydown2(40, true)) { this.ys[temp.i] -= temp.step * 0.25; temp.moved = 1; }
+  if (keydown2(33, true)) { this.zs[temp.i] += temp.step * 0.25; temp.moved = 1; }
+  if (keydown2(34, true)) { this.zs[temp.i] -= temp.step * 0.25; temp.moved = 1; }
+  if (g3ePressed(81)) { this.angles[temp.i] -= 0.261799; temp.moved = 1; }
+  if (g3ePressed(69)) { this.angles[temp.i] += 0.261799; temp.moved = 1; }
+  if (temp.moved) {
+    this.dirty = 1;
+    this.idle = 0;
+    g3eShow();
+  } else if (this.dirty) {
+    this.idle++;
+    if (this.idle >= 6) g3eSend();
+  }
+  if (g3ePressed(78)) g3eSelect(1);
+  if (g3ePressed(66)) g3eSelect(-1);
+  if (g3ePressed(67)) g3eCopy();
+  if (g3ePressed(46)) g3eRemove();
+  if (g3ePressed(82)) g3eList();
+}
+
+function g3eSelect(d) {
+  if (this.dirty) g3eSend();
+  this.sel = (this.sel + d + this.n) % this.n;
+  g3eShow();
+}
+
+function g3eSend() {
+  temp.i = this.sel;
+  this.dirty = 0;
+  triggerserver("gui", "G3DEditor", "g3dedit", "move", this.names[temp.i], this.xs[temp.i], this.ys[temp.i], this.zs[temp.i], 0, 0, 1, this.angles[temp.i]);
+}
+
+function g3eCopy() {
+  temp.i = this.sel;
+  temp.name = this.names[temp.i] @ "_" @ int(timevar2 * 10) % 100000;
+  triggerserver("gui", "G3DEditor", "g3dedit", "add", temp.name, this.shapes[temp.i], this.xs[temp.i] + 2, this.ys[temp.i], this.zs[temp.i], 0, 0, 1, this.angles[temp.i]);
+  g3eList();
+}
+
+function g3eRemove() {
+  triggerserver("gui", "G3DEditor", "g3dedit", "remove", this.names[this.sel]);
+  g3eList();
+}
+
+function g3eShow() {
+  if (this.n <= 0) return;
+  temp.i = this.sel;
+  player.chat = "Editing " @ this.names[temp.i] @ " (" @ (temp.i + 1) @ "/" @ this.n @ ") at " @ this.xs[temp.i] @ " " @ this.ys[temp.i] @ " " @ this.zs[temp.i] @ "  " @ this.answer;
+  // Look at it from behind and above.
+  temp.cam = ServerConnection.camera;
+  if (temp.cam == NULL) return;
+  temp.cam.cameramode = "free";
+  temp.cam.position = format("%f %f %f", this.xs[temp.i], this.ys[temp.i] - 10, this.zs[temp.i] + 5);
+  temp.cam.eulerrotation = "0.4 0 0";
+  temp.cam.updatePosition();
+}
