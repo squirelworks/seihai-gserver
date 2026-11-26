@@ -335,7 +335,7 @@ All protocols: the challenge and connect handshake, the notify link (acks,
 keep-alives, 30 s timeout), guaranteed and unguaranteed events, ghost
 creates, updates and deletes with lost creates resent, and the text channel
 both ways (flags from the TCP world, `server.` flags included, though a
-5.12 script reads only `serverr.` values (see "Not done yet"),
+5.12 script reads only `serverr.` values (see "Server flags on a 5.12"),
 `clientr.g3dpos`, weapons, and the client's `s`/`w`/`t` lines, which go to the world as flags, weapons and
 trigger actions). Protocol 19 moves are read and applied to the Player, and
 each move is acked. Every other linked player reaches a protocol 19 client
@@ -399,15 +399,19 @@ about +x tilts the view down, a positive angle about +z turns it right
 (forward, +y, swings toward +x). The default camera for `spawn 0 0 1` is the
 same as `camera 0 -5 2 1 0 0 0.38`.
 
+## Server flags on a 5.12
+
+A 5.12 script reads `serverr.x` flags and bare names, but a `server.x`
+flag's value reads empty there: the key is kept (`getstringkeys("server.")`
+lists it) and the value is blanked by the client. A lab capture (T3D-133,
+2026-11-26, real 5.12) found the value intact on the wire on every path the
+server sends it: the TCP `PLO_FLAGSET`, the 3D `events` line and the 3D
+`set` text. The TCP flag alone was enough to give the empty key. seihai-core
+compiles `server.x` reads the same way the official compiler does. So send
+a value a 3D script must read as `serverr.x=…` in `config/serverflags.txt`.
+
 ## Not done yet
 
-- A 5.12 script reads a `server.x` flag's value empty (T3D-133, lab
-  probe, 2026-11-26, real 5.12 with a seihai-core compiled weapon). The key
-  arrives (`getstringkeys("server.")` lists it), but every read syntax gives
-  "". `serverr.x` and bare names read fine. So send a value that a 3D script
-  must read as `serverr.x=…` in `config/serverflags.txt`. Whether the
-  client blanks `server.` values on purpose or seihai-core's compiler reads
-  them another way is not settled yet.
 - World switches and per-player objects have loopback tests only.
 - In-game editing (`g3dedit`) and the example editor weapon have loopback
   tests only; whether a 5.12 redraws a moved world object from its
