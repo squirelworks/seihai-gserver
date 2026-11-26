@@ -249,11 +249,21 @@ impl Graal3d {
     }
 }
 
-/// `PLO_FLAGSET` and `PLO_FLAGDEL` bodies in gen-5 frames, skipping raw data.
+/// `PLO_FLAGSET` and `PLO_FLAGDEL` bodies in gen-5 frames, skipping raw
+/// data. A raw message (a file) may run on over several frames: the bytes
+/// still to skip carry over to the next frame, so a file's bytes are never
+/// read as messages (a pushed terrain PNG cut into 32000-byte frames sent
+/// its bytes to a 5.12 as flags, lab 2026-11-25).
 fn flag_messages(frames: &[Vec<u8>]) -> Vec<(bool, Vec<u8>)> {
     let mut out = Vec::new();
+    let mut skip = 0usize;
     for frame in frames {
         let mut rest = frame.as_slice();
+        if skip > 0 {
+            let n = skip.min(rest.len());
+            rest = &rest[n..];
+            skip -= n;
+        }
         while let Some(&first) = rest.first() {
             let id = first.wrapping_sub(32);
             let end = rest.iter().position(|b| *b == b'\n').unwrap_or(rest.len());
@@ -269,7 +279,9 @@ fn flag_messages(frames: &[Vec<u8>]) -> Vec<(bool, Vec<u8>)> {
                 PLO_RAWDATA => {
                     // The next message is this long, newline and all.
                     let n = seihai_core::protocol::read_gint3(body).unwrap_or(0) as usize;
-                    rest = rest.get(n..).unwrap_or(&[]);
+                    let here = n.min(rest.len());
+                    rest = &rest[here..];
+                    skip = n - here;
                 }
                 _ => {}
             }
@@ -1505,7 +1517,11 @@ impl Service {
                 b'w' => self.world.give_weapon(player, arg),
                 b't' => {
                     let text = String::from_utf8_lossy(arg);
-                    let fields: Vec<&str> = text.split(',').collect();
+                    // Fields may come quoted ("g3dpos").
+                    let fields: Vec<&str> = text
+                        .split(',')
+                        .map(|f| f.trim().trim_matches('"'))
+                        .collect();
                     if fields.len() == 6 && fields[2] == "g3dpos" {
                         let pos = format!("{} {} {}", fields[3], fields[4], fields[5]);
                         if !self.move_avatar(player, &pos) {
@@ -2418,6 +2434,27 @@ spawn 0 0 1
         f.extend_from_slice(b"client.hello\n");
         hub.mirror(1, &[f]);
         assert!(hub.lock().players[&1].flags.is_empty());
+    }
+
+    #[test]
+    fn a_file_cut_over_frames_is_not_read_as_flags() {
+        let set = crate::wire::gchar(PLO_FLAGSET);
+        // A file whose bytes hold a flag message and newlines.
+        let mut data = vec![b'x'; 40_000];
+        data[32_005] = b'\n';
+        data[32_006] = set;
+        data[32_007..32_010].copy_from_slice(b"b=2");
+        data[32_010] = b'\n';
+        let f = crate::files::Found {
+            name: "big.png".into(),
+            data,
+            mod_time: 1,
+        };
+        let v = seihai_core::protocol::ClientVersion::V512;
+        let mut frames = crate::files::send_file(v, &f).unwrap();
+        assert!(frames.len() > 1);
+        frames.push([&[set][..], b"a=1\n"].concat());
+        assert_eq!(flag_messages(&frames), vec![(true, b"a=1".to_vec())]);
     }
 
     #[test]

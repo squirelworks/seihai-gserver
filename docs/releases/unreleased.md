@@ -36,6 +36,7 @@ Notes for the next seihai-gserver release.
 
 ## Fixed
 
+- **3D: a file cut over several TCP frames is no longer read as flags.** The flag mirror for 3D links read each frame on its own, so a file over 32000 bytes (a pushed terrain PNG) had its bytes read as messages: garbage went to the 5.12 as flag texts (a garbled message box) and a line starting with a newline panicked. The bytes still to skip now carry over to the next frame. `g3dpos` triggers with quoted fields are read too.
 - **3D: an empty line in a TCP frame no longer kills the player's session.** The flag mirror for 3D links sliced past the end of a frame line that started with a newline and panicked, which ended the TCP session and so the 3D link, on the first flag frame of every 3D session (lab, 2026-11-25, real 5.12 against #206).
 
 - Repeated player colours and legacy bow updates now drop any intermediate change when the final normalized value restores the stored one. NewWorld colour tails and legacy bow encoding are preserved.
