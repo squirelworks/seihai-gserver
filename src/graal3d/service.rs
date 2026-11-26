@@ -1357,11 +1357,13 @@ impl Service {
                         .set_ghost(player_2d_key(id), Ghost::GameObject(o.clone()));
                 }
                 let p = o.transform.position;
-                let chat = if o.chat.is_empty() {
-                    String::new()
-                } else {
-                    format!(" chat={}", String::from_utf8_lossy(&o.chat))
-                };
+                let mut chat = String::new();
+                if !o.nickname.is_empty() {
+                    chat = format!(" nick={}", String::from_utf8_lossy(&o.nickname));
+                }
+                if !o.chat.is_empty() {
+                    chat.push_str(&format!(" chat={}", String::from_utf8_lossy(&o.chat)));
+                }
                 traces.push((
                     s.account.clone(),
                     protocol,
