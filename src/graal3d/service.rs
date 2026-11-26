@@ -804,6 +804,7 @@ impl Service {
             transform: start,
             nickname: player.nickname.clone(),
             flags: flags::SHADOW,
+            movetype: self.scene.player_movetype.clone(),
             ..GameObject::default()
         };
         self.avatars.insert(id, avatar.clone());
@@ -2255,6 +2256,29 @@ spawn 0 0 1
     }
 
     #[test]
+    fn a_movetype_sends_a_server_move_as_movement_data() {
+        let (mut s, hub, _) = service(
+            "playershape labcube.3ds
+spawn 0 0 1
+movetype interpolate
+",
+        );
+        hub.tcp_joined(1, tcp("one"));
+        let a: SocketAddr = "127.0.0.1:40000".parse().unwrap();
+        handshake(&mut s, a, 24, b"one").unwrap();
+        let mut clients = [(a, FakeClient::new(&PROTOCOL_24))];
+        let now = run(&mut s, &mut clients, 0, 6);
+        assert_eq!(s.avatars[&1].movetype, b"interpolate");
+        let before = s.avatars[&1].clone();
+        assert!(s.move_avatar(1, "5 6 7"));
+        let m = s.avatars[&1].changes_from(&before);
+        assert_eq!(m & (bits::MOVE_DATA | bits::TRANSFORM), bits::MOVE_DATA);
+        // The update parses on the client side, section 7 and all.
+        run(&mut s, &mut clients, now, 4);
+        assert!(s.connection(&a).unwrap().control_delivered());
+    }
+
+    #[test]
     fn two_players_see_each_other_and_their_moves() {
         let (mut s, hub, calls) = service(
             "sun 0 0 -1 1 1 1 1 0.2 0.2 0.2 1\n\
@@ -2264,6 +2288,10 @@ spawn 0 0 1
         );
         hub.tcp_joined(1, tcp("one"));
         hub.tcp_joined(2, tcp("two"));
+        // A server flag the world sent at the TCP join, before the link.
+        let mut f = vec![PLO_FLAGSET + 32];
+        f.extend_from_slice(b"server.door=open\n");
+        hub.mirror(1, &[f]);
         let a: SocketAddr = "127.0.0.1:40000".parse().unwrap();
         let b: SocketAddr = "127.0.0.1:40001".parse().unwrap();
         handshake(&mut s, a, 24, b"one").unwrap();
@@ -2297,6 +2325,10 @@ spawn 0 0 1
         );
         assert!(
             texts.iter().any(|t| t.contains("s clientr.g3dpos=0 0 1\n")),
+            "{texts:?}"
+        );
+        assert!(
+            texts.iter().any(|t| t.contains("s server.door=open\n")),
             "{texts:?}"
         );
 

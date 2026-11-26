@@ -10,6 +10,10 @@
 //! skyoptions <b1> <b2> <b3> <solid r> <g> <b>
 //!                           the Sky's three unnamed bools (0/1) and solid colour
 //! playershape <shape>       the shape of every player's own object
+//! movetype interpolate|rigid|list
+//!                           lab: give every player's object a movetype, so a
+//!                           server move (g3dpos) glides there (interpolate,
+//!                           rigid) or jumps (list) on 5.12; default none
 //! spawn <x> <y> <z>         where a player's object starts
 //! camera <x> <y> <z> [<axis x> <axis y> <axis z> <angle>]
 //!                           where each client's Camera sits from the spawn
@@ -69,6 +73,8 @@ pub struct Scene {
     /// The Sun and Sky, if any, are among them.
     pub objects: Vec<Ghost>,
     pub player_shape: Vec<u8>,
+    /// `movetype`: the players' objects' movetype (empty: none).
+    pub player_movetype: Vec<u8>,
     pub spawn: Transform,
     pub camera_offset: Option<[f32; 3]>,
     /// An axis and an angle in radians; `None` faces the spawn point.
@@ -194,6 +200,13 @@ impl Scene {
                     s.player_shape = w[1].as_bytes().to_vec();
                     true
                 }
+                ("movetype", 2) => match w[1] {
+                    "interpolate" | "rigid" | "list" => {
+                        s.player_movetype = w[1].as_bytes().to_vec();
+                        true
+                    }
+                    _ => false,
+                },
                 ("spawn", 4) => match floats::<3>(&w[1..]) {
                     Some(p) => {
                         s.spawn.position = p;
@@ -423,6 +436,7 @@ mod tests {
              sky sky_fr,sky_rt,sky_bk,sky_lf,sky_up,sky_dn 800 0.1 0.2 0.3\n\
              skyoptions 0 1 0 0.5 0.5 0.5\n\
              playershape labcube.3ds\n\
+             movetype rigid\n\
              spawn 10 20 1  # on the hill\n\
              camera 0 -5 2\n\
              tgecontrol camera\n\
@@ -445,7 +459,9 @@ mod tests {
         assert_eq!(s.camera_rotation, None);
         assert_eq!(s.tge_control, TgeControl::Camera);
         assert_eq!(s.tge_player_shape, b"player.dts");
+        assert_eq!(s.player_movetype, b"rigid");
         assert_eq!(s.weapons[0].name, "-walk3d");
+        assert_eq!(Scene::parse("movetype walk\n").1.len(), 1);
     }
 
     #[test]

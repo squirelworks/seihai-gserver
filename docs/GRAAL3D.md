@@ -66,6 +66,7 @@ sun <dir x> <dir y> <dir z> <r> <g> <b> <a> <ambient r> <g> <b> <a>
 sky <textures> [<visible distance> [<fog r> <g> <b>]]
 skyoptions <b1> <b2> <b3> <solid r> <g> <b>
 playershape <shape>
+movetype interpolate|rigid|list
 spawn <x> <y> <z>
 camera <x> <y> <z> [<axis x> <axis y> <axis z> <angle>]
 tgecontrol player|camera
@@ -85,6 +86,17 @@ object house house.dif 4 4 0
 playershape labcube.3ds
 spawn 0 0 1
 ```
+
+`movetype` gives every player's own GameObject a movetype (section 6). With
+`interpolate` or `rigid`, a server move (a `g3dpos` trigger) goes out as
+movement data (section 7: the position, the rotation as a quaternion, zero
+velocities) in place of a transform, and 5.12 glides its object there; with
+`list` the object goes out with an empty list and the transform still
+carries the position, so the client jumps. Without the line no movetype is
+sent, as before. This follows Graal_analysis
+`protocol/lab-appe-hosta-2026-11-20d.md` (E#505), where a lab copy of this
+server did the same on the real 5.12's control object; how other players'
+clients show a player object with a movetype has not been seen yet.
 
 A `.3ds` shape needs a material. One with only vertices and faces loads
 without an error, but 5.12 and 4.20r6 draw none of it (lab 2026-11-20).
@@ -215,7 +227,7 @@ map are left alone.
 All protocols: the challenge and connect handshake, the notify link (acks,
 keep-alives, 30 s timeout), guaranteed and unguaranteed events, ghost
 creates, updates and deletes with lost creates resent, and the text channel
-both ways (flags from the TCP world, `clientr.g3dpos`, weapons, and the
+both ways (flags from the TCP world, `server.` flags included, `clientr.g3dpos`, weapons, and the
 client's `s`/`w`/`t` lines, which go to the world as flags, weapons and
 trigger actions). Protocol 19 moves are read and applied to the Player, and
 each move is acked. Every other linked player reaches a protocol 19 client
@@ -270,9 +282,11 @@ same as `camera 0 -5 2 1 0 0 0.38`.
 
 ## Not done yet
 
-- Server flags (`server.`) are not sent to 3D clients (nor by seihai-gserver-v2).
-- The server never sends a GameObject movetype (nor does seihai-gserver-v2);
-  a client's own is read and its movement data skipped.
+- `server.` flags and `movetype` have loopback tests only; whether 5.12
+  scripts see `server.` flags set by the text channel, and how a movetype
+  looks on other players' screens, wait for a lab run.
+- Movement data never carries a velocity, and a `list` never carries
+  entries: what the client does with them is not known.
 - The Sharp3D route and the mutations have loopback tests only.
 - 3.153 has been seen to crash on the first frame in the C++ fork; the cause
   is unknown.
