@@ -1447,10 +1447,16 @@ impl Service {
             let p = a.transform.position;
             lines.push_str(&format!("s clientr.g3dpos={} {} {}\n", p[0], p[1], p[2]));
         }
-        if let Some(s) = self.sessions.get_mut(&at) {
-            if !lines.is_empty() {
-                s.conn.send_text(b"", b"events", b"", lines.as_bytes());
-            }
+        let Some(s) = self.sessions.get_mut(&at) else {
+            return;
+        };
+        if lines.is_empty() {
+            return;
+        }
+        s.conn.send_text(b"", b"events", b"", lines.as_bytes());
+        let (account, protocol) = (s.account.clone(), s.conn.profile().protocol);
+        for l in lines.lines() {
+            self.trace(&account, protocol, &format!("text out: events {l}"));
         }
     }
 
@@ -1523,10 +1529,17 @@ impl Service {
         let Some(at) = self.by_player.get(&player).copied() else {
             return;
         };
-        if let Some(s) = self.sessions.get_mut(&at) {
-            let kind: &[u8] = if set { b"set" } else { b"unset" };
-            s.conn.send_text(b"", kind, b"", text);
-        }
+        let Some(s) = self.sessions.get_mut(&at) else {
+            return;
+        };
+        let kind = if set { "set" } else { "unset" };
+        s.conn.send_text(b"", kind.as_bytes(), b"", text);
+        let (account, protocol) = (s.account.clone(), s.conn.profile().protocol);
+        let line = format!(
+            "text out: {kind} {}",
+            String::from_utf8_lossy(text).trim_end()
+        );
+        self.trace(&account, protocol, &line);
     }
 
     fn client_text(&mut self, player: u16, t: &super::events::BigData) {

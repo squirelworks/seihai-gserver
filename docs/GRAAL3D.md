@@ -282,6 +282,9 @@ same as `camera 0 -5 2 1 0 0 0.38`.
 
 ## Not done yet
 
+- Server flags are sent under the names they have in
+  `config/serverflags.txt`, so a script reads `server.x` only from a line
+  `server.x=…`; the server warns at start about a line without the prefix.
 - `server.` flags and `movetype` have loopback tests only; whether 5.12
   scripts see `server.` flags set by the text channel, and how a movetype
   looks on other players' screens, wait for a lab run.
@@ -300,7 +303,7 @@ Never on a public server.
 
 - `graal3d_trace = <file>` appends one tab-separated line (milliseconds,
   account, protocol, what) for each link, each event and control object
-  change a client sends, each 2D player shown or gone, each terrain push and
+  change a client sends, each flag line sent (`text out: …`), each 2D player shown or gone, each terrain push and
   each mutation.
 - `graal3d_terrainall = true` sends the 5.x ground to every GameObject-era
   client, whatever its row says.

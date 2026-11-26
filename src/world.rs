@@ -938,6 +938,14 @@ impl World {
         if let Some(t) = self.task.lock().unwrap().as_mut() {
             if let Ok(text) = std::fs::read_to_string(&path) {
                 for l in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
+                    // Clients and scripts read server flags as server.x
+                    // (serverr.x read-only); a bare name is sent as it is.
+                    if !l.starts_with("server.") && !l.starts_with("serverr.") {
+                        eprintln!(
+                            "{}: {l:?} has no server. prefix; clients see it under that bare name",
+                            path.display()
+                        );
+                    }
                     let (n, v) = split_flag(l);
                     t.server_flags.insert(n, v);
                 }
