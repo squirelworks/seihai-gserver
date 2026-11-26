@@ -231,7 +231,7 @@ The switch needs no relink. The client is sent deletes for every ghost of the
 old world (objects, Sky, terrain, other players), then the new world's, as on
 a first link; its own object and Camera stay and move to the new `spawn`
 (or the first free spot around it) and `camera`. Weapons of the new world's
-`weapon3d` lines are sent, and the terrain files are pushed again with
+`weapon3d` lines are sent (those the old world had too are left running), and the terrain files are pushed again with
 `graal3d_pushterrain` (once per account and world). The client gets
 `clientr.g3dworld` (`default` or the name) and a new `clientr.g3dpos`. Each
 player sees only the players in its own world. Clients ask for

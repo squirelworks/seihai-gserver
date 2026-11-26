@@ -1572,10 +1572,22 @@ impl Service {
     }
 
     fn send_weapons(&mut self, at: SocketAddr) {
+        self.send_weapons_but(at, &HashSet::new());
+    }
+
+    /// The world's `weapon3d` scripts but those named in `skip` (the
+    /// client already runs them).
+    fn send_weapons_but(&mut self, at: SocketAddr, skip: &HashSet<String>) {
         let Some(player) = self.sessions.get(&at).map(|s| s.player) else {
             return;
         };
-        let weapons = self.scene_of(player).weapons.clone();
+        let weapons: Vec<_> = self
+            .scene_of(player)
+            .weapons
+            .iter()
+            .filter(|w| !skip.contains(&w.name))
+            .cloned()
+            .collect();
         if weapons.is_empty() {
             return;
         }
@@ -1910,6 +1922,14 @@ impl Service {
                 }
             }
         }
+        // A weapon the old world sent too stays as it is: sending it again
+        // restarts its script on the client.
+        let running: HashSet<String> = self
+            .scene_of(p)
+            .weapons
+            .iter()
+            .map(|w| w.name.clone())
+            .collect();
         if name.is_empty() {
             self.world_of.remove(&p);
         } else {
@@ -1944,7 +1964,7 @@ impl Service {
         self.ghost_world(at);
         self.broadcast_avatar(p, None);
         self.follow_on_tcp(p);
-        self.send_weapons(at);
+        self.send_weapons_but(at, &running);
         if let Some(s) = self.sessions.get_mut(&at) {
             let pos = start.position;
             let label = if name.is_empty() { "default" } else { &name };

@@ -102,6 +102,9 @@ struct Slot {
     create_in_flight: bool,
     kill: bool,
     kill_in_flight: bool,
+    /// Another object set under this key while it was being deleted: it
+    /// is created once the client has the delete.
+    revive: Option<Ghost>,
 }
 
 struct GhostSent {
@@ -298,7 +301,9 @@ impl Connection {
 
     /// The ghost under `key`, as it was last set.
     pub fn ghost(&self, key: Key) -> Option<&Ghost> {
-        self.slots.get(&key).map(|s| &s.ghost)
+        self.slots
+            .get(&key)
+            .map(|s| s.revive.as_ref().unwrap_or(&s.ghost))
     }
 
     pub fn ghost_count(&self) -> usize {
@@ -310,7 +315,7 @@ impl Connection {
     pub fn ghost_keys(&self) -> Vec<Key> {
         self.slots
             .iter()
-            .filter(|(_, s)| !s.kill)
+            .filter(|(_, s)| !s.kill || s.revive.is_some())
             .map(|(k, _)| *k)
             .collect()
     }
@@ -1172,8 +1177,18 @@ impl Connection {
         }
         if let Some(s) = self.slots.get_mut(&key) {
             if s.kill {
-                // Brought back before its delete was acked: whole again.
+                if s.ghost != ghost {
+                    // A different object under the key (a world switch):
+                    // the old one is deleted on the client first, then
+                    // this one created. An update in its place left the
+                    // old shape drawn (lab, 2026-11-26, real 5.12).
+                    s.revive = Some(ghost);
+                    return;
+                }
+                // The same object brought back before its delete was
+                // acked: whole again.
                 s.kill = false;
+                s.revive = None;
                 s.pending |= ghost.full_mask();
             }
             s.pending |= ghost.changes_from(&s.ghost);
@@ -1202,6 +1217,7 @@ impl Connection {
                 create_in_flight: false,
                 kill: false,
                 kill_in_flight: false,
+                revive: None,
             },
         );
         if self.profile.ghost_always {
@@ -1292,6 +1308,7 @@ impl Connection {
             return;
         }
         s.kill = true;
+        s.revive = None;
         s.pending = 0;
     }
 
@@ -1463,6 +1480,18 @@ impl Connection {
                     continue;
                 }
                 if s.kill {
+                    if let Some(g) = s.revive.take() {
+                        // Its delete is in: the new object is created at
+                        // the same index.
+                        if let Some(id) = self.profile.object_id(g.class_name()) {
+                            s.class_id = id;
+                            s.ghost = g;
+                            s.kill = false;
+                            s.created = false;
+                            s.pending = 0;
+                            continue;
+                        }
+                    }
                     let index = s.index;
                     self.slots.remove(&sent.key);
                     self.used.remove(&index);
@@ -1742,6 +1771,55 @@ pub(crate) mod tests {
         assert!(c.ghost_delivered(1) && c.ghost_delivered(2));
         assert_eq!(c.mission(), Mission::Done);
         assert!(c.control_delivered());
+    }
+
+    /// A different object under a key being deleted (a world switch) is
+    /// deleted on the client, then created, never sent as an update of the
+    /// old one: the 5.12 kept drawing the old shape (lab, 2026-11-26).
+    #[test]
+    fn another_object_under_a_deleted_key_is_deleted_then_created() {
+        let mut c = Connection::new(&PROTOCOL_24, 0x400, 0);
+        c.set_tracing(true);
+        let mut cube = lab_player();
+        cube.name = b"cube".to_vec();
+        c.set_ghost(1, Ghost::GameObject(cube.clone()));
+        c.set_ghost(2, Ghost::GameObject(lab_player()));
+        c.set_control_object(2);
+        let mut client = FakeClient::new(&PROTOCOL_24);
+        let now = run_512(&mut c, &mut client, 0, 10);
+        assert!(c.ghost_delivered(1));
+        let index = c.ghost_index(1);
+
+        c.remove_ghost(1);
+        c.set_ghost(1, Ghost::Sun(Sun::default()));
+        assert!(matches!(c.ghost(1), Some(Ghost::Sun(_))));
+        assert_eq!(c.ghost_keys(), vec![1, 2]);
+        let mut logs = Vec::new();
+        let mut now = now;
+        for _ in 0..6 {
+            c.receive(&client.packet(), now);
+            now += 60;
+            c.update(now);
+            for o in c.take_out() {
+                match o {
+                    Out::Send(d) => client.take(&d),
+                    Out::Log(t) => logs.push(t),
+                    _ => {}
+                }
+            }
+        }
+        assert!(
+            logs.iter()
+                .any(|l| l.contains("Sun") && l.contains("created on the client")),
+            "{logs:?}"
+        );
+        assert!(c.ghost_delivered(1));
+        assert_eq!(c.ghost_index(1), index);
+
+        // The same object brought back is only sent whole again.
+        c.remove_ghost(1);
+        c.set_ghost(1, Ghost::Sun(Sun::default()));
+        assert!(c.ghost_delivered(1));
     }
 
     #[test]
