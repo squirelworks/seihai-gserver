@@ -300,6 +300,12 @@ impl Connection {
     }
 
     /// The ghost under `key`, as it was last set.
+    /// Whether part of the object's update is still to go.
+    #[cfg(test)]
+    pub fn ghost_pending(&self, key: Key) -> bool {
+        self.slots.get(&key).is_some_and(|s| s.pending != 0)
+    }
+
     pub fn ghost(&self, key: Key) -> Option<&Ghost> {
         self.slots
             .get(&key)

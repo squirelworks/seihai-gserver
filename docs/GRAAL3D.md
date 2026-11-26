@@ -152,6 +152,14 @@ placed by casting rays, so it needs real ground (streamed terrain or solid
 objects). The rest is fixed: scale 1, any turn about z, terrain only, slopes
 up to 90 degrees, shown.
 
+A 5.12 grows cover only from the shapes and ground it has when it reads the
+replicator, and grows it again on each update. On a first visit those files
+arrive later, so the server sends each replicator's whole update again at
+the end of the mission start and 5, 15 and 30 seconds after it (and after a
+world switch). On a real 5.12 (lab, 2026-11-26) a `DynamicShapeReplicator`
+scattered its shape over streamed terrain; `DynamicGrass` and
+`DynamicGrassReplicator` were created but drew nothing with a `.3ds` shape.
+
 ## Start-up check
 
 At start-up the server looks up every shape and texture the world file names

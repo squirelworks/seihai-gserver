@@ -409,6 +409,11 @@ struct Session {
     caps: Option<Caps>,
     /// The 2D players of its level, as last put on its screen.
     shown_2d: BTreeMap<u16, GameObject>,
+    /// Replicator resends still due: when the first [`update`] after the
+    /// mission start saw it, and the next of [`REGROW_MS`].
+    ///
+    /// [`update`]: Service::update
+    regrow: Option<(Option<u64>, usize)>,
 }
 
 const AVATAR: Key = 0x1_0000;
@@ -425,6 +430,12 @@ const TERRAIN: Key = 0x4_0000;
 const PLAYER_2D: Key = 0x5_0000;
 /// How often the 2D players are looked up, in milliseconds.
 const ROSTER_MS: u64 = 200;
+/// When a replicator's whole update goes again after the mission start, in
+/// milliseconds. A 5.12 grows cover only from shapes (and ground) it has
+/// when it reads the update, and grows it again on each update; on a first
+/// visit the shapes and terrain arrive later, and no cover grew until the
+/// next visit (lab, 2026-11-26).
+const REGROW_MS: [u64; 3] = [5_000, 15_000, 30_000];
 
 fn player_2d_key(p: u16) -> Key {
     PLAYER_2D + Key::from(p)
@@ -858,6 +869,7 @@ impl Service {
                 conn,
                 caps,
                 shown_2d: BTreeMap::new(),
+                regrow: None,
             },
         );
         self.by_player.insert(id, from);
@@ -1206,6 +1218,42 @@ impl Service {
         }
         self.share_tge_moves();
         self.poll_roster(now);
+        self.regrow(now);
+    }
+
+    /// Sends each due session's replicators again ([`REGROW_MS`]).
+    fn regrow(&mut self, now: u64) {
+        let due: Vec<(SocketAddr, u16)> = self
+            .sessions
+            .iter_mut()
+            .filter_map(|(a, s)| {
+                let (base, i) = s.regrow.as_mut()?;
+                let base = *base.get_or_insert(now);
+                if now < base + REGROW_MS[*i] {
+                    return None;
+                }
+                *i += 1;
+                if *i == REGROW_MS.len() {
+                    s.regrow = None;
+                }
+                Some((*a, s.player))
+            })
+            .collect();
+        for (at, player) in due {
+            let keys: Vec<Key> = self
+                .scene_of(player)
+                .objects
+                .iter()
+                .enumerate()
+                .filter(|(_, o)| matches!(o, Ghost::Replicator(_)))
+                .map(|(i, _)| i as Key + 1)
+                .collect();
+            if let Some(s) = self.sessions.get_mut(&at) {
+                for k in keys {
+                    s.conn.resend_ghost(k);
+                }
+            }
+        }
     }
 
     /// Asks the world for the 2D players in each 3D player's level, 5
@@ -1508,18 +1556,20 @@ impl Service {
                 // The client loads a Sky's textures only when it unpacks the
                 // Sky, and they arrive over TCP after the first: again.
                 if !tge {
+                    // So does cover, from shapes it has by then; and later.
                     let keys: Vec<Key> = self
                         .scene_of(player)
                         .objects
                         .iter()
                         .enumerate()
-                        .filter(|(_, o)| matches!(o, Ghost::Sky(_)))
+                        .filter(|(_, o)| matches!(o, Ghost::Sky(_) | Ghost::Replicator(_)))
                         .map(|(i, _)| i as Key + 1)
                         .collect();
                     if let Some(s) = self.sessions.get_mut(&at) {
                         for k in keys {
                             s.conn.resend_ghost(k);
                         }
+                        s.regrow = Some((None, 0));
                     }
                 }
                 self.send_raw_events(at, true);
@@ -1973,6 +2023,8 @@ impl Service {
                 pos[0], pos[1], pos[2]
             );
             s.conn.send_text(b"", b"events", b"", lines.as_bytes());
+            // The new world's cover, from shapes that come later.
+            s.regrow = Some((None, 0));
         }
         let line = format!(
             "now in 3D world {}",
@@ -2551,6 +2603,45 @@ spawn 0 0 1
             .filter(|e| e.class_name() == Some("TerrainChunkEvent"))
             .count();
         assert_eq!(chunks, 2);
+    }
+
+    #[test]
+    fn replicators_go_again_after_the_mission_start() {
+        let hub = Arc::new(Graal3d::new());
+        let (scene, errors) = Scene::parse(
+            "replicator DynamicShapeReplicator 0 0 0 4 1 3 a.3ds
+spawn 0 0 1
+",
+        );
+        assert!(errors.is_empty(), "{errors:?}");
+        let mut s = Service::new(
+            hub.clone(),
+            scene,
+            PathBuf::from("."),
+            Box::new(Recorder::default()),
+        )
+        .with_options(Options {
+            terrain_all: true,
+            ..Options::default()
+        });
+        hub.tcp_joined(1, tcp("one"));
+        let a: SocketAddr = "127.0.0.1:40000".parse().unwrap();
+        handshake(&mut s, a, 24, b"one").unwrap();
+        let mut clients = [(a, FakeClient::new(&PROTOCOL_24))];
+        let mut now = run(&mut s, &mut clients, 0, 12);
+        assert_eq!(s.connection(&a).unwrap().mission(), Mission::Done);
+        assert!(s.connection(&a).unwrap().ghost_delivered(1));
+        let mut resends = 0;
+        for _ in 0..40 {
+            now = run(&mut s, &mut clients, now, 1);
+            s.update(now);
+            if s.connection(&a).unwrap().ghost_pending(1) {
+                resends += 1;
+                now = run(&mut s, &mut clients, now, 3);
+            }
+            now += 1_000;
+        }
+        assert_eq!(resends, REGROW_MS.len());
     }
 
     #[test]
