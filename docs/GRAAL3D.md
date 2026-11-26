@@ -399,6 +399,17 @@ about +x tilts the view down, a positive angle about +z turns it right
 (forward, +y, swings toward +x). The default camera for `spawn 0 0 1` is the
 same as `camera 0 -5 2 1 0 0 0.38`.
 
+## Changing files while players are on
+
+A 5.12 asks for a 3D file (a texture, a shape, a terrain chunk) only the
+first time it needs it in a session. A file changed on the server while it
+is linked keeps its old copy, even after a world switch that ghosts the
+objects again. A new link picks up every change: the textures and shapes
+are sent again, and the terrain request gets only the changed chunks (lab,
+T3D-155, 2026-11-26, real 5.12). The server does not push a changed file, so
+a player sees new textures, shapes or terrain after relinking. `g3dedit`
+changes only object lines, which reach linked clients at once.
+
 ## Server flags on a 5.12
 
 A 5.12 script reads `serverr.x` flags and bare names, but a `server.x`
