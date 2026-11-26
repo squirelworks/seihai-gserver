@@ -393,6 +393,13 @@ The Camera and the client's own object are created before the world's
 objects. A 5.12 gets about 140 creates a second, so on a big world the view
 comes up first and the objects fill in.
 
+The terrain, water and Sun come next, and `MissionStartPhase2` waits until
+the client has them (at most 5 s after phase 1's ack). A 5.12 lights the
+mission at phase 2: a TerrainBlock created after it drew without slope
+shading for the rest of the session (lab, T3D-162). After a world switch
+the new terrain arrives once the start is over; whether a 5.12 lights it
+then is not checked yet.
+
 Rotations (objects and the camera) are an axis and an angle in radians, and
 the clients turn the opposite way from the right-hand rule: a positive angle
 about +x tilts the view down, a positive angle about +z turns it right

@@ -10,8 +10,12 @@
 //! **GameObject era** (4.20r6, 4.20r8, 5.x; Graal_analysis
 //! `torque/udp-session.md` §6 to §8): `MissionStartPhase1` goes out with
 //! the first packet after the client's first; its ack gets
-//! `MissionStartPhase2`, whose ack ends the start. Ghosts go out from the
-//! beginning. The control object is named only once its create is acked
+//! `MissionStartPhase2`, whose ack ends the start. Ghosts go out after
+//! phase 1's ack, and phase 2 waits until the client has the ghosts the
+//! mission lighting needs (TerrainBlock, WaterBlock, Sun), or
+//! [`PHASE2_HOLD_MS`]: a 5.12 lights the mission at phase 2, and a terrain
+//! that arrived after it drew unshaded all session (lab T3D-162). The
+//! control object is named only once its create is acked
 //! and the start is over: a control object before that leaves a 5.12
 //! client stuck at login step 4. The client then reports its position
 //! and its own object's changes in every packet ([`Out::ClientState`]).
@@ -42,6 +46,8 @@ pub const TIMEOUT_MS: u64 = 30_000;
 pub const KEEP_ALIVE_MS: u64 = 1_000;
 /// At most one data packet this often while there is work.
 pub const SEND_INTERVAL_MS: u64 = 50;
+/// The longest `MissionStartPhase2` waits for the lighting ghosts.
+pub const PHASE2_HOLD_MS: u64 = 5_000;
 /// The clients accept up to 450 bytes.
 pub const MAX_PACKET_BYTES: usize = 400;
 /// The client's ghost table.
@@ -157,6 +163,9 @@ pub struct Connection {
     datablocks_sent: bool,
     ghosting_allowed: bool,
     phase2_acked: bool,
+    /// GameObject era: phase 1 is acked and phase 2 waits for the
+    /// lighting ghosts, since this time (0 until the next update).
+    phase2_held: Option<u64>,
     last_move_ack: u32,
     moves_received: usize,
     control_moved: bool,
@@ -212,6 +221,7 @@ impl Connection {
             datablocks_sent: false,
             ghosting_allowed: false,
             phase2_acked: false,
+            phase2_held: None,
             last_move_ack: 0,
             moves_received: 0,
             control_moved: false,
@@ -688,8 +698,10 @@ impl Connection {
                 // dropped ghosts it got before it, then stalled in phase 1 on
                 // "Received unknown camera object" (lab, 2026-11-25).
                 self.ghosting_allowed = true;
-                self.send_command(b"MissionStartPhase2", &[]);
-                self.set_mission(Mission::Phase2Sent);
+                // Phase 2 goes once the lighting ghosts are in (update).
+                if self.phase2_held.is_none() {
+                    self.phase2_held = Some(0);
+                }
             }
             (b"MissionStartPhase2Ack", Mission::Phase2Sent) => self.set_mission(Mission::Done),
             _ => self.log(format!(
@@ -826,6 +838,7 @@ impl Connection {
         if self.profile.tge && self.established {
             self.advance_tge();
         }
+        self.release_phase2(now);
         let since = now.saturating_sub(self.last_send);
         if self.mutation.is_some()
             && !self.mutation_done
@@ -851,6 +864,42 @@ impl Connection {
             self.last_send = now;
         }
         true
+    }
+
+    /// Whether `ghost` is one the 5.12 lights the mission with.
+    fn lights_the_mission(ghost: &Ghost) -> bool {
+        matches!(ghost, Ghost::Terrain(_) | Ghost::Water(_) | Ghost::Sun(_))
+    }
+
+    /// Sends `MissionStartPhase2` once every lighting ghost is created on
+    /// the client, or [`PHASE2_HOLD_MS`] after phase 1's ack.
+    fn release_phase2(&mut self, now: u64) {
+        let Some(since) = self.phase2_held else {
+            return;
+        };
+        let since = if since == 0 {
+            self.phase2_held = Some(now.max(1));
+            now
+        } else {
+            since
+        };
+        let waiting = self
+            .slots
+            .values()
+            .filter(|s| !s.kill && !s.created && Self::lights_the_mission(&s.ghost))
+            .count();
+        let late = now.saturating_sub(since) >= PHASE2_HOLD_MS;
+        if waiting > 0 && !late {
+            return;
+        }
+        if waiting > 0 {
+            self.log(format!(
+                "phase 2 sent with {waiting} lighting ghosts not yet created; the terrain may draw unshaded"
+            ));
+        }
+        self.phase2_held = None;
+        self.send_command(b"MissionStartPhase2", &[]);
+        self.set_mission(Mission::Phase2Sent);
     }
 
     fn send_data(&mut self, now: u64) {
@@ -1393,8 +1442,17 @@ impl Connection {
         // first: a 5.12 draws nothing until it has its Camera, and a big
         // world takes seconds to create (about 140 creates a second, lab
         // T3D-147), so the view comes up at once and fills in.
-        let others_after = |k: &Key| self.camera_key != Some(*k) && self.control_key != Some(*k);
-        todo.sort_by_key(|(o, k)| (*o, others_after(k)));
+        // Then what the mission lighting needs, which phase 2 waits for.
+        let rank = |k: &Key| {
+            if self.camera_key == Some(*k) || self.control_key == Some(*k) {
+                0
+            } else if Self::lights_the_mission(&self.slots[k].ghost) {
+                1
+            } else {
+                2
+            }
+        };
+        todo.sort_by_key(|(o, k)| (*o, rank(k)));
         let mut id_bits = 1;
         while max_index >> id_bits != 0 {
             id_bits += 1;
@@ -1810,6 +1868,34 @@ pub(crate) mod tests {
         assert!(world < 20, "{world} world objects before the Camera");
         run_512(&mut c, &mut client, now, 60);
         assert!((1..=200).all(|k| c.ghost_delivered(k)));
+    }
+
+    /// `MissionStartPhase2` waits until the client has the TerrainBlock:
+    /// a 5.12 lights the mission at phase 2, and a terrain created after
+    /// it drew unshaded all session (lab T3D-162).
+    #[test]
+    fn phase_2_waits_for_the_terrain() {
+        let mut c = Connection::new(&PROTOCOL_24, 0x400, 0);
+        for k in 1..=60 {
+            let mut o = lab_player();
+            o.name = format!("cube{k}").into_bytes();
+            c.set_ghost(k, Ghost::GameObject(o));
+        }
+        let terrain = crate::graal3d::ground::Terrain::new("t", 8, false);
+        c.set_ghost(0x4_0000, Ghost::Terrain(Box::new(terrain)));
+        c.set_ghost(1000, Ghost::GameObject(lab_player()));
+        c.set_control_object(1000);
+        let mut client = FakeClient::new(&PROTOCOL_24);
+        let mut now = 0;
+        while !client.answered(b"MissionStartPhase2") {
+            assert!(now < 60 * 200, "no phase 2");
+            assert!(c.mission() != Mission::Phase2Sent || c.ghost_delivered(0x4_0000));
+            now = run_512(&mut c, &mut client, now, 1);
+        }
+        assert!(c.ghost_delivered(0x4_0000));
+        run_512(&mut c, &mut client, now, 40);
+        assert_eq!(c.mission(), Mission::Done);
+        assert!(c.control_delivered());
     }
 
     /// A different object under a key being deleted (a world switch) is
