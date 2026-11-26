@@ -141,12 +141,16 @@ z + the z size (0.5 here), not at z. The liquid types are stock TGE's (0
 water, 1 ocean, 2 river, 3 stagnant, 4 lava, ...); everything else takes
 stock TGE 1.x's defaults.
 
-**Ground cover.** `replicator DynamicGrass 0 0 0 4 1 3 grass.dts` ghosts a
+**Ground cover.** `replicator DynamicShapeReplicator 0 0 0 4 1 3 rock.dts` ghosts a
 `DynamicShapeReplicator`, `DynamicGrass` or `DynamicGrassReplicator`: cover
 scattered on a grid of 8-unit cells around the client's own control object
 (not around the replicator). The radius is in cells (1 to 64), min and max
 are objects a cell (0 to 20), and the shapes are one comma-separated list
-with no spaces. The optional box `x0 y0 x1 y1` is the world x/y region a
+with no spaces. `DynamicGrass` and `DynamicGrassReplicator` are different:
+they build their own flat ground pieces from a **texture** named in that list
+(`replicator DynamicGrass 0 0 0 4 20 40 blades.png`), draw nothing for a
+`.3ds` or `.dts`, and take up to 100 a cell. The start-up check says so when
+a grass line names a shape. The optional box `x0 y0 x1 y1` is the world x/y region a
 cell's corner must lie in; without one, cover may grow anywhere. Cover is
 placed by casting rays, so it needs real ground (streamed terrain or solid
 objects). The rest is fixed: scale 1, any turn about z, terrain only, slopes
@@ -158,7 +162,8 @@ arrive later, so the server sends each replicator's whole update again at
 the end of the mission start and 5, 15 and 30 seconds after it (and after a
 world switch). On a real 5.12 (lab, 2026-11-26) a `DynamicShapeReplicator`
 scattered its shape over streamed terrain; `DynamicGrass` and
-`DynamicGrassReplicator` were created but drew nothing with a `.3ds` shape.
+`DynamicGrassReplicator` drew nothing with a `.3ds` shape, as expected; with
+a texture they draw (Graal_analysis `torque/replicators-512.md`).
 
 ## Start-up check
 

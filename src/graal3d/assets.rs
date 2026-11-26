@@ -353,6 +353,19 @@ pub fn check_scene_files(
                 &g.shape,
                 &mut notes,
             ),
+            // Grass takes textures; they are checked below.
+            Ghost::Replicator(r) if r.grass() => {
+                for t in String::from_utf8_lossy(&r.shapes).split(',') {
+                    let lower = t.to_ascii_lowercase();
+                    if lower.ends_with(".3ds") || lower.ends_with(".dts") {
+                        notes.push(format!(
+                            "replicator {}: {t} is a shape; this class draws a texture named in its list and draws nothing for a shape",
+                            r.class
+                        ));
+                    }
+                }
+                true
+            }
             Ghost::Replicator(r) => {
                 let shapes = r.shapes.clone();
                 shapes
@@ -426,6 +439,14 @@ pub fn check_scene_files(
             Ghost::Sky(s) => {
                 for t in String::from_utf8_lossy(&s.material_list).split(',') {
                     texture("sky", t, false, &mut notes);
+                }
+            }
+            Ghost::Replicator(r) if r.grass() => {
+                for t in String::from_utf8_lossy(&r.shapes).split(',') {
+                    let lower = t.to_ascii_lowercase();
+                    if !(lower.ends_with(".3ds") || lower.ends_with(".dts")) {
+                        texture("replicator", t, false, &mut notes);
+                    }
                 }
             }
             Ghost::Water(wb) => {
@@ -647,6 +668,21 @@ mod tests {
         check_scene(&mut scene, &files, None, ShapeCheck::Warn);
         assert_eq!(scene.objects.len(), 3);
         assert!(!scene.player_shape.is_empty());
+    }
+
+    #[test]
+    fn grass_takes_a_texture_not_a_shape() {
+        let (mut scene, errors) = Scene::parse(
+            "replicator DynamicGrass 0 0 0 4 1 3 grass.3ds,blades.png
+",
+        );
+        assert!(errors.is_empty(), "{errors:?}");
+        let none = |_: &str| -> Option<(String, Vec<u8>)> { None };
+        let notes = check_scene(&mut scene, &none, None, ShapeCheck::Skip);
+        assert_eq!(notes.len(), 2, "{notes:?}");
+        assert!(notes[0].contains("grass.3ds is a shape"), "{notes:?}");
+        assert!(notes[1].contains("texture blades.png"), "{notes:?}");
+        assert_eq!(scene.objects.len(), 1);
     }
 
     #[test]

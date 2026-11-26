@@ -251,10 +251,11 @@ pub struct Replicator {
     pub position: [f32; 3],
     /// Cells, 1 to 64.
     pub radius: u8,
-    /// Objects a cell, 0 to 20.
+    /// Objects a cell, 0 to 20 (0 to 100 for the grass classes).
     pub min: u8,
     pub max: u8,
-    /// Comma separated, no spaces.
+    /// Comma separated, no spaces: shapes, or for the grass classes
+    /// textures.
     pub shapes: Vec<u8>,
     pub seed: u32,
     /// World x/y region a cell's corner must lie in: x0, y0, x1, y1.
@@ -273,6 +274,13 @@ fn signed(w: &mut BitWriter, v: i32, n: u32) {
 }
 
 impl Replicator {
+    /// `DynamicGrass` and `DynamicGrassReplicator` build their own ground
+    /// pieces from a texture named in `shapefiles`, not shapes, and take up
+    /// to 100 objects a cell (Graal_analysis `torque/replicators-512.md`).
+    pub fn grass(&self) -> bool {
+        self.class != "DynamicShapeReplicator"
+    }
+
     /// A whole GameObject update (name and position), then the replicator's
     /// part. Fixed: scale 1, any turn about z, terrain only, slopes to 90
     /// degrees, no alignment, shown.

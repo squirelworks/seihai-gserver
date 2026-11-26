@@ -42,9 +42,10 @@
 //!                           ground cover (protocols 21 and 24): class
 //!                           DynamicShapeReplicator, DynamicGrass or
 //!                           DynamicGrassReplicator; radius in 8-unit cells
-//!                           (1 to 64), min and max objects a cell (0 to 20),
-//!                           shapes comma separated, the box the cover may
-//!                           grow in (default: anywhere)
+//!                           (1 to 64), min and max objects a cell (0 to 20;
+//!                           0 to 100 for the grass classes), shapes comma
+//!                           separated (for the grass classes textures), the
+//!                           box the cover may grow in (default: anywhere)
 //! rawobject <class> <fields...>
 //!                           lab: a ghost of any class whose update is the
 //!                           fields (see [`super::raw`]), to every client
@@ -342,12 +343,18 @@ impl Scene {
                         .iter()
                         .filter(|o| matches!(o, Ghost::Replicator(_)))
                         .count();
+                    // The grass classes take up to 100 a cell.
+                    let most = if class == Some("DynamicShapeReplicator") {
+                        20
+                    } else {
+                        100
+                    };
                     match (
                         class,
                         floats::<3>(&w[2..5]),
                         small(w[5], 1, 64),
-                        small(w[6], 0, 20),
-                        small(w[7], 0, 20),
+                        small(w[6], 0, most),
+                        small(w[7], 0, most),
                         seed,
                         area,
                     ) {
@@ -453,6 +460,15 @@ impl Scene {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn grass_takes_more_a_cell_than_shapes() {
+        let (s, errors) = Scene::parse("replicator DynamicGrass 0 0 0 4 50 100 blades.png\n");
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(s.objects.len(), 1);
+        let (_, errors) = Scene::parse("replicator DynamicShapeReplicator 0 0 0 4 1 21 a.3ds\n");
+        assert_eq!(errors.len(), 1);
+    }
 
     #[test]
     fn reads_every_kind_of_line() {
