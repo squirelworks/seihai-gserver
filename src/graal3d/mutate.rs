@@ -70,7 +70,11 @@ pub fn parse(text: &str) -> Option<(Mutation, u32)> {
         .map(|(m, _)| (*m, seed))
 }
 
-/// A small seeded generator (xorshift32).
+/// The seeded generator, fixed so a seed gives the same packet on every
+/// run and build of this server: state = seed x 0x9E3779B9 (wrapping) with
+/// the low bit set; each draw is xorshift32 (x ^= x << 13; x ^= x >> 17;
+/// x ^= x << 5) and returns the new state; `below(n)` is a draw mod n. A
+/// mutation draws in the order its kind lists in `docs/GRAAL3D.md`.
 #[derive(Debug, Clone)]
 pub struct Rng(u32);
 
@@ -143,6 +147,25 @@ pub fn accept_tweak(m: Mutation, seed: u32, profile: &Profile) -> (AcceptTweak, 
 mod tests {
     use super::*;
     use crate::graal3d::handshake::PROTOCOL_24;
+
+    /// The generator is part of the documented format: these values must
+    /// never change, or a logged seed no longer reproduces its packet.
+    #[test]
+    fn the_generator_is_pinned() {
+        let mut r = Rng::new(1);
+        let got: Vec<u32> = (0..4).map(|_| r.next_u32()).collect();
+        let mut x = 0x9e37_79b9u32 | 1;
+        let want: Vec<u32> = (0..4)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 17;
+                x ^= x << 5;
+                x
+            })
+            .collect();
+        assert_eq!(got, want);
+        assert_eq!(got[0], 0x510c_4619);
+    }
 
     #[test]
     fn kinds_and_seeds_are_read() {

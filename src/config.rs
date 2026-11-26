@@ -128,6 +128,10 @@ pub struct Config {
     /// Lab: the 5.x TerrainBlock, WaterBlock, ground cover and chunks go
     /// to every GameObject-era 3D client, whatever its build takes.
     pub graal3d_terrainall: bool,
+    /// Whether strings in 3D game packets carry Torque's prefix flag
+    /// (default true, as every Graal client reads them); false is a lab
+    /// setting.
+    pub graal3d_stringprefix: bool,
     /// Right after a 3D link, `heights.info` and its textures go to the
     /// client over TCP unasked (once per account a run).
     pub graal3d_pushterrain: bool,
@@ -213,6 +217,7 @@ impl Config {
             graal3d_port: 0,
             graal3d_shapecheck: crate::graal3d::assets::ShapeCheck::Skip,
             graal3d_terrainall: false,
+            graal3d_stringprefix: true,
             graal3d_pushterrain: false,
             graal3d_trace: String::new(),
             graal3d_sharp3d: false,
@@ -343,6 +348,7 @@ impl Config {
                     .ok_or_else(|| format!("graal3d_shapecheck: `{v}` is not skip, warn or off"))?
             }
             "graal3d_terrainall" => self.graal3d_terrainall = flag(v)?,
+            "graal3d_stringprefix" => self.graal3d_stringprefix = flag(v)?,
             "graal3d_pushterrain" => self.graal3d_pushterrain = flag(v)?,
             "graal3d_trace" => self.graal3d_trace = v.trim().to_string(),
             "graal3d_route" => {

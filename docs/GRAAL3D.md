@@ -27,6 +27,7 @@ graal3d_terrainall = false  # the 5.x ground to every GameObject-era build
 graal3d_trace = g3d.tsv     # a trace file; empty: off
 graal3d_route = mission     # or sharp3d
 graal3d_mutate = off        # or <kind>[:<seed>]
+graal3d_stringprefix = true # false: game packet strings without the prefix flag
 ```
 
 The clients open the UDP link on the listed TCP port + 1, so a set
@@ -221,6 +222,18 @@ each move is acked. Every other linked player reaches a protocol 19 client
 as a stock TGE Player, and a protocol 19 player's moves reach the others
 (as a TGE Player on protocol 19, as its GameObject on protocols 21 and 24).
 
+## Client scripts (`weapon3d`)
+
+A `weapon3d` script goes to the client as GS2 bytecode, compiled at link
+time by seihai-core's own compiler (the text after a `//#CLIENTSIDE` line,
+GS2 unless it starts with `//#GS1`, in legacy mode, which takes the loose
+forms live servers let through). A script that does not compile is logged and
+sent as source. Without a file, the server weapon of that name is used. The
+5.x client's 3D key bindings call `moveForward2`, `moveBackward2`,
+`moveLeft2`, `moveRight2` and `jump`, which only such a script defines; a
+script moves the player's own object with `triggerserver(<kind>, <weapon>,
+"g3dpos", x, y, z)`.
+
 ## Each build's row
 
 At link time the server picks the client's row of seihai-core's
@@ -257,9 +270,6 @@ same as `camera 0 -5 2 1 0 0 0.38`.
 
 ## Not done yet
 
-- `weapon3d` scripts are sent as source, not compiled to bytecode
-  (seihai-gserver-v2 compiles a file through its NPC-server); the name-only
-  form sends the server weapon's clientside source.
 - Server flags (`server.`) are not sent.
 - The `graal3dstringprefix = false` mode is not ported.
 - bzip2 text channel bodies are not decoded.
@@ -299,9 +309,31 @@ Never on a public server.
   others go in one packet 2 seconds after the mission start: `event-unknown-class`,
   `event-bad-length`, `ghost-uncreated`, `ghost-double-delete`,
   `ghost-index-width`, `control-wrong-class`, `control-deleted`. The log and
-  the trace get what changed and the packet's bytes. The seeds drive this
-  server's own generator, so a seed here does not give seihai-gserver-v2's
-  packet for the same seed.
+  the trace get what changed and the packet's bytes.
+
+  A seed gives the same packet on every run and build of this server, for
+  the same world and the same client. The generator is fixed (a test pins
+  it): the state starts at seed x 0x9E3779B9 (wrapping) with its low bit
+  set, each draw is xorshift32 (x ^= x << 13; x ^= x >> 17; x ^= x << 5),
+  and "draw mod n" picks among n. Each kind draws in this order:
+
+  | Kind | Draws |
+  |---|---|
+  | `accept-protocol` | the protocol: one of p-1, p+1, 0, 0xFFFFFFFF, p+100 |
+  | `accept-classtable` | the change (mod 3): drop the last 1 + (draw mod 3) event classes; add `SeihaiLabEvent`; or rename object class (draw mod count) `SeihaiLabObject` |
+  | `control-deleted` | the index: the first free one + (draw mod 8) |
+  | `control-wrong-class` | one of the created ghosts of another class, in ghost order |
+  | `event-unknown-class` | the bit count (mod 64), the class id: the table's size + (draw mod (4096 - size)), then one draw per bit (its low bit) |
+  | `event-bad-length` | the bit count (mod 64), the class (mod the table), the length error (1, 8, -1 or 16383), then one draw per bit |
+  | `ghost-uncreated` | the index: the first free one + (draw mod 8), the bit count (mod 64), then one draw per bit |
+  | `ghost-double-delete` | the index, as above |
+  | `ghost-index-width` | the index (drawn, unused), then the width: (needed + 1 + (draw mod 14)) mod 16, one more if that is the right one |
+
+  seihai-gserver-v2 drew from the C++ library's generator, which no other
+  build can match; its seeds do not carry over.
+- `graal3d_stringprefix = false` writes and reads strings in game packets
+  without Torque's "shares a prefix" flag, for every link. Every Graal
+  client seen so far reads the flag, so the default is true.
 
 ## Lab runs
 

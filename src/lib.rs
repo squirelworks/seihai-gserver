@@ -208,6 +208,10 @@ pub async fn start_graal3d(
         sharp3d: server.cfg.graal3d_sharp3d,
         mutation: server.cfg.graal3d_mutate,
     };
+    graal3d::bits::set_packet_string_prefix(server.cfg.graal3d_stringprefix);
+    if !server.cfg.graal3d_stringprefix {
+        eprintln!("Graal3D: game packet strings go without the prefix flag (graal3d_stringprefix = false, lab)");
+    }
     let addr = std::net::SocketAddr::new(server.cfg.bind, port);
     g.start(
         addr,

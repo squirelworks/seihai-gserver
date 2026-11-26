@@ -249,6 +249,29 @@ impl Graal3d {
     }
 }
 
+/// A `weapon3d` script as the GS2 bytecode the client runs, compiled by
+/// seihai-core's own compiler. The text after a `//#CLIENTSIDE` line, if
+/// there is one; GS2 unless the script starts with `//#GS1`. The bytecode
+/// ends with one `\n`, as weapon bytecode does on TCP.
+pub fn compile_weapon3d(source: &str) -> Result<Vec<u8>, String> {
+    use seihai_core::scripting::gs2::compile::{compile, Language, Mode};
+    let source = match source.find("//#CLIENTSIDE") {
+        Some(i) => source[i..].split_once('\n').map_or("", |(_, rest)| rest),
+        None => source,
+    };
+    let text = source.trim();
+    let language = if text.starts_with("//#GS1") {
+        Language::Gs1(crate::npcs::LEVEL_ERA)
+    } else {
+        Language::Gs2
+    };
+    // Legacy mode takes the loose forms the live servers let through.
+    let compiled = compile(text, language, Mode::Legacy).map_err(|e| e.to_string())?;
+    let mut code = compiled.script.write();
+    code.push(b'\n');
+    Ok(code)
+}
+
 /// `PLO_FLAGSET` and `PLO_FLAGDEL` bodies in gen-5 frames, skipping raw
 /// data. A raw message (a file) may run on over several frames: the bytes
 /// still to skip carry over to the next frame, so a file's bytes are never
@@ -1472,7 +1495,18 @@ impl Service {
             };
             // The client's script reader takes LF lines; a CR stays in the
             // token before it.
-            let script: Vec<u8> = script.into_iter().filter(|b| *b != b'\r').collect();
+            let source: Vec<u8> = script.into_iter().filter(|b| *b != b'\r').collect();
+            // A 5.x client in 3D mode runs a weaponscript as GS2 bytecode.
+            let script = match compile_weapon3d(&String::from_utf8_lossy(&source)) {
+                Ok(code) => code,
+                Err(e) => {
+                    log(&format!(
+                        "weapon3d {}: not compiled ({e}); sending the source",
+                        w.name
+                    ));
+                    source
+                }
+            };
             if let Some(s) = self.sessions.get_mut(&at) {
                 // The client reads characters 1 to 5 of addweapon's text
                 // as a number; spaces read as 0.
@@ -2455,6 +2489,16 @@ spawn 0 0 1
         assert!(frames.len() > 1);
         frames.push([&[set][..], b"a=1\n"].concat());
         assert_eq!(flag_messages(&frames), vec![(true, b"a=1".to_vec())]);
+    }
+
+    #[test]
+    fn a_weapon3d_script_is_compiled_to_bytecode() {
+        let src = "//#CLIENTSIDE\r\nfunction onCreated() {\n  this.x = 1;\n}\n";
+        let src: String = src.chars().filter(|c| *c != '\r').collect();
+        let code = compile_weapon3d(&src).unwrap();
+        assert_eq!(code.last(), Some(&b'\n'));
+        assert!(!code.starts_with(b"function"));
+        assert!(compile_weapon3d("function {{{").is_err());
     }
 
     #[test]
