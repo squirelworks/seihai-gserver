@@ -1389,7 +1389,12 @@ impl Connection {
         if !w.flag(!todo.is_empty()) {
             return;
         }
-        todo.sort_by_key(|(o, _)| *o);
+        // Among creates, the client's own Camera and control object go
+        // first: a 5.12 draws nothing until it has its Camera, and a big
+        // world takes seconds to create (about 140 creates a second, lab
+        // T3D-147), so the view comes up at once and fills in.
+        let others_after = |k: &Key| self.camera_key != Some(*k) && self.control_key != Some(*k);
+        todo.sort_by_key(|(o, k)| (*o, others_after(k)));
         let mut id_bits = 1;
         while max_index >> id_bits != 0 {
             id_bits += 1;
@@ -1777,6 +1782,34 @@ pub(crate) mod tests {
         assert!(c.ghost_delivered(1) && c.ghost_delivered(2));
         assert_eq!(c.mission(), Mission::Done);
         assert!(c.control_delivered());
+    }
+
+    /// On a big world the client's own Camera and control object are
+    /// created first, so a 5.12 draws at once instead of after the whole
+    /// world (lab T3D-147: about 140 creates a second).
+    #[test]
+    fn the_own_camera_and_control_object_are_created_first() {
+        let mut c = Connection::new(&PROTOCOL_24, 0x400, 0);
+        for k in 1..=200 {
+            let mut o = lab_player();
+            o.name = format!("cube{k}").into_bytes();
+            c.set_ghost(k, Ghost::GameObject(o));
+        }
+        c.set_ghost(1000, Ghost::GameObject(lab_player()));
+        c.set_control_object(1000);
+        c.set_ghost(1001, Ghost::Camera(lab_player()));
+        c.set_camera_object(1001);
+        let mut client = FakeClient::new(&PROTOCOL_24);
+        let mut now = 0;
+        while !c.ghost_delivered(1001) {
+            assert!(now < 60 * 40, "no Camera");
+            now = run_512(&mut c, &mut client, now, 1);
+        }
+        assert!(c.ghost_delivered(1000));
+        let world = (1..=200).filter(|k| c.ghost_delivered(*k)).count();
+        assert!(world < 20, "{world} world objects before the Camera");
+        run_512(&mut c, &mut client, now, 60);
+        assert!((1..=200).all(|k| c.ghost_delivered(k)));
     }
 
     /// A different object under a key being deleted (a world switch) is

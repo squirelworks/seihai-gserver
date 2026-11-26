@@ -829,7 +829,14 @@ impl Conn {
                     last_heard = Instant::now();
                     let mut reply: Vec<Vec<u8>> = Vec::new();
                     while let Some(frame) = inbuf.take_frame()? {
+                        let switches = codec.step_rule_switches;
                         let body = codec.decode(&frame)?;
+                        if codec.step_rule_switches != switches {
+                            self.server.log(
+                                &self.peer,
+                                "a short compressed frame inflated only under the other gen-5 step rule; following the client",
+                            );
+                        }
                         let msgs = codec.messages(&body);
                         if codec.bad_in_a_row >= MAX_BAD_IN_A_ROW {
                             self.server.log(&self.peer, "gen-3 bytes out of step; dropping the client");

@@ -383,6 +383,15 @@ object the 3D window stays black. It sits 0 -5 2 from the spawn point unless
 the world file has a `camera` line, and it faces the spawn point unless that
 line gives a rotation.
 
+A `camera` line's x, y and z are an offset from the `spawn` point, not a
+world position: `spawn 2 -6 1` with `camera 0 -5 2` puts the camera at
+2 -11 3. This is on purpose: moving the spawn moves the camera with it, and
+a world switch puts the camera at the new world's spawn plus its offset.
+
+The Camera and the client's own object are created before the world's
+objects. A 5.12 gets about 140 creates a second, so on a big world the view
+comes up first and the objects fill in.
+
 Rotations (objects and the camera) are an axis and an angle in radians, and
 the clients turn the opposite way from the right-hand rule: a positive angle
 about +x tilts the view down, a positive angle about +z turns it right
