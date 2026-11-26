@@ -1486,7 +1486,8 @@ impl Connection {
     }
 }
 
-/// Inflates a compressed text (1 zlib). bzip2 (2) is not read.
+/// Unpacks a compressed text: 1 zlib, 2 bzip2 (seihai-core's bounded
+/// reader, as for gen-4 frames).
 fn unpack(bytes: &[u8], compression: u32) -> Option<Vec<u8>> {
     use std::io::Read;
     match compression {
@@ -1498,6 +1499,7 @@ fn unpack(bytes: &[u8], compression: u32) -> Option<Vec<u8>> {
                 .ok()?;
             Some(out)
         }
+        2 => seihai_core::protocol::bz2_decompress(bytes).ok(),
         _ => None,
     }
 }
@@ -1806,6 +1808,17 @@ pub(crate) mod tests {
         let fields = crate::graal3d::raw::parse_fields(&["i8:1", "f1"]).unwrap();
         assert!(c.send_raw_event("TerrainChunkEvent", &fields));
         assert!(!c.send_raw_event("NoSuchEvent", &fields));
+    }
+
+    #[test]
+    fn zlib_and_bzip2_texts_are_unpacked() {
+        let text = b"s client.a=1\n".repeat(20);
+        let bz = seihai_core::protocol::bz2_compress(&text).unwrap();
+        assert_eq!(unpack(&bz, 2).unwrap(), text);
+        let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        std::io::Write::write_all(&mut z, &text).unwrap();
+        assert_eq!(unpack(&z.finish().unwrap(), 1).unwrap(), text);
+        assert!(unpack(b"junk", 2).is_none());
     }
 
     #[test]

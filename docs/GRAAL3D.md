@@ -272,7 +272,6 @@ same as `camera 0 -5 2 1 0 0 0.38`.
 
 - Server flags (`server.`) are not sent.
 - The `graal3dstringprefix = false` mode is not ported.
-- bzip2 text channel bodies are not decoded.
 - No movetype on GameObjects.
 - The terrain, water, ground cover, 2D players, Sharp3D route and mutations
   have loopback tests here; the layouts were run live from seihai-gserver-v2.
