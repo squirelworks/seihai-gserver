@@ -679,8 +679,10 @@ impl Conn {
         self.server
             .log(&self.peer, &format!("{who} logged in as player {id}"));
         // A 3.153 to 5.x client on a 3D server opens the UDP side beside
-        // this login; that side links to it by account and address.
-        let graal3d_client = self.server.graal3d.is_some() && crate::graal3d::has_graal3d(version);
+        // this login; that side links to it by account and address. So does
+        // Frankenstein 6.037 on the 6.03r7 token.
+        let graal3d_client =
+            self.server.graal3d.is_some() && crate::graal3d::may_link_graal3d(version);
         if let (Some(g), true) = (&self.server.graal3d, graal3d_client) {
             g.tcp_joined(
                 id,

@@ -36,7 +36,7 @@ pub mod scene;
 pub mod service;
 pub mod tge;
 
-pub use service::{has_graal3d, Graal3d, TcpPlayer};
+pub use service::{has_graal3d, may_link_graal3d, Graal3d, TcpPlayer};
 
 /// An image a 3D client asked for that the folders do not hold under that
 /// name. The 5.x clients ask for Sky and terrain textures with no

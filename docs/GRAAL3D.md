@@ -54,6 +54,11 @@ With it on:
 - a UDP connect request is held until the same account (or a guest) from the
   same IP is logged in over TCP, and the link is closed with a disconnect
   when that TCP session ends.
+- TCP logins on the 6.03r7 token (Windows and Linux) may be linked too.
+  Stock 6.03r7 is a 2D client and opens no UDP link (Graal_analysis T3D-121),
+  so nothing changes for it; graal-client-repro's Frankenstein 6.037 logs in
+  with that token and opens the 5.12 protocol-24 link beside it. Its first
+  lab run (2026-11-26) reached login step 6 only with this.
 
 ## The world file
 
