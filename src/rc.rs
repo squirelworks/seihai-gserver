@@ -16,8 +16,9 @@
 //! Slice 2, built: the player list and RC chat. An RC is not a player and
 //! never enters a level, but the world task lists it: it takes an id from
 //! the players' id space, as the fork lists RCs among the players. On its
-//! login the RC gets `PLO_ADDPLAYER` (55, [`addplayer`]) for every player
-//! and every other RC online, and every RC gets "New RC: account" on RC
+//! login the RC gets `PLO_ADDPLAYER` (55, [`addplayer`]) for the
+//! NPC-Server ([`npcserver_entry`], so `nc discover` finds the NC), every
+//! player and every other RC online, and every RC gets "New RC: account" on RC
 //! chat. Then, live, every RC gets `PLO_ADDPLAYER` when a player logs in,
 //! changes level or nickname (the fork resends it on a props change, and
 //! seihai-rc shows that as an update), `PLO_DELPLAYER` (56) when one
@@ -210,6 +211,22 @@ pub fn addplayer(id: u16, account: &[u8], level: &[u8], nick: &[u8]) -> Vec<u8> 
     p.push(gchar(82));
     gstring(account, &mut p);
     msg(PLO_ADDPLAYER, &p)
+}
+
+/// The NPC-Server's account and nickname in an RC's list. An RC looks for
+/// `(Server)` in a nickname, asks that player's `location` (94) and opens
+/// its NC socket on the 79 answer (Graal_analysis
+/// `protocol/npc-control.md`, "Finding the NPC server"). The NC is
+/// served on this server's own port (`nc.rs`), so the entry is always
+/// listed, NPC-server link or not.
+pub const NPCSERVER_ACCOUNT: &[u8] = b"(npcserver)";
+pub const NPCSERVER_NICK: &[u8] = b"NPC-Server (Server)";
+
+/// The NPC-Server's entry in an RC's list, at `id`.
+pub fn npcserver_entry(id: u16) -> Vec<u8> {
+    let mut nick = Vec::new();
+    gstring(NPCSERVER_NICK, &mut nick);
+    addplayer(id, NPCSERVER_ACCOUNT, RC_LEVEL, &nick)
 }
 
 /// `PLO_DELPLAYER` (56).

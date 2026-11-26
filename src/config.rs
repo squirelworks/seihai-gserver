@@ -115,6 +115,12 @@ pub struct Config {
     /// address the link comes from. Set it when that address is not the
     /// one players reach, e.g. behind NAT or a port forward.
     pub listserver_ip: String,
+    /// The HQ password sent as `SERVERHQPASS` (23) before `NEWSERVER`, for
+    /// a listserver whose `gservers` allow-list names this server's address
+    /// with an `hq_password`. Empty (the default): none is sent, and such a
+    /// listserver never lists the server. Sent as the raw rest of the
+    /// line, inside the encrypted link when `listserver_secure` is on.
+    pub listserver_hq_password: String,
     /// The 3D mode (`graal3d.rs`, `docs/GRAAL3D.md`): a Torque UDP server
     /// for the 3.153 to 5.x clients beside the TCP one, and the server is
     /// listed at HQ level 4 (tagged `3 `). Off by default.
@@ -212,6 +218,7 @@ impl Config {
             listserver_key: String::new(),
             listserver_accounts: false,
             listserver_ip: String::new(),
+            listserver_hq_password: String::new(),
             graal3d: false,
             newworld_beta: 1,
             graal3d_port: 0,
@@ -341,6 +348,7 @@ impl Config {
             "listserver_key" => self.listserver_key = v.to_string(),
             "listserver_accounts" => self.listserver_accounts = flag(v)?,
             "listserver_ip" => self.listserver_ip = v.to_string(),
+            "listserver_hq_password" => self.listserver_hq_password = v.to_string(),
             "graal3d" => self.graal3d = flag(v)?,
             "graal3d_port" => self.graal3d_port = num(v)?,
             "graal3d_shapecheck" => {

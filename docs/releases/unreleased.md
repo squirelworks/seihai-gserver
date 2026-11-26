@@ -38,6 +38,9 @@ Notes for the next seihai-gserver release.
 
 ## Fixed
 
+- **Listed by a listserver with a `gservers` allow-list.** The new `listserver_hq_password` setting is sent as `SERVERHQPASS` (23) before `NEWSERVER`, inside the encrypted link; such a listserver ignored `NEWSERVER` without it and never listed the server. Off when empty; a warning says when the link is plain. Loopback test against seihai-listserver with an allow-list row and HQ password.
+- **`seihai-rc nc discover` finds the NC.** An RC's player list now starts with the NPC-Server (`NPC-Server (Server)`, account `(npcserver)`, at the id kept for it), so an RC asks its `location` (94) and gets this server's own address (79), where NC logins are served. Before, the list had no `(Server)` player, so discover asked nothing. Loopback test with seihai-rc's gen5 and classic RC logins, then an NC login at the found address.
+
 - **3D: a 2D player leads a level a 3D player is in.** A 5.12 in 3D mode runs no GS1 level NPCs or baddies, so when it led a level, a 2D player's level NPC timeouts there never ran (lab, 2026-11-26). The lead now goes to a 2D player in the level when the leader links 3D, or when a 2D player comes into a level a 3D player leads.
 - **3D: ground cover grows on a first visit.** A real 5.12 grew a `replicator`'s cover only once its shapes and terrain were cached, so a first visit showed none (lab, 2026-11-26, T3D-048). Each replicator's whole update now goes again at the end of the mission start and 5, 15 and 30 seconds later (and after a world switch); the client regrows cover on each update.
 - **3D: grass replicators take textures.** `DynamicGrass` and `DynamicGrassReplicator` build their own ground pieces from a texture in their list and draw nothing for a shape (Graal_analysis `torque/replicators-512.md`; lab, 2026-11-26). Their lines now take up to 100 objects a cell, the start-up check looks their names up as textures, and a shape there is reported.

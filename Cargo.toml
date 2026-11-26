@@ -32,6 +32,9 @@ tokio = { version = "1", features = ["test-util"] }
 # npcserver, rc and this crate all declare seihai-core v0.7.2 without a
 # temporary [patch] (squirelworks/seihai-core#79).
 seihai-rc = { git = "https://github.com/squirelworks/seihai-rc", rev = "d52fc395a7936b41f3bc8dd9082dcf6c42977fe1" }
+# The allow-list test registers with the real listserver (its `gservers`
+# rows and `SERVERHQPASS` check), on the same seihai-core tag.
+seihai-listserver = { git = "https://github.com/squirelworks/seihai-listserver", rev = "b23e71be7fc5c2107e1ac6214ffef13660a63b12" }
 
 # PBKDF2 and the codecs are slow unoptimised; the tests log in dozens of times.
 [profile.dev.package."*"]

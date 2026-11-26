@@ -77,7 +77,11 @@ What works today:
   (`SVLINK01` in Seihai's `documentation/secure-login.md`), so the password
   of every player, real Graal clients included, crosses it sealed. The
   listserver's key is pinned in `config/listserver.pin` on first contact, or
-  given as `listserver_key`.
+  given as `listserver_key`. A listserver with a `gservers` allow-list
+  lists the server only after its HQ password: set
+  `listserver_hq_password` to that row's `hq_password` (the rest of the
+  line after `=`, trimmed; `#` starts a comment, so a password cannot hold
+  one).
 
 RC support and server-side NPC scripts are later stages.
 
@@ -155,7 +159,7 @@ default and a comment. The main groups:
 | `secure_login_key`, `require_secure_login` | The Seihai secure login (below) |
 | `npcserver`, `npcserver_bind`, `npcserver_port`, `npcserver_token`, `npcserver_path` | The NPC-server link: `off`, `auto` (start seihai-npcserver for you) or `external` |
 | `lobby_port`, `lobby_host` | The Login lobby that 4.x to 6.x clients connect to first |
-| `listserver`, `listserver_secure`, `listserver_key`, `listserver_accounts`, `listserver_ip` | Registering with a listserver and checking passwords through it |
+| `listserver`, `listserver_secure`, `listserver_key`, `listserver_accounts`, `listserver_ip`, `listserver_hq_password` | Registering with a listserver and checking passwords through it |
 | `newworld_beta` | Which NewWorld beta the shared login token is served as |
 | `anticheat`, `anticheat_log`, `anticheat_rate`, `anticheat.*` | The optional anti-cheat checks, off by default |
 

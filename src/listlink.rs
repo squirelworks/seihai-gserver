@@ -13,7 +13,8 @@
 //! link, for a listserver that does not know the handshake.
 //!
 //! Inside, the classic link: `SVO_REGISTERV3` (30) as one line, then zlib
-//! frames. Sent: `NEWSERVER` (22), `SERVERHQLEVEL` (24, 3D servers
+//! frames. Sent: `SERVERHQPASS` (23, first, only when
+//! `listserver_hq_password` is set), `NEWSERVER` (22), `SERVERHQLEVEL` (24, 3D servers
 //! only), `SETPLYR` (7), `PLYRADD` (14),
 //! `PLYRREM` (15), `VERIACC2` (17), `SERVERINFO` (25, a player's server
 //! warp), `SVO_PMPLAYER` (29), `SETIP` (5) as
@@ -57,6 +58,11 @@ mod svo {
     pub const PING: u8 = 16;
     pub const VERIACC2: u8 = 17;
     pub const NEWSERVER: u8 = 22;
+    /// The HQ password, the raw rest of the line (not a GSTRING). Sent
+    /// before `NEWSERVER`: a listserver with an allow-list ignores
+    /// `NEWSERVER` until the password matches (seihai-listserver
+    /// `gservers`).
+    pub const SERVERHQPASS: u8 = 23;
     /// The server's HQ level, one GCHAR: 0 hidden, 1 bronze, 2 classic,
     /// 3 gold, 4 Graal3D. The listserver puts the level's tag in front of
     /// the name on a tagged list (`3 ` for 4).
@@ -480,7 +486,14 @@ fn hello(cfg: &Config, players: &BTreeMap<u16, ListedPlayer>) -> io::Result<Vec<
     ] {
         gstr(&mut p, f);
     }
-    let mut body = message(svo::NEWSERVER, &p);
+    let mut body = Vec::new();
+    if !cfg.listserver_hq_password.is_empty() {
+        body.extend(message(
+            svo::SERVERHQPASS,
+            cfg.listserver_hq_password.as_bytes(),
+        ));
+    }
+    body.extend(message(svo::NEWSERVER, &p));
     if cfg.graal3d {
         body.extend(message(svo::SERVERHQLEVEL, &[gchar(HQ_LEVEL_3D)]));
     }
@@ -1240,6 +1253,19 @@ mod tests {
         assert_eq!(listed_name(&cfg), "3 Lab");
         let ids: Vec<u8> = hello_messages(&cfg).iter().map(|(id, _)| *id).collect();
         assert_eq!(ids, [svo::NEWSERVER, svo::SETPLYR]);
+    }
+
+    #[test]
+    fn the_hq_password_goes_first_and_only_when_set() {
+        let mut cfg = Config::defaults(Path::new("w"));
+        let ids: Vec<u8> = hello_messages(&cfg).iter().map(|(id, _)| *id).collect();
+        assert_eq!(ids, [svo::NEWSERVER, svo::SETPLYR]);
+        assert!(cfg.apply("listserver_hq_password = lab hq\n").is_empty());
+        let msgs = hello_messages(&cfg);
+        let ids: Vec<u8> = msgs.iter().map(|(id, _)| *id).collect();
+        assert_eq!(ids, [svo::SERVERHQPASS, svo::NEWSERVER, svo::SETPLYR]);
+        // The raw rest of the line, not a GSTRING.
+        assert_eq!(msgs[0].1, b"lab hq");
     }
 
     #[test]
