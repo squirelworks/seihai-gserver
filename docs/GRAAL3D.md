@@ -329,8 +329,8 @@ Never on a public server.
   | `ghost-double-delete` | the index, as above |
   | `ghost-index-width` | the index (drawn, unused), then the width: (needed + 1 + (draw mod 14)) mod 16, one more if that is the right one |
 
-  seihai-gserver-v2 drew from the C++ library's generator, which no other
-  build can match; its seeds do not carry over.
+  seihai-gserver-v2 draws from `std::mt19937` in another order, so its seeds
+  do not carry over.
 - `graal3d_stringprefix = false` writes and reads strings in game packets
   without Torque's "shares a prefix" flag, for every link. Every Graal
   client seen so far reads the flag, so the default is true.
