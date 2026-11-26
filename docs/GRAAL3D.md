@@ -235,6 +235,14 @@ classic `X`/`Y` props whenever it moves half a tile or more. So serverside
 scripts and 2D players in its level see where it is. Positions off the 64 x 64
 map are left alone.
 
+A 5.12 in 3D mode runs no GS1 level NPCs or baddies, so a level led by a 3D
+player stopped its 2D players' level NPC timeouts (lab, 2026-11-26). A 2D
+player in the level leads it instead: when the leader links 3D, the first 2D
+player there leads, and a 2D player coming into a level a 3D player leads
+takes the lead. A 3D player leads only a level with no 2D player in it. The
+5.12 shows a 2D player's nickname and chat to scripts (`G2DPlayer_<account>.nickname`
+and `.chat`) but does not draw them.
+
 ## More worlds and level warps
 
 `config/graal3dworld.txt` is the default world. Each

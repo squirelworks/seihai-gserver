@@ -299,6 +299,8 @@ pub enum WorldIn {
         players: Vec<u16>,
         reply: oneshot::Sender<Roster>,
     },
+    /// A 3D client linked (or unlinked) for the player (`graal3d`).
+    ThreeD { player: u16, linked: bool },
     /// Files sent to a player unasked, as answers to its own requests
     /// (the 3D side's `graal3d_pushterrain`).
     PushFiles {
@@ -806,6 +808,11 @@ impl World {
         answer.blocking_recv().ok().flatten()
     }
 
+    /// [`WorldIn::ThreeD`].
+    pub fn three_d(&self, player: u16, linked: bool) {
+        let _ = self.tx.send(WorldIn::ThreeD { player, linked });
+    }
+
     /// [`WorldIn::PushFiles`].
     pub fn push_files(&self, player: u16, files: Vec<crate::files::Found>) {
         let _ = self.tx.send(WorldIn::PushFiles { player, files });
@@ -1019,6 +1026,10 @@ struct Online {
     level: String,
     /// The gmap the player plays that level as a cell of.
     gmap: Option<Place>,
+    /// A 3D client is linked for this player (`graal3d`). Its client runs
+    /// no GS1 level NPCs or baddies, so it leads a level only when no 2D
+    /// player is there (lab, 2026-11-26).
+    three_d: bool,
     /// The levels (lower-case) this connection was sent in full as the
     /// player's own gmap level; walking back into one sends its name.
     entered: HashSet<String>,
@@ -1335,7 +1346,9 @@ impl WorldTask {
                         p.walk = Walk::at(g.x, g.y, Instant::now());
                     }
                     let key = level.name.to_ascii_lowercase();
-                    let leader = self.leader_of(&key).is_none_or(|l| l == id);
+                    let leader = self
+                        .leader_of(&key)
+                        .is_none_or(|l| l == id || self.leads_3d(l));
                     if leader {
                         self.leaders.insert(key, id);
                     }
@@ -1370,6 +1383,16 @@ impl WorldTask {
                 }
             }
             WorldIn::Left { player } => self.leave(player),
+            WorldIn::ThreeD { player, linked } => {
+                let Some(p) = self.players.get_mut(&player) else {
+                    return;
+                };
+                p.three_d = linked;
+                let level = p.level.clone();
+                if linked && self.leader_of(&level) == Some(player) {
+                    self.lead_from_2d(&level);
+                }
+            }
             WorldIn::PushFiles { player, files } => {
                 if let Some(p) = self.players.get(&player) {
                     for f in files {
@@ -2342,6 +2365,7 @@ impl WorldTask {
                 gen,
                 level: String::new(),
                 gmap: None,
+                three_d: false,
                 entered: HashSet::new(),
                 props: Props::default(),
                 opened: HashSet::new(),
@@ -2428,6 +2452,10 @@ impl WorldTask {
         }
         // The level's leader, if it has none, and its baddies.
         match self.leader_of(&me.level) {
+            Some(l) if l != id && self.leads_3d(l) && !me.three_d => {
+                self.leaders.insert(me.level.clone(), id);
+                let _ = me.outbox.send(vec![crate::wire::msg(PLO_ISLEADER, b"")]);
+            }
             None => {
                 self.leaders.insert(me.level.clone(), id);
                 let _ = me.outbox.send(vec![crate::wire::msg(PLO_ISLEADER, b"")]);
@@ -2514,6 +2542,26 @@ impl WorldTask {
             .then_some(id)
     }
 
+    /// Whether `id` is a 3D player (a 2D player there should lead).
+    fn leads_3d(&self, id: u16) -> bool {
+        self.players.get(&id).is_some_and(|p| p.three_d)
+    }
+
+    /// A 3D player leads `level`: the first 2D player there (one off a
+    /// gmap last) leads it now and is told so. With none, nothing changes.
+    fn lead_from_2d(&mut self, level: &str) {
+        let next = self
+            .players
+            .iter()
+            .filter(|(_, p)| p.level == level && !p.three_d)
+            .min_by_key(|(&id, p)| (p.gmap.is_some(), id))
+            .map(|(&id, p)| (id, p.outbox.clone()));
+        if let Some((id, outbox)) = next {
+            self.leaders.insert(level.to_string(), id);
+            let _ = outbox.send(vec![crate::wire::msg(PLO_ISLEADER, b"")]);
+        }
+    }
+
     /// The leader may have left `level`: the next player still there (the
     /// lowest id, one off a gmap first) leads it now and is told so.
     fn hand_off(&mut self, level: &str) {
@@ -2535,7 +2583,7 @@ impl WorldTask {
             .players
             .iter()
             .filter(|(_, p)| p.level == level)
-            .min_by_key(|(&id, p)| (p.gmap.is_some(), id))
+            .min_by_key(|(&id, p)| (p.three_d, p.gmap.is_some(), id))
             .map(|(&id, p)| (id, p.outbox.clone()));
         if let Some((id, outbox)) = next {
             self.leaders.insert(level.to_string(), id);
@@ -3417,7 +3465,7 @@ impl WorldTask {
             .players
             .iter()
             .filter(|(&o, p)| o != id && p.level == level)
-            .min_by_key(|(&o, p)| (p.gmap.is_some(), o))
+            .min_by_key(|(&o, p)| (p.three_d, p.gmap.is_some(), o))
             .map(|(&o, p)| (o, p.outbox.clone()));
         if let Some((o, outbox)) = next {
             self.leaders.insert(level, o);
@@ -5141,6 +5189,7 @@ mod tests {
                     gen: EncryptionGen::Gen5,
                     level: String::new(),
                     gmap: None,
+                    three_d: false,
                     entered: HashSet::new(),
                     props: Props::default(),
                     opened: HashSet::new(),
@@ -5163,6 +5212,58 @@ mod tests {
             full.join("z", ClientVersion::V222, EncryptionGen::Gen5, o),
             Err(Refused::Full)
         );
+    }
+
+    #[tokio::test]
+    async fn a_2d_player_leads_a_level_a_3d_player_is_in() {
+        let w = World::new(8, blank());
+        let mut t = w.task.lock().unwrap().take().unwrap();
+        let join = |t: &mut WorldTask, name: &str| {
+            let (o, r) = outbox();
+            let (reply, mut answer) = oneshot::channel();
+            t.handle(WorldIn::Joined {
+                who: who(name, "start.nw"),
+                outbox: o,
+                reply,
+            });
+            let j = answer.try_recv().unwrap().unwrap();
+            (j.id, j.leader, r)
+        };
+        let leads = |r: &mut mpsc::UnboundedReceiver<Vec<Vec<u8>>>| {
+            let mut got = false;
+            while let Ok(frames) = r.try_recv() {
+                got |= frames.contains(&crate::wire::msg(PLO_ISLEADER, b""));
+            }
+            got
+        };
+        // Alice leads, then links 3D; Bob, in 2D, leads when he comes.
+        let (alice, lead, _ra) = join(&mut t, "alice");
+        assert!(lead);
+        t.handle(WorldIn::ThreeD {
+            player: alice,
+            linked: true,
+        });
+        let (bob, lead, mut rb) = join(&mut t, "bob");
+        assert!(lead);
+        assert_eq!(t.leader_of("start.nw"), Some(bob));
+        // A 3D player coming in leaves Bob leading.
+        let (cy, lead, _rc) = join(&mut t, "cy");
+        assert!(!lead);
+        t.handle(WorldIn::ThreeD {
+            player: cy,
+            linked: true,
+        });
+        assert_eq!(t.leader_of("start.nw"), Some(bob));
+        // Dee comes in 2D; Bob links 3D, and Dee leads.
+        let (dee, lead, mut rd) = join(&mut t, "dee");
+        assert!(!lead);
+        leads(&mut rb);
+        t.handle(WorldIn::ThreeD {
+            player: bob,
+            linked: true,
+        });
+        assert_eq!(t.leader_of("start.nw"), Some(dee));
+        assert!(leads(&mut rd));
     }
 
     #[tokio::test]
