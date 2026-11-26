@@ -153,9 +153,10 @@ scattered on a grid of 8-unit cells around the client's own control object
 are objects a cell (0 to 20), and the shapes are one comma-separated list
 with no spaces. `DynamicGrass` and `DynamicGrassReplicator` are different:
 they build their own flat ground pieces from a **texture** named in that list
-(`replicator DynamicGrass 0 0 0 4 20 40 blades.png`), draw nothing for a
-`.3ds` or `.dts`, and take up to 100 a cell. The start-up check says so when
-a grass line names a shape. A mostly transparent grass texture draws next to
+(`replicator DynamicGrass 0 0 0 8 20 40 blades.png`), draw nothing for a
+`.3ds` or `.dts`, and take up to 100 a cell. A real 5.12 grows no grass at a radius under 8
+cells, so grass lines go out with at least 8. The start-up check reports a
+grass line with a smaller radius or one that names a shape. A mostly transparent grass texture draws next to
 nothing. The optional box `x0 y0 x1 y1` is the world x/y region a
 cell's corner must lie in; without one, cover may grow anywhere. Cover is
 placed by casting rays, so it needs real ground (streamed terrain or solid
