@@ -270,11 +270,10 @@ same as `camera 0 -5 2 1 0 0 0.38`.
 
 ## Not done yet
 
-- Server flags (`server.`) are not sent.
-- The `graal3dstringprefix = false` mode is not ported.
-- No movetype on GameObjects.
-- The terrain, water, ground cover, 2D players, Sharp3D route and mutations
-  have loopback tests here; the layouts were run live from seihai-gserver-v2.
+- Server flags (`server.`) are not sent to 3D clients (nor by seihai-gserver-v2).
+- The server never sends a GameObject movetype (nor does seihai-gserver-v2);
+  a client's own is read and its movement data skipped.
+- The Sharp3D route and the mutations have loopback tests only.
 - 3.153 has been seen to crash on the first frame in the C++ fork; the cause
   is unknown.
 - The Linux 4.20r6 (`G3D22126`) links as protocol 24, so the protocol 21
