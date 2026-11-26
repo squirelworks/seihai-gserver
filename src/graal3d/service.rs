@@ -377,6 +377,9 @@ pub trait WorldInput: Send {
     }
     /// Sends these files to the player over TCP, unasked.
     fn push_files(&self, _player: u16, _names: &[String]) {}
+    /// A 3D client linked (or went) for the player: a 2D player in its
+    /// level leads the level instead.
+    fn three_d(&self, _player: u16, _linked: bool) {}
 }
 
 /// The server's world task, for the running service.
@@ -411,6 +414,9 @@ impl WorldInput for ServerWorld {
             .filter_map(|n| super::client_file(&self.0.files, n, self.0.graal3d.as_deref()))
             .collect();
         self.0.world.push_files(player, files);
+    }
+    fn three_d(&self, player: u16, linked: bool) {
+        self.0.world.three_d(player, linked);
     }
 }
 
@@ -886,6 +892,7 @@ impl Service {
             },
         );
         self.by_player.insert(id, from);
+        self.world.three_d(id, true);
         let level = {
             let mut hub = self.hub.lock();
             hub.linked.insert(id);
@@ -2099,6 +2106,7 @@ impl Service {
         if self.by_player.get(&s.player) == Some(&at) {
             self.by_player.remove(&s.player);
             self.hub.lock().linked.remove(&s.player);
+            self.world.three_d(s.player, false);
             self.avatars.remove(&s.player);
             self.tge_seen.remove(&s.player);
             self.moved_until.remove(&s.player);

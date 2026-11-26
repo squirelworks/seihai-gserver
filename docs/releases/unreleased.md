@@ -38,6 +38,7 @@ Notes for the next seihai-gserver release.
 
 ## Fixed
 
+- **3D: a 2D player leads a level a 3D player is in.** A 5.12 in 3D mode runs no GS1 level NPCs or baddies, so when it led a level, a 2D player's level NPC timeouts there never ran (lab, 2026-11-26). The lead now goes to a 2D player in the level when the leader links 3D, or when a 2D player comes into a level a 3D player leads.
 - **3D: ground cover grows on a first visit.** A real 5.12 grew a `replicator`'s cover only once its shapes and terrain were cached, so a first visit showed none (lab, 2026-11-26, T3D-048). Each replicator's whole update now goes again at the end of the mission start and 5, 15 and 30 seconds later (and after a world switch); the client regrows cover on each update.
 - **3D: grass replicators take textures.** `DynamicGrass` and `DynamicGrassReplicator` build their own ground pieces from a texture in their list and draw nothing for a shape (Graal_analysis `torque/replicators-512.md`; lab, 2026-11-26). Their lines now take up to 100 objects a cell, the start-up check looks their names up as textures, and a shape there is reported.
 - **3D: a world switch no longer leaves the old world's objects drawn.** An object of the new world set under the key of one being deleted went out as an update of the old ghost, so a real 5.12 kept drawing the old shape (lab, 2026-11-26, T3D-135). The old ghost is now deleted on the client and the new one created once the delete is in. A weapon both worlds have is no longer sent again, which restarted its script.
