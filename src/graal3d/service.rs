@@ -1437,6 +1437,14 @@ impl Service {
             .map(|p| p.flags.clone())
             .unwrap_or_default();
         let mut lines = String::new();
+        // Server flags go once more as `set` texts, each on its own: the
+        // client's `events` `s` lines did not reach a 5.12 script's
+        // server.x (lab, 2026-11-26), and `set` is the path a change takes.
+        let server_flags: Vec<String> = flags
+            .iter()
+            .filter(|f| f.starts_with("server.") || f.starts_with("serverr."))
+            .cloned()
+            .collect();
         for f in flags {
             lines.push_str("s ");
             lines.push_str(&f);
@@ -1457,6 +1465,9 @@ impl Service {
         let (account, protocol) = (s.account.clone(), s.conn.profile().protocol);
         for l in lines.lines() {
             self.trace(&account, protocol, &format!("text out: events {l}"));
+        }
+        for f in server_flags {
+            self.flag_to_client(player, true, f.as_bytes());
         }
     }
 
@@ -2343,6 +2354,13 @@ movetype interpolate
         assert!(
             texts.iter().any(|t| t.contains("s server.door=open\n")),
             "{texts:?}"
+        );
+        assert!(
+            clients[0].1.got.iter().any(|e| matches!(
+                e,
+                crate::graal3d::events::Event::BigDataStart { kind, .. } if kind == b"set"
+            )),
+            "server flags go as set texts too"
         );
 
         // A g3dpos trigger moves player one's object on both screens.

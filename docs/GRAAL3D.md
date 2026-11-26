@@ -285,9 +285,12 @@ same as `camera 0 -5 2 1 0 0 0.38`.
 - Server flags are sent under the names they have in
   `config/serverflags.txt`, so a script reads `server.x` only from a line
   `server.x=…`; the server warns at start about a line without the prefix.
-- `server.` flags and `movetype` have loopback tests only; whether 5.12
-  scripts see `server.` flags set by the text channel, and how a movetype
-  looks on other players' screens, wait for a lab run.
+- A real 5.12 got `server.` flags as `events` `s` lines and its script
+  still read `server.x` empty (lab, 2026-11-26). They now also go as one
+  `set` text each, which may or may not reach the script; how a 5.12 in 3D
+  mode is meant to get server flags is not known yet.
+- A movetype on other players' screens was seen only from a 2D client
+  (the sprite follows); `rigid` and `list` have not been run.
 - Movement data never carries a velocity, and a `list` never carries
   entries: what the client does with them is not known.
 - The Sharp3D route and the mutations have loopback tests only.
