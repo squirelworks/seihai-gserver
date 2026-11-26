@@ -96,7 +96,9 @@ fn rcs_list_players_and_each_other_and_chat() {
         |e| matches!(e, Event::RcChat(t) if t == "New RC: deputy"),
     );
     let listed: Vec<_> = deputy.players.players.values().cloned().collect();
-    assert_eq!(listed.len(), 2, "{listed:?}");
+    // The player, the first RC and the NPC-Server (`nc discover`).
+    assert_eq!(listed.len(), 3, "{listed:?}");
+    assert!(listed.iter().any(|e| e.nickname == "NPC-Server (Server)"));
     let b = listed.iter().find(|e| e.account == "boss").unwrap();
     assert!(b.is_rc());
     assert_eq!(b.nickname, "Boss");

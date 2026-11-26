@@ -81,6 +81,12 @@ pub fn load_world(world: &Path) -> std::io::Result<(server::Server, Vec<String>)
             "npcserver = external needs npcserver_token of 16 to 256 characters; no NPC-server can log in".into(),
         );
     }
+    if !cfg.listserver_hq_password.is_empty() && !cfg.listserver_secure {
+        warnings.push(
+            "listserver_hq_password goes to the listserver in the clear: listserver_secure is off"
+                .into(),
+        );
+    }
     Ok((server::Server::new(cfg, allow), warnings))
 }
 

@@ -1689,24 +1689,21 @@ impl WorldTask {
         }
     }
 
-    /// RC `id` is in: it gets the list (every player and every other RC),
-    /// the other RCs get its entry, and every RC hears of it on RC chat.
+    /// RC `id` is in: it gets the list (the NPC-Server at
+    /// [`NPC_SERVER_ID`], every player and every other RC), the other RCs
+    /// get its entry, and every RC hears of it on RC chat.
     fn rc_in(&self, id: u16) {
         let Some(me) = self.rcs.get(&id) else {
             return;
         };
-        let mut list: Vec<u8> = self
-            .players
-            .keys()
-            .filter_map(|&p| self.player_entry(p))
-            .collect::<Vec<_>>()
-            .concat();
+        let mut list = crate::rc::npcserver_entry(NPC_SERVER_ID);
+        for p in self.players.keys().filter_map(|&p| self.player_entry(p)) {
+            list.extend(p);
+        }
         for &other in self.rcs.keys().filter(|&&r| r != id) {
             list.extend(self.rc_entry(other).unwrap_or_default());
         }
-        if !list.is_empty() {
-            let _ = me.outbox.send(vec![list]);
-        }
+        let _ = me.outbox.send(vec![list]);
         self.to_rcs(Some(id), self.rc_entry(id));
         self.rc_to_players(id);
         let line = crate::wire::latin1(&format!("New RC: {}", me.account));

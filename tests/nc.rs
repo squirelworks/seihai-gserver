@@ -18,7 +18,7 @@ use seihai_rc::nc::{
     npc_add_message, npc_delete_message, npc_get_message, npc_reset_message,
     npc_script_get_message, npc_warp_message, NcEvent, NcSession, NewNpc,
 };
-use seihai_rc::rc::{npc_server_query, Event, LoginParams, RcKind, Session};
+use seihai_rc::rc::{discover_npc_servers, npc_server_query, Event, LoginParams, RcKind, Session};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -27,8 +27,8 @@ const PASSWORD: &str = "labpw";
 const TOKEN: &str = "lab-token-0123456789";
 const T: Duration = Duration::from_secs(10);
 
-fn world() -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("seihai-gserver-nc-{}", std::process::id()));
+fn world(tag: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("seihai-gserver-nc-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     for d in ["config", "levels", "npcs"] {
         std::fs::create_dir_all(dir.join(d)).unwrap();
@@ -81,23 +81,9 @@ fn start(world: &Path) -> (String, String, Arc<Server>) {
     (g.to_string(), l.to_string(), server)
 }
 
-/// Events until `want` matches one, which is returned.
-fn wait_for(s: &mut NcSession, what: &str, want: impl Fn(&NcEvent) -> bool) -> NcEvent {
-    let deadline = Instant::now() + T;
-    loop {
-        match s.next_event(deadline).unwrap() {
-            Some(e) if want(&e) => return e,
-            Some(_) => {}
-            None => panic!("no {what}; lists {:?}", s.lists.npcs),
-        }
-    }
-}
-
-#[test]
-fn an_nc_lists_reads_sets_and_deletes_npcs() {
-    let w = world();
-    let (addr, link, _server) = start(&w);
-    let npc_world = w.clone();
+/// Start the real NPC-server session against `link`.
+fn npcserver(world: &Path, link: String) {
+    let npc_world = world.to_path_buf();
     std::thread::spawn(move || {
         let mut scripts = Scripts::with_world(Era::V217, &npc_world);
         let timing = Timing {
@@ -112,6 +98,25 @@ fn an_nc_lists_reads_sets_and_deletes_npcs() {
             &mut |_| {},
         );
     });
+}
+
+/// Events until `want` matches one, which is returned.
+fn wait_for(s: &mut NcSession, what: &str, want: impl Fn(&NcEvent) -> bool) -> NcEvent {
+    let deadline = Instant::now() + T;
+    loop {
+        match s.next_event(deadline).unwrap() {
+            Some(e) if want(&e) => return e,
+            Some(_) => {}
+            None => panic!("no {what}; lists {:?}", s.lists.npcs),
+        }
+    }
+}
+
+#[test]
+fn an_nc_lists_reads_sets_and_deletes_npcs() {
+    let w = world("ops");
+    let (addr, link, _server) = start(&w);
+    npcserver(&w, link);
 
     // Not staff: refused.
     assert!(NcSession::login(&addr, "pleb", PASSWORD, T).is_err());
@@ -265,5 +270,53 @@ fn an_nc_lists_reads_sets_and_deletes_npcs() {
     assert_eq!(found.player_id, 5);
     assert_eq!(found.raw, addr.replace(':', ","));
     rc.close();
+    let _ = std::fs::remove_dir_all(&w);
+}
+
+/// `seihai-rc nc discover`, then the NC login it leads to: the RC's list
+/// has the NPC-Server, a `(Server)` player, so seihai-rc asks its
+/// `location` (94) and reads this server's own address from the 79, and
+/// an NC logged in there gets the NPC-server's NPCs. Before the entry was
+/// listed, discover found nothing (seihai-servertools #121).
+#[test]
+fn nc_discover_finds_the_nc_on_the_game_port() {
+    let w = world("discover");
+    let (addr, link, _server) = start(&w);
+    npcserver(&w, link);
+
+    let params = LoginParams {
+        kind: RcKind::Gen5,
+        token: RcKind::Gen5.default_token().into(),
+        account: "boss".into(),
+        password: PASSWORD.into(),
+        key: 77,
+        nickname: None,
+        identity: None,
+    };
+    let found = discover_npc_servers(&addr, &params, T, Duration::from_millis(300)).unwrap();
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].nickname.contains("(Server)"), "{found:?}");
+    let at = found[0].addr.endpoint.clone().expect("a host,port answer");
+    assert_eq!(format!("{}:{}", at.host, at.port), addr);
+
+    // The classic RC finds it the same way.
+    let classic = LoginParams {
+        kind: RcKind::Classic,
+        token: RcKind::Classic.default_token().into(),
+        ..params
+    };
+    let found = discover_npc_servers(&addr, &classic, T, Duration::from_millis(300)).unwrap();
+    assert_eq!(found.len(), 1, "{found:?}");
+
+    let mut nc =
+        NcSession::login(&format!("{}:{}", at.host, at.port), "boss", PASSWORD, T).unwrap();
+    let end = Instant::now() + T;
+    while nc.lists.npcs.len() < 2 {
+        assert!(Instant::now() < end, "{:?}", nc.lists.npcs);
+        let _ = nc
+            .next_event(Instant::now() + Duration::from_millis(200))
+            .unwrap();
+    }
+    nc.close();
     let _ = std::fs::remove_dir_all(&w);
 }
