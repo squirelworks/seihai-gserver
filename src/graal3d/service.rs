@@ -37,6 +37,7 @@ use seihai_core::protocol::ClientVersion;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::net::UdpSocket;
@@ -283,25 +284,43 @@ impl Graal3d {
     }
 }
 
+/// The server's running count of GS2 compiles. The official server names a
+/// script's lambdas `function_<count>_<n>`, with one count per compile, so
+/// two scripts never share a lambda name (Graal_analysis
+/// `npc-library/gs2-official-emit-spec-2026-11-26.md`, "Lambda names").
+static GS2_COMPILES: AtomicU32 = AtomicU32::new(1);
+
+/// The number for the next GS2 compile's lambdas.
+fn next_compile_number() -> u32 {
+    GS2_COMPILES.fetch_add(1, Ordering::Relaxed)
+}
+
 /// A `weapon3d` script as the GS2 bytecode the client runs, compiled by
 /// seihai-core's own compiler. The text after a `//#CLIENTSIDE` line, if
 /// there is one; GS2 unless the script starts with `//#GS1`. The bytecode
-/// ends with one `\n`, as weapon bytecode does on TCP.
+/// ends with one `\n`, as weapon bytecode does on TCP. Each GS2 compile
+/// takes the next number from the server's compile count for its lambdas.
 pub fn compile_weapon3d(source: &str) -> Result<Vec<u8>, String> {
-    use seihai_core::scripting::gs2::compile::{compile, Language, Mode};
     let source = match source.find("//#CLIENTSIDE") {
         Some(i) => source[i..].split_once('\n').map_or("", |(_, rest)| rest),
         None => source,
     };
     let text = source.trim();
-    let language = if text.starts_with("//#GS1") {
-        Language::Gs1(crate::npcs::LEVEL_ERA)
-    } else {
-        Language::Gs2
-    };
     // Legacy mode takes the loose forms the live servers let through.
-    let compiled = compile(text, language, Mode::Legacy).map_err(|e| e.to_string())?;
-    let mut code = compiled.script.write();
+    let mut code = if text.starts_with("//#GS1") {
+        use seihai_core::scripting::gs2::compile::{compile, Language, Mode};
+        let language = Language::Gs1(crate::npcs::LEVEL_ERA);
+        let compiled = compile(text, language, Mode::Legacy).map_err(|e| e.to_string())?;
+        compiled.script.write()
+    } else {
+        use seihai_core_3d::scripting::gs2::compile::{compile_with, Language, Mode, Options};
+        let options = Options {
+            mode: Mode::Legacy,
+            lambda_id: Some(next_compile_number()),
+        };
+        let compiled = compile_with(text, Language::Gs2, options).map_err(|e| e.to_string())?;
+        compiled.script.write()
+    };
     code.push(b'\n');
     Ok(code)
 }
@@ -3117,6 +3136,42 @@ movetype interpolate
         assert_eq!(code.last(), Some(&b'\n'));
         assert!(!code.starts_with(b"function"));
         assert!(compile_weapon3d("function {{{").is_err());
+    }
+
+    /// Every `function_<id>_<n>` name in `code`.
+    fn lambda_names(code: &[u8]) -> Vec<String> {
+        let text = String::from_utf8_lossy(code);
+        let mut out = Vec::new();
+        for (at, _) in text.match_indices("function_") {
+            let name: String = text[at..]
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            if !out.contains(&name) {
+                out.push(name);
+            }
+        }
+        out.sort();
+        out
+    }
+
+    #[test]
+    fn each_compile_numbers_its_lambdas_from_the_compile_count() {
+        let src = "function onCreated() {\n  this.f = function() { return 1; };\n  this.g = function() { return 2; };\n}\n";
+        let first = lambda_names(&compile_weapon3d(src).unwrap());
+        let second = lambda_names(&compile_weapon3d(src).unwrap());
+        assert_eq!(first.len(), 2, "{first:?}");
+        assert_eq!(second.len(), 2, "{second:?}");
+        let id = |name: &str| -> u32 { name.split('_').nth(1).unwrap().parse().unwrap() };
+        // One number for every lambda of a compile, counted from 1.
+        assert_eq!(id(&first[0]), id(&first[1]));
+        assert!(
+            first[0].ends_with("_1") && first[1].ends_with("_2"),
+            "{first:?}"
+        );
+        // The next compile takes a later number (other tests may compile in
+        // between), so the two scripts never share a name.
+        assert!(id(&second[0]) > id(&first[0]), "{first:?} {second:?}");
     }
 
     #[test]
