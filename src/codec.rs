@@ -106,6 +106,11 @@ pub struct Codec {
     /// Raw-block bytes still to come in the next frame: a file bigger than
     /// one frame goes out in pieces (`files::frames_of`).
     raw_left: usize,
+    /// The login key (for [`Gen5::with_state`]).
+    key: u8,
+    /// Short compressed client frames that only inflated under the other
+    /// gen-5 step rule (see [`Self::decode`]); the cipher follows the client.
+    pub step_rule_switches: u32,
 }
 
 impl Codec {
@@ -146,6 +151,8 @@ impl Codec {
             bad_in_a_row: 0,
             nul_free: version.is_some_and(nul_ends_frame),
             raw_left: 0,
+            key,
+            step_rule_switches: 0,
         }
     }
 
@@ -219,6 +226,7 @@ impl Codec {
 
     /// The body of one frame the client sent (the bytes after its length).
     pub fn decode(&mut self, raw: &[u8]) -> io::Result<Vec<u8>> {
+        let key = self.key;
         match self.in5.as_mut() {
             Some(g) if self.gen4 => bz2_decompress(&g.decode(raw.to_vec(), Gen5Comp::Bz2)),
             Some(g) => {
@@ -231,11 +239,59 @@ impl Codec {
                         return Err(bad(&format!("unknown gen-5 compression byte {other:#04x}")))
                     }
                 };
+                let before = g.clone();
                 let body = g.decode(rest.to_vec(), comp);
-                match comp {
-                    Gen5Comp::None => Ok(body),
-                    Gen5Comp::Zlib => zlib_decompress(&body),
-                    Gen5Comp::Bz2 => bz2_decompress(&body),
+                let inflate = |body: &[u8]| match comp {
+                    Gen5Comp::None => Ok(body.to_vec()),
+                    Gen5Comp::Zlib => zlib_decompress(body),
+                    Gen5Comp::Bz2 => bz2_decompress(body),
+                };
+                match inflate(&body) {
+                    Ok(b) => Ok(b),
+                    Err(e) => {
+                        // The two step rules differ only on a compressed
+                        // body under 16 bytes whose length is not a
+                        // multiple of 4. If the other rule inflates it, the
+                        // client steps that way: keep its state and go on.
+                        let short = comp != Gen5Comp::None
+                            && rest.len() < 16
+                            && !rest.len().is_multiple_of(4);
+                        if short {
+                            let mut other = if before.is_round_down() {
+                                Gen5::with_state(before.state(), key)
+                            } else {
+                                Gen5::with_state(before.state(), key).round_down()
+                            };
+                            let alt = other.decode(rest.to_vec(), comp);
+                            if let Ok(b) = inflate(&alt) {
+                                *g = other;
+                                self.step_rule_switches += 1;
+                                // One routine ciphers both directions in
+                                // the client, so its receive side steps
+                                // the same way.
+                                if let Some(o) = self.out5.as_mut() {
+                                    let flipped = Gen5::with_state(o.state(), key);
+                                    *o = if o.is_round_down() {
+                                        flipped
+                                    } else {
+                                        flipped.round_down()
+                                    };
+                                }
+                                return Ok(b);
+                            }
+                        }
+                        Err(bad(&format!(
+                            "{e}: client frame type {c:#04x}, {} bytes, cipher {:08x}{}, starts {}",
+                            rest.len(),
+                            before.state(),
+                            if before.is_round_down() {
+                                " (round down)"
+                            } else {
+                                ""
+                            },
+                            hex_head(&body),
+                        )))
+                    }
                 }
             }
             None => zlib_decompress(raw),
@@ -319,6 +375,11 @@ fn push_len(out: &mut Vec<u8>, n: usize) -> io::Result<()> {
     Ok(())
 }
 
+/// The first bytes of a deciphered body, for a decode error.
+fn hex_head(body: &[u8]) -> String {
+    body.iter().take(8).map(|b| format!("{b:02x}")).collect()
+}
+
 fn bad(what: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.to_string())
 }
@@ -377,6 +438,62 @@ mod tests {
         assert_eq!(
             read_frame(&mut frame.as_slice(), &mut client).unwrap(),
             body
+        );
+    }
+
+    /// A short compressed client frame (under 16 bytes, length not a
+    /// multiple of 4) that only inflates under the other step rule is read
+    /// that way, and both ciphers then follow the client. Anything else
+    /// that does not inflate is an error that says what came in.
+    #[test]
+    fn a_short_frame_under_the_other_step_rule_is_followed() {
+        let key = 0x40;
+        // A 46-byte chat that zlib packs to 15 bytes.
+        let body: Vec<u8> = b"\x22\x2c\x4c"
+            .iter()
+            .copied()
+            .chain(std::iter::repeat_n(b'a', 44))
+            .chain(*b"\n")
+            .collect();
+        let packed = zlib_compress(&body).unwrap();
+        assert!(
+            packed.len() < 16 && !packed.len().is_multiple_of(4),
+            "{}",
+            packed.len()
+        );
+        for (server_down, client) in [(true, Gen5::new(key)), (false, Gen5::new(key).round_down())]
+        {
+            let v = if server_down {
+                ClientVersion::V512
+            } else {
+                ClientVersion::V222
+            };
+            assert_eq!(v.profile().protocol.gen5_round_down, server_down);
+            let mut server = Codec::new(EncryptionGen::Gen5, key, Some(v));
+            let mut client_out = client.clone();
+            let mut client_in = client;
+            for _ in 0..3 {
+                let mut frame = vec![Gen5Comp::Zlib as u8];
+                frame.extend(client_out.encode(packed.clone(), Gen5Comp::Zlib));
+                assert_eq!(server.decode(&frame).unwrap(), body);
+            }
+            assert_eq!(server.step_rule_switches, 1);
+            // What we send back reads with the client's own rule.
+            let out = server.encode(&body).unwrap();
+            assert_eq!(
+                read_frame(&mut out.as_slice(), &mut client_in).unwrap(),
+                body
+            );
+        }
+        // A frame that inflates under neither rule says what came in.
+        let mut server = Codec::new(EncryptionGen::Gen5, key, Some(ClientVersion::V512));
+        let e = server
+            .decode(&[0x04, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13])
+            .unwrap_err();
+        let e = e.to_string();
+        assert!(
+            e.contains("client frame type 0x04, 13 bytes, cipher 04a80b38 (round down)"),
+            "{e}"
         );
     }
 
