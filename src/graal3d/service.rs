@@ -73,6 +73,19 @@ pub fn has_graal3d(v: ClientVersion) -> bool {
     )
 }
 
+/// Whether a TCP login from this build is offered to the UDP side as one a
+/// 3D link may join: every build [`has_graal3d`] names, and the two 6.03r7
+/// rows. Stock 6.03r7 is a 2D client and opens no UDP link (Graal_analysis
+/// `torque/3d-v6-quattro-vs-512-2026-11-26.md`), so for it this changes
+/// nothing; graal-client-repro's Frankenstein 6.037 logs in with the stock
+/// 6.03r7 token and opens the 5.12 protocol-24 link beside it, and without
+/// this its connect requests were never matched to its login (lab
+/// 2026-11-26). Only the link is affected: the login burst and file
+/// answers still follow [`has_graal3d`].
+pub fn may_link_graal3d(v: ClientVersion) -> bool {
+    has_graal3d(v) || matches!(v, ClientVersion::V603R7 | ClientVersion::V603R7Linux)
+}
+
 /// A TCP login the 3D side may link to.
 #[derive(Debug, Clone)]
 pub struct TcpPlayer {
@@ -3130,5 +3143,10 @@ movetype interpolate
         assert!(has_graal3d(ClientVersion::V512));
         assert!(!has_graal3d(ClientVersion::V304));
         assert!(!has_graal3d(ClientVersion::V6015));
+        assert!(!has_graal3d(ClientVersion::V603R7));
+        assert!(may_link_graal3d(ClientVersion::V603R7));
+        assert!(may_link_graal3d(ClientVersion::V603R7Linux));
+        assert!(may_link_graal3d(ClientVersion::V512));
+        assert!(!may_link_graal3d(ClientVersion::V6015));
     }
 }
