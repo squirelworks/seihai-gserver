@@ -87,6 +87,18 @@ pub fn may_link_graal3d(v: ClientVersion) -> bool {
     has_graal3d(v) || matches!(v, ClientVersion::V603R7 | ClientVersion::V603R7Linux)
 }
 
+/// Whether the build's GS2 loader folds the variable cache's `makeprop`,
+/// `setreg` pair (opcodes 47, 45) into one opcode, so a cached command name
+/// still calls: the 6.x loaders do, 3.153 to 5.x do not. `label` is the
+/// login's build label (`5.12`, `6.03r7`, `6.03r7 Linux`).
+pub fn loader_folds_var_cache(label: &str) -> bool {
+    label
+        .split(['.', ' '])
+        .next()
+        .and_then(|major| major.parse::<u32>().ok())
+        .is_some_and(|major| major >= 6)
+}
+
 /// A TCP login the 3D side may link to.
 #[derive(Debug, Clone)]
 pub struct TcpPlayer {
@@ -300,7 +312,14 @@ fn next_compile_number() -> u32 {
 /// there is one; GS2 unless the script starts with `//#GS1`. The bytecode
 /// ends with one `\n`, as weapon bytecode does on TCP. Each GS2 compile
 /// takes the next number from the server's compile count for its lambdas.
-pub fn compile_weapon3d(source: &str) -> Result<Vec<u8>, String> {
+///
+/// `var_cache`: whether the GS2 compile may keep often-used names in frame
+/// slots (opcodes 45 to 47), as official bodies do. Only a 6.x loader folds
+/// the cache's `makeprop`, `setreg` pair into the opcode that keeps a cached
+/// name a name; a 4.x or 5.x client would find nothing behind a cached
+/// command name (Graal_analysis `client-internals/gs2-vm-quirks-by-version.md`),
+/// so [`loader_folds_var_cache`] decides it per client.
+pub fn compile_weapon3d(source: &str, var_cache: bool) -> Result<Vec<u8>, String> {
     let source = match source.find("//#CLIENTSIDE") {
         Some(i) => source[i..].split_once('\n').map_or("", |(_, rest)| rest),
         None => source,
@@ -317,6 +336,7 @@ pub fn compile_weapon3d(source: &str) -> Result<Vec<u8>, String> {
         let options = Options {
             mode: Mode::Legacy,
             lambda_id: Some(next_compile_number()),
+            no_var_cache: !var_cache,
         };
         let compiled = compile_with(text, Language::Gs2, options).map_err(|e| e.to_string())?;
         compiled.script.write()
@@ -445,6 +465,9 @@ struct Session {
     conn: Connection,
     /// What the client's build takes.
     caps: Option<Caps>,
+    /// Its GS2 loader runs the compiler's variable cache
+    /// ([`loader_folds_var_cache`]).
+    var_cache: bool,
     /// The 2D players of its level, as last put on its screen.
     shown_2d: BTreeMap<u16, GameObject>,
     /// Replicator resends still due: when the first [`update`] after the
@@ -906,6 +929,7 @@ impl Service {
                 account: player.account.clone(),
                 conn,
                 caps,
+                var_cache: loader_folds_var_cache(&player.label),
                 shown_2d: BTreeMap::new(),
                 regrow: None,
             },
@@ -1720,8 +1744,10 @@ impl Service {
             // The client's script reader takes LF lines; a CR stays in the
             // token before it.
             let source: Vec<u8> = script.into_iter().filter(|b| *b != b'\r').collect();
-            // A 5.x client in 3D mode runs a weaponscript as GS2 bytecode.
-            let script = match compile_weapon3d(&String::from_utf8_lossy(&source)) {
+            // A 5.x client in 3D mode runs a weaponscript as GS2 bytecode,
+            // compiled for its loader.
+            let var_cache = self.sessions.get(&at).is_some_and(|s| s.var_cache);
+            let script = match compile_weapon3d(&String::from_utf8_lossy(&source), var_cache) {
                 Ok(code) => code,
                 Err(e) => {
                     log(&format!(
@@ -3132,10 +3158,35 @@ movetype interpolate
     fn a_weapon3d_script_is_compiled_to_bytecode() {
         let src = "//#CLIENTSIDE\r\nfunction onCreated() {\n  this.x = 1;\n}\n";
         let src: String = src.chars().filter(|c| *c != '\r').collect();
-        let code = compile_weapon3d(&src).unwrap();
+        let code = compile_weapon3d(&src, false).unwrap();
         assert_eq!(code.last(), Some(&b'\n'));
         assert!(!code.starts_with(b"function"));
-        assert!(compile_weapon3d("function {{{").is_err());
+        assert!(compile_weapon3d("function {{{", false).is_err());
+    }
+
+    /// Whether GS2 bytecode (as `compile_weapon3d` writes it) uses the
+    /// variable cache: any opcode 45, 46 or 47.
+    fn uses_var_cache(code: &[u8]) -> bool {
+        let code = code.strip_suffix(b"\n").unwrap_or(code);
+        let script = seihai_core_3d::scripting::gs2::Script::parse(code).unwrap();
+        script
+            .code
+            .iter()
+            .any(|i| (45..=47).contains(&i.op.value()))
+    }
+
+    #[test]
+    fn pre_6_clients_get_weapon3d_without_the_variable_cache() {
+        // `echo` is called in a loop, so the official shape caches it.
+        let src = "function onCreated() {\n  for (temp.i = 0; temp.i < 3; temp.i++)\n    echo(temp.i);\n}\n";
+        assert!(uses_var_cache(&compile_weapon3d(src, true).unwrap()));
+        assert!(!uses_var_cache(&compile_weapon3d(src, false).unwrap()));
+        for label in ["3.153", "4.04r2", "4.20r8", "5.00r7", "5.12", "5.31r4", ""] {
+            assert!(!loader_folds_var_cache(label), "{label}");
+        }
+        for label in ["6.00r2", "6.03r7", "6.03r7 Linux"] {
+            assert!(loader_folds_var_cache(label), "{label}");
+        }
     }
 
     /// Every `function_<id>_<n>` name in `code`.
@@ -3158,8 +3209,8 @@ movetype interpolate
     #[test]
     fn each_compile_numbers_its_lambdas_from_the_compile_count() {
         let src = "function onCreated() {\n  this.f = function() { return 1; };\n  this.g = function() { return 2; };\n}\n";
-        let first = lambda_names(&compile_weapon3d(src).unwrap());
-        let second = lambda_names(&compile_weapon3d(src).unwrap());
+        let first = lambda_names(&compile_weapon3d(src, true).unwrap());
+        let second = lambda_names(&compile_weapon3d(src, true).unwrap());
         assert_eq!(first.len(), 2, "{first:?}");
         assert_eq!(second.len(), 2, "{second:?}");
         let id = |name: &str| -> u32 { name.split('_').nth(1).unwrap().parse().unwrap() };
