@@ -14,11 +14,11 @@ seihai-core = { git = "https://github.com/squirelworks/seihai-core", tag = "v0.7
 # Graal_analysis version-profiles/three-d.toml) is on seihai-core main but in
 # no tag yet, and neither is the GS2 compiler's `compile_with` (a lambda
 # number from the server's compile count, seihai-core #166; `no_var_cache`
-# for clients before 6.x, seihai-core #167). Only
+# for clients before 6.x, seihai-core #168). Only
 # `graal3d::caps` and the `weapon3d` compile use it; everything else stays on
 # the tag above, which npcserver and rc share. Fold into the tag at the next
 # release.
-seihai-core-3d = { package = "seihai-core", git = "https://github.com/squirelworks/seihai-core", rev = "20997acc6d715b707ffb85e82dd86abedcff2b51", default-features = false }
+seihai-core-3d = { package = "seihai-core", git = "https://github.com/squirelworks/seihai-core", rev = "4dc30434e7e0a2ec70cf23c580e8781b9789e94b", default-features = false }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time", "macros", "sync", "signal", "process"] }
 # The NPC-server link's wire format (PROTOCOL.md), shared with the NPC-server
 # so both sides use one codec.

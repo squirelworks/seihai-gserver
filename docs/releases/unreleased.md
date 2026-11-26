@@ -74,4 +74,4 @@ Notes for the next seihai-gserver release.
 
 - Adopt NPC-server script GANI attribute persistence and reload replay; an offline integration test exercises the existing gserver mirror through production script updates and fresh NPC database reload. Native NC attribute editing remains open (#49).
 
-- `weapon3d` scripts are compiled without the GS2 variable cache for clients before 6.x (3.153 to 5.x). Only a 6.x loader keeps a cached command name callable, so on a 4.x or 5.x client a command used five times or in a loop did nothing. Frankenstein 6.037 and other 6.x logins keep the official shape. Needs seihai-core #167 (`Options::no_var_cache`); `seihai-core-3d` is pinned to that branch head until it merges.
+- `weapon3d` scripts are compiled without the GS2 variable cache for clients before 6.x (3.153 to 5.x). Only a 6.x loader keeps a cached command name callable, so on a 4.x or 5.x client a command used five times or in a loop did nothing. Frankenstein 6.037 and other 6.x logins keep the official shape. Uses seihai-core #168 (`Options::no_var_cache`).
