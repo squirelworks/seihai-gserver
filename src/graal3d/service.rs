@@ -510,6 +510,17 @@ fn player_2d_key(p: u16) -> Key {
     PLAYER_2D + Key::from(p)
 }
 
+/// The farthest a client's own object may report from the origin on any
+/// axis. A whole 5.x terrain is 256 squares of up to 64 units.
+const MAX_COORD: f32 = 100_000.0;
+/// The largest scale a client may give its own object.
+const MAX_SCALE: f32 = 1_000.0;
+
+/// Finite and within [`MAX_COORD`] on every axis.
+fn in_world(p: [f32; 3]) -> bool {
+    p.iter().all(|v| v.is_finite() && v.abs() <= MAX_COORD)
+}
+
 /// Where the `n`th player to join stands (0: the spawn point). Later ones
 /// take the first point no linked player stands on, of 8 points 2 units
 /// out, then 16 at 4 units, and so on, so two players never share a point.
@@ -617,6 +628,8 @@ pub struct Service {
     world_of: HashMap<u16, String>,
     /// Objects each player's client script hid (`g3dhide`), by name.
     hidden: HashMap<u16, HashSet<Vec<u8>>>,
+    /// Players whose client reported a position out of range (logged once).
+    bad_report: HashSet<u16>,
     world_dir: PathBuf,
     world: Box<dyn WorldInput>,
     secret: [u8; 32],
@@ -660,6 +673,7 @@ impl Service {
             scenes: BTreeMap::from([(String::new(), Arc::new(scene))]),
             world_of: HashMap::new(),
             hidden: HashMap::new(),
+            bad_report: HashSet::new(),
             world_dir,
             world,
             secret,
@@ -1866,8 +1880,41 @@ impl Service {
         }
     }
 
-    fn client_state(&mut self, player: u16, st: ClientState) {
+    fn client_state(&mut self, player: u16, mut st: ClientState) {
         let now = self.now();
+        // A client's own report is taken only in range: one NaN or huge
+        // coordinate sent on to the others lost the player's object on a
+        // real 5.12 for the rest of the session (lab fuzz, T3D-146). The
+        // last good position stays.
+        let t = &st.object.transform;
+        let tf_ok = st.changed & bits::TRANSFORM == 0
+            || (in_world(t.position)
+                && t.axis.iter().all(|v| v.is_finite())
+                && t.angle.is_finite());
+        let scale_ok = st.changed & bits::SCALE == 0
+            || st
+                .object
+                .scale
+                .iter()
+                .all(|v| v.is_finite() && v.abs() <= MAX_SCALE);
+        if !in_world(st.position) || !tf_ok || !scale_ok {
+            if self.bad_report.insert(player) {
+                log(&format!(
+                    "player {player}: position out of range set aside ({:?})",
+                    st.position
+                ));
+            }
+            if !in_world(st.position) || !tf_ok {
+                st.changed &= !bits::TRANSFORM;
+                match self.avatars.get(&player) {
+                    Some(a) => st.position = a.transform.position,
+                    None => return,
+                }
+            }
+            if !scale_ok {
+                st.changed &= !bits::SCALE;
+            }
+        }
         let Some(a) = self.avatars.get_mut(&player) else {
             return;
         };
@@ -2310,6 +2357,7 @@ impl Service {
             self.tcp_position.remove(&s.player);
             self.world_of.remove(&s.player);
             self.hidden.remove(&s.player);
+            self.bad_report.remove(&s.player);
             let mut deleted = 0;
             for other in self.sessions.values_mut() {
                 if other.conn.ghost_index(avatar_key(s.player)).is_some() {
@@ -2953,6 +3001,42 @@ spawn 3 -4 1
         let calls = calls.lock().unwrap().clone();
         let pos: Vec<&String> = calls.iter().filter(|c| c.starts_with("position")).collect();
         assert_eq!(pos, ["position 1 3 4", "position 1 5 6.5"]);
+    }
+
+    #[test]
+    fn a_client_report_out_of_range_is_set_aside() {
+        let (mut s, hub, _) = service(
+            "playershape labcube.3ds
+spawn 3 -4 1
+",
+        );
+        hub.tcp_joined(1, tcp("one"));
+        let a: SocketAddr = "127.0.0.1:40000".parse().unwrap();
+        handshake(&mut s, a, 24, b"one").unwrap();
+        let start = s.avatars[&1].transform;
+        let report = |p: [f32; 3], scale: [f32; 3]| {
+            let mut object = GameObject::default();
+            object.transform.position = p;
+            object.scale = scale;
+            ClientState {
+                position: p,
+                changed: bits::TRANSFORM | bits::SCALE,
+                object,
+            }
+        };
+        for bad in [
+            [f32::NAN, 0.0, 1.0],
+            [0.0, f32::INFINITY, 1.0],
+            [1e30, 0.0, 1.0],
+            [0.0, 0.0, -3e38],
+        ] {
+            s.client_state(1, report(bad, [1.0; 3]));
+            assert_eq!(s.avatars[&1].transform, start, "{bad:?}");
+        }
+        // A good position with a bad scale moves; the scale stays.
+        s.client_state(1, report([4.0, -5.0, 1.0], [f32::NAN, 1.0, 1.0]));
+        assert_eq!(s.avatars[&1].transform.position, [4.0, -5.0, 1.0]);
+        assert!(s.avatars[&1].scale.iter().all(|v| v.is_finite()));
     }
 
     #[test]
