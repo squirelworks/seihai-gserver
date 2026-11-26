@@ -41,6 +41,7 @@ Notes for the next seihai-gserver release.
 
 ## Fixed
 
+- **3D: grass replicators grow.** A real 5.12 builds no `DynamicGrass` or `DynamicGrassReplicator` quads at a radius under 8 cells: every grass line at radius 4 drew nothing, and the same line at 8 drew a patch (lab, 2026-11-26, Wine on Mesa). Grass lines now go out with a radius of at least 8, and the start-up check notes a smaller one.
 - **3D: grass replicators are big enough to see.** `DynamicGrass` and `DynamicGrassReplicator` went out at scale 1, about 0.6-unit quads, and a real 5.12 on OpenGL drew none (lab, 2026-11-26); a lab line at scale 3 drew. Grass lines now default to scale 3, and any `replicator` line takes `scale=<n>` or `scale=<min>,<max>`.
 - **3D: `triggerserver("gui", ...)` from a `weapon3d` reaches the weapon's serverside.** A real 5.12 sends it over the 3D link as a `t gui,<weapon>,<params>` line, and the server ignored it (lab capture, 2026-11-26). It now goes to the world as a serverside trigger, the same as `t weapon,...`.
 - **Listed by a listserver with a `gservers` allow-list.** The new `listserver_hq_password` setting is sent as `SERVERHQPASS` (23) before `NEWSERVER`, inside the encrypted link; such a listserver ignored `NEWSERVER` without it and never listed the server. Off when empty; a warning says when the link is plain. Loopback test against seihai-listserver with an allow-list row and HQ password.

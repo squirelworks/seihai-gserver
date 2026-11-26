@@ -355,6 +355,14 @@ pub fn check_scene_files(
             ),
             // Grass takes textures; they are checked below.
             Ghost::Replicator(r) if r.grass() => {
+                if r.radius < super::ground::GRASS_MIN_RADIUS {
+                    notes.push(format!(
+                        "replicator {}: radius {} goes out as {}; a 5.12 grows no grass below that",
+                        r.class,
+                        r.radius,
+                        r.sent_radius()
+                    ));
+                }
                 for t in String::from_utf8_lossy(&r.shapes).split(',') {
                     let lower = t.to_ascii_lowercase();
                     if lower.ends_with(".3ds") || lower.ends_with(".dts") {
@@ -679,9 +687,10 @@ mod tests {
         assert!(errors.is_empty(), "{errors:?}");
         let none = |_: &str| -> Option<(String, Vec<u8>)> { None };
         let notes = check_scene(&mut scene, &none, None, ShapeCheck::Skip);
-        assert_eq!(notes.len(), 2, "{notes:?}");
-        assert!(notes[0].contains("grass.3ds is a shape"), "{notes:?}");
-        assert!(notes[1].contains("texture blades.png"), "{notes:?}");
+        assert_eq!(notes.len(), 3, "{notes:?}");
+        assert!(notes[0].contains("radius 4 goes out as 8"), "{notes:?}");
+        assert!(notes[1].contains("grass.3ds is a shape"), "{notes:?}");
+        assert!(notes[2].contains("texture blades.png"), "{notes:?}");
         assert_eq!(scene.objects.len(), 1);
     }
 

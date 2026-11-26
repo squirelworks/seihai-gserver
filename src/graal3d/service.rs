@@ -1853,6 +1853,9 @@ impl Service {
                         let mut raw = vec![0x20u8; 5];
                         raw.extend_from_slice(b"serverside,");
                         raw.extend_from_slice(rest);
+                        // Logged as the ignored ones were: lab probes read
+                        // their results from these lines.
+                        log(&format!("player {player}: trigger sent ({text})"));
                         self.world.trigger_action(player, &raw);
                     } else {
                         log(&format!("player {player}: trigger ignored ({text})"));
