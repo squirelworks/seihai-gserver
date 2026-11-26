@@ -382,7 +382,7 @@ spawn 0 0 1
     #[test]
     fn the_example_editor_weapon_compiles() {
         let src = include_str!("../../docs/examples/g3deditor.gs2");
-        let code = crate::graal3d::service::compile_weapon3d(src).expect("compiles");
+        let code = crate::graal3d::service::compile_weapon3d(src, false).expect("compiles");
         assert!(!code.is_empty());
         for action in ["\"list\"", "\"move\"", "\"add\"", "\"remove\""] {
             assert!(src.contains(action), "{action}");
