@@ -121,6 +121,29 @@ pub struct Config {
     pub graal3d: bool,
     /// Its UDP port; 0 (the default) is `port` + 1, the port the clients use.
     pub graal3d_port: u16,
+    /// What a 3D world's bad `.3ds` or `.dts` does at start-up: `skip` (the
+    /// default) leaves its object out, `warn` sends it anyway, `off` checks
+    /// nothing (`graal3d::assets`).
+    pub graal3d_shapecheck: crate::graal3d::assets::ShapeCheck,
+    /// Lab: the 5.x TerrainBlock, WaterBlock, ground cover and chunks go
+    /// to every GameObject-era 3D client, whatever its build takes.
+    pub graal3d_terrainall: bool,
+    /// Whether strings in 3D game packets carry Torque's prefix flag
+    /// (default true, as every Graal client reads them); false is a lab
+    /// setting.
+    pub graal3d_stringprefix: bool,
+    /// Right after a 3D link, `heights.info` and its textures go to the
+    /// client over TCP unasked (once per account a run).
+    pub graal3d_pushterrain: bool,
+    /// Lab: a file that gets one tab-separated line for each 3D link,
+    /// event and control object change; empty: off.
+    pub graal3d_trace: String,
+    /// `mission` (the default) or `sharp3d`: protocol 24 clients get the
+    /// world as GhostAlwaysObjectEvents with a Camera as control object.
+    pub graal3d_sharp3d: bool,
+    /// Lab only: `<kind>[:<seed>]`, one seeded mutation per 3D link
+    /// (`graal3d::mutate`); off by default.
+    pub graal3d_mutate: Option<(crate::graal3d::mutate::Mutation, u32)>,
     /// Which NewWorld beta a `G2N15041` login is served as: 1 (the
     /// default) or 2. The two betas send the same login line and the same
     /// props, and nothing they send on a plain level tells them apart (lab,
@@ -192,6 +215,13 @@ impl Config {
             graal3d: false,
             newworld_beta: 1,
             graal3d_port: 0,
+            graal3d_shapecheck: crate::graal3d::assets::ShapeCheck::Skip,
+            graal3d_terrainall: false,
+            graal3d_stringprefix: true,
+            graal3d_pushterrain: false,
+            graal3d_trace: String::new(),
+            graal3d_sharp3d: false,
+            graal3d_mutate: None,
             anticheat: crate::anticheat::Policy::default(),
             gpaks: Vec::new(),
             rules: crate::rules::Rules::default(),
@@ -313,6 +343,32 @@ impl Config {
             "listserver_ip" => self.listserver_ip = v.to_string(),
             "graal3d" => self.graal3d = flag(v)?,
             "graal3d_port" => self.graal3d_port = num(v)?,
+            "graal3d_shapecheck" => {
+                self.graal3d_shapecheck = crate::graal3d::assets::ShapeCheck::parse(v.trim())
+                    .ok_or_else(|| format!("graal3d_shapecheck: `{v}` is not skip, warn or off"))?
+            }
+            "graal3d_terrainall" => self.graal3d_terrainall = flag(v)?,
+            "graal3d_stringprefix" => self.graal3d_stringprefix = flag(v)?,
+            "graal3d_pushterrain" => self.graal3d_pushterrain = flag(v)?,
+            "graal3d_trace" => self.graal3d_trace = v.trim().to_string(),
+            "graal3d_route" => {
+                self.graal3d_sharp3d = match v.trim() {
+                    "mission" => false,
+                    "sharp3d" => true,
+                    _ => return Err(format!("graal3d_route: `{v}` is not mission or sharp3d")),
+                }
+            }
+            "graal3d_mutate" => {
+                let v = v.trim();
+                self.graal3d_mutate =
+                    if v.is_empty() || v == "off" {
+                        None
+                    } else {
+                        Some(crate::graal3d::mutate::parse(v).ok_or_else(|| {
+                            format!("graal3d_mutate: `{v}` is not a known mutation")
+                        })?)
+                    };
+            }
             "newworld_beta" => {
                 self.newworld_beta = match v.trim() {
                     "1" => 1,

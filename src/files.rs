@@ -14,7 +14,8 @@
 //! - `PLO_FILE` (102) behind `PLO_RAWDATA` (100): from 2.1 on a GINT5 mod
 //!   time (the file's, in Unix seconds), then `GCHAR` name length, the name,
 //!   the data and a closing `\n`; before 2.1 no time and no `\n`.
-//! - Over 64 KB, where the build has `files.large_files` (2.14 on):
+//! - Over 32000 bytes ([`LARGE`]), where the build has `files.large_files`
+//!   (2.14 on):
 //!   `PLO_LARGEFILESTART` (68) name, `PLO_LARGEFILESIZE` (84) GINT5 size
 //!   where `files.large_file_size` is set (2.3 on), the data in `PLO_FILE`
 //!   chunks, `PLO_LARGEFILEEND` (69) name.
@@ -22,8 +23,9 @@
 //!   data header; a bigger file gets `PLO_FILESENDFAILED` (30).
 //!
 //! A file's bytes go out in frames of at most [`CHUNK`] bytes so no frame
-//! outgrows the `u16` length; a raw-data message may run across frames, as
-//! the gen-2 board does after its header frame.
+//! outgrows the `u16` length. Only a build without large files gets a
+//! raw-data message that runs across frames, as the gen-2 board does after
+//! its header frame.
 //!
 //! `UPDATEFILE` carries the client copy's GINT5 time: a newer file on the
 //! server is sent, otherwise `PLO_FILEUPTODATE` (45), or before 2.1, which
@@ -44,8 +46,14 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 
 /// The most file bytes in one frame body.
 pub const CHUNK: usize = 32_000;
-/// Files over this go as large files where the build has them.
-pub const LARGE: usize = 64 * 1024;
+/// Files over this go as large files where the build has them. A raw-data
+/// message must fit in one frame for 4.208 to 6.037: one that runs into
+/// the next frame loses the stream silently (Graal_analysis
+/// `protocol/large-file-thresholds-focus.md`, G265), which on a real 5.12
+/// left pushed terrain textures unsaved and showed their bytes as a
+/// garbled admin message. So a file that fits one frame goes as one
+/// `PLO_FILE`, and any bigger one in large-file chunks.
+pub const LARGE: usize = CHUNK;
 /// The biggest raw-data message (`GINT3`).
 const RAW_MAX: usize = (1 << 21) - 1;
 /// The biggest file served; anything bigger counts as not there.
@@ -632,6 +640,50 @@ mod tests {
                 assert_eq!(st.incoming_files[0].0, "big.png", "{v:?}");
                 assert!(st.incoming_files[0].1 == data, "{v:?} {size}: data differs");
                 assert!(st.ignored.is_empty(), "{v:?} drops {:?}", st.ignored);
+            }
+        }
+    }
+
+    /// A build with large files never gets a raw-data message that runs
+    /// into the next frame: 4.208 to 6.037 lose the stream on one (G265),
+    /// which on a real 5.12 showed a 40 KB terrain PNG as a garbled admin
+    /// message and never saved it.
+    #[test]
+    fn no_raw_data_runs_past_its_frame() {
+        for size in [32_000usize, 32_001, 40_000, 150_000] {
+            let f = Found {
+                name: "big.png".into(),
+                data: vec![b'\n'; size],
+                mod_time: 1_700_000_000,
+            };
+            for &v in ClientVersion::all_versions() {
+                if !v.profile().files.large_files {
+                    continue;
+                }
+                let Some(frames) = send_file(v, &f) else {
+                    continue;
+                };
+                for frame in &frames {
+                    let mut rest = frame.as_slice();
+                    while let Some(&id) = rest.first() {
+                        let id = id.wrapping_sub(32);
+                        if id == PLO_RAWDATA {
+                            let b = &rest[1..4];
+                            let n = (((b[0] - 32) as usize) << 14)
+                                | (((b[1] - 32) as usize) << 7)
+                                | (b[2] - 32) as usize;
+                            let end = 5 + n;
+                            assert!(
+                                end <= rest.len(),
+                                "{v:?} {size}: raw data runs past its frame"
+                            );
+                            rest = &rest[end..];
+                        } else {
+                            let nl = rest.iter().position(|&c| c == b'\n').unwrap_or(rest.len());
+                            rest = &rest[(nl + 1).min(rest.len())..];
+                        }
+                    }
+                }
             }
         }
     }

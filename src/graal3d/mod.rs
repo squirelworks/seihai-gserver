@@ -15,36 +15,82 @@
 //!   Camera); [`tge`] is the protocol 19 layer (datablocks, the stock
 //!   Player and Camera, moves).
 //! - [`conn`] is one link: numbering, events, ghosting, mission start.
+//! - [`ground`] is the streamed terrain, water and ground cover
+//!   (protocols 21 and 24); [`assets`] checks a world's files at start-up.
 //! - [`scene`] reads `config/graal3dworld.txt`.
 //! - [`service`] is the UDP task and its tie to the TCP logins.
 
+pub mod assets;
 pub mod bits;
+pub mod caps;
 pub mod conn;
 pub mod events;
+pub mod ground;
 pub mod handshake;
 pub mod huffman;
 pub mod link;
+pub mod mutate;
 pub mod objects;
+pub mod raw;
 pub mod scene;
 pub mod service;
 pub mod tge;
 
 pub use service::{has_graal3d, Graal3d, TcpPlayer};
 
-/// A file a 3D client asked for with no extension: the 5.x client asks
-/// for a Sky's textures that way and stores what it gets under the name
-/// it asked for. The first image with that name and a known extension.
+/// An image a 3D client asked for that the folders do not hold under that
+/// name. The 5.x clients ask for Sky and terrain textures with no
+/// extension and store what they get under the name they asked for; 3.153
+/// asks for Sky textures as `.gif`, never `.png` (lab, 2026-11-25). So a
+/// bare name, or a name with an image extension, also finds the same stem
+/// with another image extension: `.png`, `.jpg`, `.jpeg`, `.gif`, `.bmp`,
+/// `.tga`, `.dds`, in that order. The file keeps the name asked for.
 pub fn extensionless_texture(
     files: &crate::files::FileStore,
     name: &str,
 ) -> Option<crate::files::Found> {
+    texture_variant(files, name, &|_| false)
+}
+
+/// A file a 3D client asked for: the name itself, else
+/// [`extensionless_texture`]. A file the start-up check found would crash
+/// a client (`graal3d_shapecheck = skip`) is answered as missing.
+pub fn client_file(
+    files: &crate::files::FileStore,
+    name: &str,
+    hub: Option<&Graal3d>,
+) -> Option<crate::files::Found> {
+    let refused = |n: &str| hub.is_some_and(|h| h.refuses(n));
+    if let Some(f) = files.find(name) {
+        return (!refused(name)).then_some(f);
+    }
+    texture_variant(files, name, &refused)
+}
+
+fn texture_variant(
+    files: &crate::files::FileStore,
+    name: &str,
+    skip: &dyn Fn(&str) -> bool,
+) -> Option<crate::files::Found> {
     let base = name.rsplit(['/', '\\']).next().unwrap_or(name);
-    if base.is_empty() || base.contains('.') {
+    if base.is_empty() {
         return None;
     }
-    [".png", ".jpg", ".jpeg", ".bmp", ".gif", ".dds"]
+    let lower = name.to_ascii_lowercase();
+    let stem = match base.rfind('.') {
+        None => name,
+        Some(_) => {
+            let ext = assets::IMAGE_EXTENSIONS
+                .iter()
+                .find(|e| lower.ends_with(*e))?;
+            &name[..name.len() - ext.len()]
+        }
+    };
+    assets::IMAGE_EXTENSIONS
         .iter()
-        .find_map(|ext| files.find(&format!("{name}{ext}")))
+        .map(|ext| format!("{stem}{ext}"))
+        .filter(|n| !n.eq_ignore_ascii_case(name) && !skip(n))
+        .find_map(|n| files.find(&n))
         .map(|mut f| {
             f.name = name.to_string();
             f

@@ -20,6 +20,22 @@ use std::fmt;
 /// The longest string either form carries (its length is 8 bits).
 pub const MAX_STRING: usize = 255;
 
+/// Whether strings inside game packets start with the "shares a prefix"
+/// flag. The Graal clients give a game packet a string buffer as stock
+/// TGE does, so they read the flag: on by default. `graal3d_stringprefix =
+/// false` turns it off for every link, for a lab checking a build that
+/// reads plain strings. One server-wide setting, as the option is.
+static PACKET_STRING_PREFIX: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(true);
+
+pub fn set_packet_string_prefix(on: bool) {
+    PACKET_STRING_PREFIX.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn packet_string_prefix() -> bool {
+    PACKET_STRING_PREFIX.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// A read ran past the end of the packet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OutOfBits {
@@ -136,7 +152,14 @@ impl BitWriter {
     /// 0). Readers take it whatever their previous string was, so a
     /// payload written on its own can be copied into any packet.
     pub fn pstring_alone(&mut self, text: &[u8]) {
-        self.flag(false);
+        self.pstring_alone_as(text, packet_string_prefix());
+    }
+
+    /// [`BitWriter::pstring_alone`] with the prefix flag on or off.
+    pub fn pstring_alone_as(&mut self, text: &[u8], prefix: bool) {
+        if prefix {
+            self.flag(false);
+        }
         self.string(text);
     }
 
@@ -150,6 +173,10 @@ impl BitWriter {
     /// A string inside a data packet. Shares a prefix with the previous
     /// one when more than two characters match, as Torque does.
     pub fn pstring(&mut self, text: &[u8]) {
+        if !packet_string_prefix() {
+            self.string(text);
+            return;
+        }
         let text = &text[..text.len().min(MAX_STRING)];
         let same = self
             .previous
@@ -286,7 +313,12 @@ impl<'a> BitReader<'a> {
     /// A string inside a data packet, which may reuse a prefix of the
     /// previous one.
     pub fn pstring(&mut self) -> Result<Vec<u8>> {
-        let text = if self.flag()? {
+        self.pstring_as(packet_string_prefix())
+    }
+
+    /// [`BitReader::pstring`] with the prefix flag on or off.
+    pub fn pstring_as(&mut self, prefix: bool) -> Result<Vec<u8>> {
+        let text = if prefix && self.flag()? {
             let keep = self.u8()? as usize;
             let mut text = self.previous[..keep.min(self.previous.len())].to_vec();
             text.extend(self.string()?);
@@ -302,6 +334,20 @@ impl<'a> BitReader<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn packet_strings_without_the_prefix_flag_are_plain_strings() {
+        let mut a = BitWriter::new();
+        a.pstring_alone_as(b"Sky", false);
+        let mut b = BitWriter::new();
+        b.string(b"Sky");
+        assert_eq!(a.bytes(), b.bytes());
+        let mut r = BitReader::new(a.bytes());
+        assert_eq!(r.pstring_as(false).unwrap(), b"Sky");
+        let mut c = BitWriter::new();
+        c.pstring_alone_as(b"Sky", true);
+        assert_eq!(c.bit_len(), b.bit_len() + 1);
+    }
 
     #[test]
     fn bits_go_low_first() {

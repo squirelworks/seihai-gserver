@@ -121,10 +121,13 @@ pub enum Event {
         index: u32,
         total: u32,
     },
+    /// `TerrainRequestUpdatesEvent`: the stamp of each of the 256 terrain
+    /// chunks the client holds (index y * 16 + x, 0 for none).
+    TerrainRequest(Vec<u32>),
     /// An event the server built itself (a protocol 19 datablock), sent
     /// as `class` with this payload. Never read.
     Raw {
-        class: &'static str,
+        class: std::borrow::Cow<'static, str>,
         payload: BitWriter,
     },
     /// A class this side does not read, skipped by its length.
@@ -144,7 +147,8 @@ impl Event {
             Event::BigDataChunk { .. } => "BigDataChunkEvent",
             Event::ConnectionMessage { .. } => "ConnectionMessageEvent",
             Event::SimDataBlock { .. } => "SimDataBlockEvent",
-            Event::Raw { class, .. } => class,
+            Event::TerrainRequest(_) => "TerrainRequestUpdatesEvent",
+            Event::Raw { class, .. } => class.as_ref(),
             Event::Other { name, .. } => return name.as_deref(),
         })
     }
@@ -205,11 +209,25 @@ impl Event {
                 index: r.int(12)?,
                 total: r.int(13)?,
             },
+            Some("TerrainRequestUpdatesEvent") => {
+                let mut stamps = Vec::with_capacity(256);
+                for _ in 0..256 {
+                    stamps.push(r.u32()?);
+                }
+                Event::TerrainRequest(stamps)
+            }
             _ => Event::Other {
                 class_id,
                 name: name.map(str::to_owned),
             },
         })
+    }
+
+    /// The payload's length in bits.
+    pub fn payload_bits(&self) -> usize {
+        let mut w = BitWriter::new();
+        self.write(&mut w);
+        w.bit_len()
     }
 
     /// The payload, with strings that never share a prefix.
@@ -286,6 +304,11 @@ impl Event {
                 w.int(*class_id, 12);
                 w.int(*index, 12);
                 w.int(*total, 13);
+            }
+            Event::TerrainRequest(stamps) => {
+                for i in 0..256 {
+                    w.u32(stamps.get(i).copied().unwrap_or(0));
+                }
             }
             Event::Raw { payload, .. } => w.append(payload),
             Event::Other { .. } => {}
@@ -408,10 +431,17 @@ impl Events {
         })
     }
 
-    /// Queues a guaranteed event to send.
-    pub fn send(&mut self, ev: Event) {
-        self.to_send.push_back((self.next_send, ev));
+    /// Queues a guaranteed event to send. Returns its sequence.
+    pub fn send(&mut self, ev: Event) -> u32 {
+        let seq = self.next_send;
+        self.to_send.push_back((seq, ev));
         self.next_send += 1;
+        seq
+    }
+
+    /// Whether the client has guaranteed event `seq`.
+    pub fn delivered(&self, seq: u32) -> bool {
+        seq < self.acked_below || self.delivered.contains_key(&seq)
     }
 
     /// Queues `commandToServer(name, args...)` with the name as plain text.
@@ -431,7 +461,24 @@ impl Events {
     /// window and `max_bits` allow). An event whose class the server did
     /// not list stays queued.
     pub fn write(&mut self, w: &mut BitWriter, packet: u32, classes: &ClassTable, max_bits: usize) {
-        w.flag(false); // no unguaranteed events
+        self.write_with(w, packet, classes, max_bits, None);
+    }
+
+    /// [`Events::write`] with one unguaranteed entry (its class, int14
+    /// length and payload, already written): a lab mutation's.
+    pub fn write_with(
+        &mut self,
+        w: &mut BitWriter,
+        packet: u32,
+        classes: &ClassTable,
+        max_bits: usize,
+        unguaranteed: Option<&BitWriter>,
+    ) {
+        if let Some(u) = unguaranteed {
+            w.flag(true);
+            w.append(u);
+        }
+        w.flag(false); // no (more) unguaranteed events
         let mut prev: Option<u32> = None;
         let mut sent = Vec::new();
         while let Some((seq, ev)) = self.to_send.front() {

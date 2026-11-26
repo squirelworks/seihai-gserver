@@ -31,6 +31,7 @@ use super::bits::{BitReader, BitWriter};
 use super::events::{big_data_events, Arg, BigData, BigDataAssembler, ClassTable, Event, Events};
 use super::handshake::{self, Profile};
 use super::link::Link;
+use super::mutate::{Mutation, Rng};
 use super::objects::{GameObject, Ghost};
 use super::tge;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -83,7 +84,11 @@ pub enum Out {
     Text(BigData),
     ClientState(Box<ClientState>),
     Mission(Mission),
+    /// The client's terrain chunk stamps (index y * 16 + x, 0 for none).
+    TerrainRequest(Vec<u32>),
     Log(String),
+    /// A line for the lab trace (`graal3d_trace`), when tracing is on.
+    Trace(String),
 }
 
 struct Slot {
@@ -152,6 +157,25 @@ pub struct Connection {
     last_move_ack: u32,
     moves_received: usize,
     control_moved: bool,
+
+    /// The Sharp3D route: the GhostAlwaysObjectEvent creating each ghost,
+    /// by event sequence.
+    ghost_always_events: HashMap<u32, Key>,
+    tracing: bool,
+    last_state_trace: String,
+    /// Lab: the mutation, when it is due, and whether it went out.
+    mutation: Option<(Mutation, u32)>,
+    mutation_at: u64,
+    mutation_done: bool,
+}
+
+/// Bits that hold `index`, at least 1.
+fn bits_for(index: u32) -> u32 {
+    let mut b = 1;
+    while index >> b != 0 {
+        b += 1;
+    }
+    b
 }
 
 impl Connection {
@@ -188,7 +212,41 @@ impl Connection {
             last_move_ack: 0,
             moves_received: 0,
             control_moved: false,
+            ghost_always_events: HashMap::new(),
+            tracing: false,
+            last_state_trace: String::new(),
+            mutation: None,
+            mutation_at: 0,
+            mutation_done: false,
         }
+    }
+
+    /// Lab: [`Out::Trace`] lines for each event and each change of the
+    /// client's control object.
+    pub fn set_tracing(&mut self, on: bool) {
+        self.tracing = on;
+    }
+
+    /// Lab: one mutation on this link (the accept ones are the service's).
+    pub fn set_mutation(&mut self, m: Option<(Mutation, u32)>) {
+        self.mutation = m.filter(|(k, _)| !k.in_accept());
+    }
+
+    pub fn mutation_sent(&self) -> bool {
+        self.mutation_done
+    }
+
+    fn trace(&mut self, text: impl Into<String>) {
+        if self.tracing {
+            self.out.push(Out::Trace(text.into()));
+        }
+    }
+
+    fn mutation_due(&self, now: u64) -> bool {
+        self.mutation.is_some()
+            && !self.mutation_done
+            && self.mutation_at != 0
+            && now >= self.mutation_at
     }
 
     pub fn profile(&self) -> &'static Profile {
@@ -283,6 +341,9 @@ impl Connection {
             self.events.notify(*n);
             self.ghost_notify(n.sequence, n.delivered);
         }
+        if !received.notifies.is_empty() {
+            self.ghost_always_delivered();
+        }
         if received.answer_with_ack {
             let ack = self.link.ack();
             self.out.push(Out::Send(ack));
@@ -300,6 +361,17 @@ impl Connection {
     }
 
     fn on_established(&mut self) {
+        if self.profile.ghost_always {
+            // Sharp3D route: no mission start commands. The ghosts go as
+            // GhostAlwaysObjectEvents (posted by set_ghost), and the start
+            // is over once the client has every one; the control object
+            // follows. Phase1Sent still goes to the service, which sends
+            // the flags and weapons then.
+            self.ghosting_allowed = true;
+            self.set_mission(Mission::Phase1Sent);
+            self.finish_ghost_always();
+            return;
+        }
         if self.profile.tge {
             let seq = self.mission_seq.to_string();
             self.send_command(b"MissionStartPhase1", &[seq.as_bytes(), b"Graal3D"]);
@@ -332,6 +404,11 @@ impl Connection {
 
     /// The GameObject-era client game section.
     fn read_game(&mut self, r: &mut BitReader<'_>) -> bool {
+        let camera_control = self.profile.ghost_always
+            || self
+                .control_key
+                .and_then(|k| self.slots.get(&k))
+                .is_some_and(|s| matches!(s.ghost, Ghost::Camera(_)));
         let mut read = || -> Result<ClientState, super::bits::OutOfBits> {
             r.flag()?; // first person
             let position = [r.f32()?, r.f32()?, r.f32()?];
@@ -341,6 +418,17 @@ impl Connection {
             let mut changed = 0;
             if r.flag()? {
                 changed = self.client_object.read(r, &mut self.client_move_type)?;
+                // A Camera as the control object: its update has two more
+                // sections, mode and followed object, which a live 5.12
+                // writes (T3D-023, lab 2026-11-25).
+                if camera_control {
+                    if r.flag()? {
+                        r.int(1)?;
+                    }
+                    if r.flag()? && r.flag()? {
+                        r.int(12)?;
+                    }
+                }
             }
             if r.flag()? {
                 r.int(8)?; // field of view
@@ -353,6 +441,17 @@ impl Connection {
         };
         match read() {
             Ok(state) => {
+                if self.tracing && state.changed != 0 {
+                    let p = state.object.transform.position;
+                    let line = format!(
+                        "control object: sections {:#x}, at {:.2},{:.2},{:.2}",
+                        state.changed, p[0], p[1], p[2]
+                    );
+                    if line != self.last_state_trace {
+                        self.last_state_trace = line.clone();
+                        self.trace(line);
+                    }
+                }
                 if self.control_delivered {
                     self.out.push(Out::ClientState(Box::new(state)));
                 }
@@ -440,6 +539,35 @@ impl Connection {
     }
 
     fn process_event(&mut self, ev: Event) {
+        if self.tracing {
+            let what = match &ev {
+                Event::RemoteCommand(_) => self
+                    .command_args(&ev)
+                    .map(|a| {
+                        a.iter()
+                            .map(|x| String::from_utf8_lossy(x).into_owned())
+                            .collect::<Vec<_>>()
+                            .join(",")
+                    })
+                    .unwrap_or_default(),
+                Event::BigDataStart {
+                    kind,
+                    weapon,
+                    total,
+                    ..
+                } => format!(
+                    "{} {} ({total} bytes)",
+                    String::from_utf8_lossy(kind),
+                    String::from_utf8_lossy(weapon)
+                ),
+                Event::ConnectionMessage {
+                    sequence, message, ..
+                } => format!("message {message} sequence {sequence}"),
+                _ => String::new(),
+            };
+            let name = ev.class_name().unwrap_or("(unknown class)").to_string();
+            self.trace(format!("event {name} {what}").trim_end().to_string());
+        }
         match &ev {
             Event::NetString { .. } => {} // Events keeps the table
             Event::RemoteCommand(_) => {
@@ -491,6 +619,11 @@ impl Connection {
                     ));
                 }
             }
+            Event::TerrainRequest(stamps) => {
+                let held = stamps.iter().filter(|s| **s != 0).count();
+                self.log(format!("terrain request: holds {held} of 256 chunks"));
+                self.out.push(Out::TerrainRequest(stamps.clone()));
+            }
             Event::SimDataBlock { .. } | Event::Raw { .. } | Event::Other { .. } => {
                 self.log(format!(
                     "event ignored: {}",
@@ -530,6 +663,10 @@ impl Connection {
         }
         match (command, self.mission) {
             (b"MissionStartPhase1Ack", Mission::Phase1Sent) => {
+                // Ghosts go only after this ack. A 5.12 on a return visit
+                // dropped ghosts it got before it, then stalled in phase 1 on
+                // "Received unknown camera object" (lab, 2026-11-25).
+                self.ghosting_allowed = true;
                 self.send_command(b"MissionStartPhase2", &[]);
                 self.set_mission(Mission::Phase2Sent);
             }
@@ -555,6 +692,37 @@ impl Connection {
         let mut all = vec![Arg::Tag(tag)];
         all.extend(args.iter().map(|a| Arg::Text(a.to_vec())));
         self.events.send(Event::RemoteCommand(all));
+    }
+
+    /// Queues a guaranteed event (a terrain chunk, a lab event). An event
+    /// of 16384 bits or more is refused: its int14 length would wrap, and
+    /// 5.12 runs what an under-counted event leaves and crashes (fuzz tier 1).
+    pub fn send_event(&mut self, ev: Event) -> bool {
+        let bits = ev.payload_bits();
+        if bits >= 1 << 14 {
+            self.log(format!(
+                "{} of {bits} bits is longer than an event can say, not sent",
+                ev.class_name().unwrap_or("event")
+            ));
+            return false;
+        }
+        self.events.send(ev);
+        true
+    }
+
+    /// Lab: one guaranteed event of `class` whose payload is the raw
+    /// fields (a `rawevent` line). False if the client's class table has
+    /// no such class or the payload is too long.
+    pub fn send_raw_event(&mut self, class: &str, fields: &[super::raw::RawField]) -> bool {
+        if self.classes.event_id(class).is_none() {
+            return false;
+        }
+        let mut payload = BitWriter::new();
+        super::raw::write_fields(&mut payload, fields);
+        self.send_event(Event::Raw {
+            class: class.to_string().into(),
+            payload,
+        })
     }
 
     /// Queues a text for the client: `weapon` (s1, empty for the client
@@ -598,7 +766,7 @@ impl Connection {
         for (i, (class, id, data)) in blocks.iter().enumerate() {
             if let Some(class_id) = self.profile.datablock_id(class) {
                 self.events.send(Event::Raw {
-                    class: "SimDataBlockEvent",
+                    class: "SimDataBlockEvent".into(),
                     payload: tge::sim_datablock_event(*id, class_id, i as u32, total, data),
                 });
             }
@@ -638,12 +806,20 @@ impl Connection {
             self.advance_tge();
         }
         let since = now.saturating_sub(self.last_send);
+        if self.mutation.is_some()
+            && !self.mutation_done
+            && self.mutation_at == 0
+            && self.mission == Mission::Done
+        {
+            self.mutation_at = now + 2_000;
+        }
         if self.established {
             let work = self.events.has_pending()
                 || self.ack_owed
                 || self.ghost_work_pending()
                 || self.control_pending()
-                || (self.control_delivered && self.control_moved);
+                || (self.control_delivered && self.control_moved)
+                || self.mutation_due(now);
             if (work && since >= SEND_INTERVAL_MS) || since >= KEEP_ALIVE_MS {
                 self.send_data(now);
             }
@@ -670,18 +846,205 @@ impl Connection {
         };
         let packet = self.link.last_sent();
         let mut note = Note::default();
-        if self.profile.tge {
-            self.write_tge_game(&mut w, &mut note, now);
-        } else {
-            self.write_control(&mut w, &mut note, now);
-            self.write_camera(&mut w);
-            w.flag(false); // field of view
+        let mutation = self.mutation.filter(|_| self.mutation_due(now));
+        let mut rng = Rng::new(mutation.map_or(1, |(_, seed)| seed));
+        let mut said = String::new();
+        let bad_control = match mutation {
+            Some((m @ (Mutation::ControlWrongClass | Mutation::ControlDeleted), _)) => {
+                self.bad_control(m, &mut rng, &mut said)
+            }
+            _ => None,
+        };
+        match (self.profile.tge, bad_control) {
+            (true, Some(bad)) => tge::write_server_game(
+                &mut w,
+                self.last_move_ack,
+                Some(&tge::ServerControl {
+                    server_time: now as u32,
+                    ghost: bad,
+                    player: None,
+                    camera: tge::Camera::default(),
+                }),
+            ),
+            (true, None) => self.write_tge_game(&mut w, &mut note, now),
+            (false, Some(bad)) => {
+                w.flag(true);
+                w.flag(true);
+                w.u32(now as u32);
+                w.int(bad, 12);
+                GameObject::default().write(&mut w, 0);
+                self.write_camera(&mut w);
+                w.flag(false);
+            }
+            (false, None) => {
+                self.write_control(&mut w, &mut note, now);
+                self.write_camera(&mut w);
+                w.flag(false); // field of view
+            }
         }
-        self.events
-            .write(&mut w, packet, &self.classes, MAX_PACKET_BYTES * 8 - 16);
-        self.write_ghosts(&mut w, &mut note);
+        let extra = match mutation {
+            Some((m @ (Mutation::EventUnknownClass | Mutation::EventBadLength), _)) => {
+                Some(self.bad_event(m, &mut rng, &mut said))
+            }
+            _ => None,
+        };
+        self.events.write_with(
+            &mut w,
+            packet,
+            &self.classes,
+            MAX_PACKET_BYTES * 8 - 16,
+            extra.as_ref(),
+        );
+        match mutation {
+            Some((
+                m @ (Mutation::GhostUncreated
+                | Mutation::GhostDoubleDelete
+                | Mutation::GhostIndexWidth),
+                _,
+            )) => self.bad_ghosts(&mut w, m, &mut rng, &mut said),
+            _ => self.write_ghosts(&mut w, &mut note),
+        }
         self.notes.insert(packet, note);
+        if let Some((m, seed)) = mutation {
+            self.mutation_done = true;
+            if said.is_empty() {
+                said = "nothing to mutate (no fitting ghost)".into();
+            }
+            let hex: String = w.bytes().iter().map(|b| format!("{b:02x}")).collect();
+            let line = format!(
+                "mutation {}:{seed} in seq {packet}: {said}; packet {hex}",
+                m.name()
+            );
+            self.log(line.clone());
+            self.trace(line);
+        }
         self.out.push(Out::Send(w.into_bytes()));
+    }
+
+    fn free_index(&self) -> u32 {
+        (0..).find(|i| !self.used.contains(i)).unwrap_or(0)
+    }
+
+    /// The ghost a control mutation names: one of another class, or one
+    /// that holds nothing.
+    fn bad_control(&self, m: Mutation, rng: &mut Rng, said: &mut String) -> Option<u32> {
+        if m == Mutation::ControlDeleted {
+            let bad = (self.free_index() + rng.below(8)).min(MAX_GHOSTS - 1);
+            *said = format!("control object: ghost index {bad}, which holds no ghost");
+            return Some(bad);
+        }
+        let class = self
+            .control_key
+            .and_then(|k| self.slots.get(&k))
+            .map(|s| s.ghost.class_name().to_string())
+            .unwrap_or_default();
+        let others: Vec<&Slot> = self
+            .slots
+            .values()
+            .filter(|s| s.created && !s.kill && s.ghost.class_name() != class)
+            .collect();
+        if others.is_empty() {
+            return None;
+        }
+        let s = others[rng.below(others.len() as u32) as usize];
+        *said = format!(
+            "control object: ghost {}, a {}",
+            s.index,
+            s.ghost.class_name()
+        );
+        Some(s.index)
+    }
+
+    /// An unguaranteed event entry: a class the table lacks, or a length
+    /// that does not match its bits.
+    fn bad_event(&self, m: Mutation, rng: &mut Rng, said: &mut String) -> BitWriter {
+        let classes = self.profile.events.len() as u32;
+        let bits = rng.below(64);
+        let (class_id, length) = if m == Mutation::EventUnknownClass {
+            let id = classes + rng.below(4096 - classes);
+            *said = format!(
+                "an unguaranteed event of class id {id} (the table has {classes}), {bits} bits"
+            );
+            (id, bits)
+        } else {
+            let id = rng.below(classes);
+            let delta = [1i64, 8, -1, 16383][rng.below(4) as usize];
+            let length = (i64::from(bits) + delta).clamp(0, 16383) as u32;
+            *said = format!(
+                "an unguaranteed {} claiming {length} bits with {bits}",
+                self.profile.events.get(id as usize).copied().unwrap_or("?")
+            );
+            (id, length)
+        };
+        let mut e = BitWriter::new();
+        e.int(class_id, 12);
+        e.int(length, 14);
+        for _ in 0..bits {
+            e.flag(rng.next_u32() & 1 == 1);
+        }
+        e
+    }
+
+    /// A ghost section that updates an index never created, deletes a
+    /// free index twice, or reads with the wrong index width.
+    fn bad_ghosts(&self, w: &mut BitWriter, m: Mutation, rng: &mut Rng, said: &mut String) {
+        let max_index = self.slots.values().map(|s| s.index).max().unwrap_or(0);
+        let existing = self
+            .slots
+            .iter()
+            .find(|(k, s)| s.created && !s.kill && self.control_key != Some(**k))
+            .map(|(_, s)| s);
+        let spare = (self.free_index() + rng.below(8)).min(MAX_GHOSTS - 1);
+        if let (Mutation::GhostIndexWidth, Some(s)) = (m, existing) {
+            let real = bits_for(max_index);
+            let mut wrong = (real + 1 + rng.below(14)) % 16;
+            if wrong == real {
+                wrong = (wrong + 1) % 16;
+            }
+            let mut payload = BitWriter::new();
+            s.ghost.write(&mut payload, s.ghost.full_mask(), false);
+            w.flag(true);
+            w.int(wrong, 4);
+            w.flag(true);
+            w.int(s.index & ((1u32 << wrong) - 1), wrong);
+            w.flag(false);
+            w.int(s.class_id, 12);
+            w.int(payload.bit_len().min(16383) as u32, 14);
+            w.append(&payload);
+            w.flag(false);
+            *said = format!(
+                "ghost section with index width {wrong} (needs {real}): a full update of ghost {}, a {}",
+                s.index,
+                s.ghost.class_name()
+            );
+            return;
+        }
+        let id_bits = bits_for(max_index.max(spare));
+        w.flag(true);
+        w.int(id_bits, 4);
+        if m == Mutation::GhostDoubleDelete {
+            for _ in 0..2 {
+                w.flag(true);
+                w.int(spare, id_bits);
+                w.flag(true);
+            }
+            *said = format!("two deletes of ghost index {spare}, which holds no ghost");
+        } else {
+            let class_id = existing.map_or(0, |s| s.class_id);
+            let bits = rng.below(64);
+            w.flag(true);
+            w.int(spare, id_bits);
+            w.flag(false);
+            w.int(class_id, 12);
+            w.int(bits, 14);
+            for _ in 0..bits {
+                w.flag(rng.next_u32() & 1 == 1);
+            }
+            *said = format!(
+                "an update of ghost index {spare}, never created, class id {class_id}, {bits} random bits"
+            );
+        }
+        w.flag(false);
     }
 
     fn write_tge_game(&mut self, w: &mut BitWriter, note: &mut Note, now: u64) {
@@ -727,16 +1090,29 @@ impl Connection {
     /// ghost carries the state).
     fn write_control(&mut self, w: &mut BitWriter, note: &mut Note, now: u64) {
         w.flag(true);
-        if !w.flag(self.control_pending()) {
+        // The Sharp3D route names its Camera control object in every packet
+        // once the world is in, as the server a 5.12 joined did.
+        let again = self.profile.ghost_always
+            && self.control_delivered
+            && self
+                .control_key
+                .and_then(|k| self.slots.get(&k))
+                .is_some_and(|s| s.created && !s.kill);
+        if !w.flag(self.control_pending() || again) {
             return;
         }
         let slot = &self.slots[&self.control_key.expect("pending")];
         w.u32(now as u32);
         w.int(slot.index, 12);
-        if let Ghost::GameObject(o) | Ghost::Camera(o) = &slot.ghost {
-            o.write(w, 0);
+        // A full update with no section set; a Camera's carries its two
+        // Camera flags too (both clear).
+        if let Ghost::GameObject(_) | Ghost::Camera(_) = &slot.ghost {
+            slot.ghost.write(w, 0, false);
         } else {
             GameObject::default().write(w, 0);
+        }
+        if again {
+            return;
         }
         let index = slot.index;
         note.control = true;
@@ -818,6 +1194,72 @@ impl Connection {
                 kill_in_flight: false,
             },
         );
+        if self.profile.ghost_always {
+            self.post_ghost_always(key);
+        }
+    }
+
+    /// The Sharp3D route's create: a GhostAlwaysObjectEvent with the ghost
+    /// index (12 bits), a flag (an object follows), its class (12), the
+    /// update's length (14) and the update. Its ack creates the ghost.
+    fn post_ghost_always(&mut self, key: Key) {
+        let controlled = self.control_key == Some(key);
+        let Some(s) = self.slots.get_mut(&key) else {
+            return;
+        };
+        let mut update = BitWriter::new();
+        s.ghost.write(&mut update, s.ghost.full_mask(), controlled);
+        let mut payload = BitWriter::new();
+        payload.int(s.index, 12);
+        payload.flag(true);
+        payload.int(s.class_id, 12);
+        payload.int((update.bit_len() as u32).min(16383), 14);
+        payload.append(&update);
+        if payload.bit_len() >= 1 << 14 {
+            let label = s.ghost.label();
+            self.log(format!("ghost-always object too large, not sent: {label}"));
+            return;
+        }
+        s.create_in_flight = true;
+        s.pending = 0;
+        let seq = self.events.send(Event::Raw {
+            class: "GhostAlwaysObjectEvent".into(),
+            payload,
+        });
+        self.ghost_always_events.insert(seq, key);
+    }
+
+    /// Marks the ghosts whose GhostAlwaysObjectEvent the client has.
+    fn ghost_always_delivered(&mut self) {
+        if self.ghost_always_events.is_empty() {
+            return;
+        }
+        let done: Vec<u32> = self
+            .ghost_always_events
+            .keys()
+            .copied()
+            .filter(|seq| self.events.delivered(*seq))
+            .collect();
+        for seq in done {
+            let key = self.ghost_always_events.remove(&seq).expect("listed");
+            if let Some(s) = self.slots.get_mut(&key) {
+                s.create_in_flight = false;
+                s.created = true;
+            }
+        }
+        self.finish_ghost_always();
+    }
+
+    fn finish_ghost_always(&mut self) {
+        if !self.profile.ghost_always
+            || !self.established
+            || self.mission == Mission::Done
+            || !self.ghost_always_events.is_empty()
+        {
+            return;
+        }
+        self.log("every ghost-always object is on the client");
+        self.set_mission(Mission::Done);
     }
 
     /// Deletes an object on the client.
@@ -876,7 +1318,7 @@ impl Connection {
     }
 
     fn ghost_work_pending(&self) -> bool {
-        if self.profile.tge && !self.ghosting_allowed {
+        if !self.ghosting_allowed {
             return false;
         }
         self.slots.values().any(|s| {
@@ -887,8 +1329,9 @@ impl Connection {
     /// The ghost section: deletes, then creates, then updates, under the
     /// packet limit. The index width is the bits of the highest index.
     fn write_ghosts(&mut self, w: &mut BitWriter, note: &mut Note) {
-        // Protocol 19: nothing before the datablocks they name are loaded.
-        if self.profile.tge && !self.ghosting_allowed {
+        // Protocol 19: nothing before the datablocks they name are loaded;
+        // protocols 21 and 24: nothing before MissionStartPhase1Ack.
+        if !self.ghosting_allowed {
             w.flag(false);
             return;
         }
@@ -1043,7 +1486,8 @@ impl Connection {
     }
 }
 
-/// Inflates a compressed text (1 zlib). bzip2 (2) is not read.
+/// Unpacks a compressed text: 1 zlib, 2 bzip2 (seihai-core's bounded
+/// reader, as for gen-4 frames).
 fn unpack(bytes: &[u8], compression: u32) -> Option<Vec<u8>> {
     use std::io::Read;
     match compression {
@@ -1055,6 +1499,7 @@ fn unpack(bytes: &[u8], compression: u32) -> Option<Vec<u8>> {
                 .ok()?;
             Some(out)
         }
+        2 => seihai_core::protocol::bz2_decompress(bytes).ok(),
         _ => None,
     }
 }
@@ -1090,6 +1535,11 @@ pub(crate) mod tests {
         pub next_move: u32,
         /// Every event the server sent, in order.
         pub got: Vec<Event>,
+        /// The control object is a Camera (its packet data has two more
+        /// flags).
+        pub camera_control: bool,
+        /// Packets that named the control object.
+        pub controls: usize,
     }
 
     impl FakeClient {
@@ -1104,6 +1554,8 @@ pub(crate) mod tests {
                 moves: Vec::new(),
                 next_move: 0,
                 got: Vec::new(),
+                camera_control: false,
+                controls: 0,
             }
         }
 
@@ -1173,9 +1625,13 @@ pub(crate) mod tests {
                 }
             } else {
                 if b.flag().unwrap() && b.flag().unwrap() {
+                    self.controls += 1;
                     b.u32().unwrap();
                     b.int(12).unwrap();
                     GameObject::default().read(b, &mut Vec::new()).unwrap();
+                    if self.camera_control {
+                        assert!(!b.flag().unwrap() && !b.flag().unwrap());
+                    }
                 }
                 if b.flag().unwrap() {
                     b.int(12).unwrap();
@@ -1221,52 +1677,148 @@ pub(crate) mod tests {
         }
     }
 
-    /// The five server packets of `udp-session.md` §8, byte for byte: the
-    /// session a real 5.12 client drew its world from.
+    /// Runs `c` and a fake client a few rounds, acking the mission phases.
+    fn run_512(c: &mut Connection, client: &mut FakeClient, mut now: u64, rounds: usize) -> u64 {
+        for _ in 0..rounds {
+            let p = client.packet();
+            c.receive(&p, now);
+            now += 60;
+            c.update(now);
+            for d in sends(&c.take_out()) {
+                client.take(&d);
+            }
+            for (cmd, ack, mark) in [
+                (
+                    &b"MissionStartPhase1"[..],
+                    &b"MissionStartPhase1Ack"[..],
+                    &b"sent1"[..],
+                ),
+                (b"MissionStartPhase2", b"MissionStartPhase2Ack", b"sent2"),
+            ] {
+                if client.answered(cmd) && !client.answered(mark) {
+                    client.commands.push(Command {
+                        name: mark.to_vec(),
+                        args: vec![],
+                    });
+                    client.events.send_command(ack, &[]);
+                }
+            }
+        }
+        now
+    }
+
+    /// The session of `udp-session.md` §8 that a real 5.12 drew its world
+    /// from, with one change: the ghosts wait for `MissionStartPhase1Ack`.
+    /// The first packet is the recorded one up to its ghost section, which
+    /// is now empty (a 5.12 on a return visit dropped ghosts sent before
+    /// the ack and stalled in phase 1, lab 2026-11-25).
     #[test]
-    fn a_512_session_matches_the_recorded_server_packets() {
+    fn a_512_session_ghosts_only_after_the_phase_1_ack() {
         let mut c = Connection::new(&PROTOCOL_24, 0x400, 0);
         c.set_ghost(1, Ghost::Sun(Sun::default()));
         c.set_ghost(2, Ghost::GameObject(lab_player()));
         c.set_control_object(2);
         let mut client = FakeClient::new(&PROTOCOL_24);
-
-        let want = [
-            "05084002080108000d004ab8b835569a421aeccdd95ebc001880203062007b4107a69e6c9a277e6c9a277e6c9a277e9b99997e9a99997e9a99997e00
-             00007f3433337d3433337d6666667d0000007f4600d7411b621d9df74656de642377ba307287fdee4bc7d00400000000000000000000fc0100000000
-             000000000000fc01000000003a3072f7ffffff1f0900",
-            "09104006080908400d084ab8b835569a421aeccdd97eff0260008201",
-            "0d18400e989300002000000000",
-            "1120401e0800",
-            "1528403e0800",
-        ];
-        let mut now = 0;
-        for (i, w) in want.iter().enumerate() {
-            let p = client.packet();
-            c.receive(&p, now);
-            now = if i == 2 { 1180 } else { now + 60 };
-            c.update(now);
-            let out = sends(&c.take_out());
-            assert_eq!(out.len(), 1, "packet {}", i + 1);
-            assert_eq!(out[0], hex(w), "packet {}", i + 1);
-            client.take(&out[0]);
-            if client.answered(b"MissionStartPhase1") && !client.answered(b"sent1") {
-                client.commands.push(Command {
-                    name: b"sent1".to_vec(),
-                    args: vec![],
-                });
-                client.events.send_command(b"MissionStartPhase1Ack", &[]);
-            }
-            if client.answered(b"MissionStartPhase2") && !client.answered(b"sent2") {
-                client.commands.push(Command {
-                    name: b"sent2".to_vec(),
-                    args: vec![],
-                });
-                client.events.send_command(b"MissionStartPhase2Ack", &[]);
-            }
-        }
+        let recorded = hex("05084002080108000d004ab8b835569a421aeccdd95ebc001880203062007b41");
+        c.receive(&client.packet(), 0);
+        c.update(60);
+        let first = sends(&c.take_out()).remove(0);
+        // The control, camera and event sections as recorded; no ghosts.
+        assert_eq!(first[..26], recorded[..26]);
+        assert!(first.len() < recorded.len());
+        assert!(!c.ghost_delivered(1));
+        client.take(&first);
+        run_512(&mut c, &mut client, 60, 10);
+        assert!(c.ghost_delivered(1) && c.ghost_delivered(2));
         assert_eq!(c.mission(), Mission::Done);
         assert!(c.control_delivered());
+    }
+
+    #[test]
+    fn the_sharp3d_route_ghosts_through_events_and_names_its_camera_each_packet() {
+        use crate::graal3d::handshake::PROTOCOL_24_SHARP3D;
+        let mut c = Connection::new(&PROTOCOL_24_SHARP3D, 0x400, 0);
+        c.set_ghost(1, Ghost::Sun(Sun::default()));
+        c.set_ghost(2, Ghost::Camera(lab_player()));
+        c.set_control_object(2);
+        let mut client = FakeClient::new(&PROTOCOL_24_SHARP3D);
+        client.camera_control = true;
+        let now = run_512(&mut c, &mut client, 0, 10);
+        assert_eq!(c.mission(), Mission::Done);
+        assert!(c.ghost_delivered(1) && c.ghost_delivered(2));
+        assert!(c.control_delivered());
+        assert!(client.commands.is_empty(), "no mission start commands");
+        let creates = client
+            .got
+            .iter()
+            .filter(|e| e.class_name() == Some("GhostAlwaysObjectEvent"))
+            .count();
+        assert_eq!(creates, 2);
+        let named = client.controls;
+        run_512(&mut c, &mut client, now, 3);
+        assert_eq!(
+            client.controls,
+            named + 3,
+            "the Camera is named in every packet"
+        );
+    }
+
+    #[test]
+    fn a_mutation_goes_out_once_two_seconds_after_the_start() {
+        let mut c = Connection::new(&PROTOCOL_24, 0x400, 0);
+        c.set_ghost(1, Ghost::Sun(Sun::default()));
+        c.set_ghost(2, Ghost::GameObject(lab_player()));
+        c.set_control_object(2);
+        c.set_mutation(Some((Mutation::GhostDoubleDelete, 3)));
+        let mut client = FakeClient::new(&PROTOCOL_24);
+        let now = run_512(&mut c, &mut client, 0, 10);
+        assert_eq!(c.mission(), Mission::Done);
+        assert!(!c.mutation_sent());
+        let mut logs = Vec::new();
+        let mut t = now;
+        for _ in 0..50 {
+            t += 60;
+            c.receive(&client.packet(), t);
+            c.update(t);
+            for o in c.take_out() {
+                match o {
+                    Out::Send(d) => client.take(&d),
+                    Out::Log(l) if l.starts_with("mutation") => logs.push(l),
+                    _ => {}
+                }
+            }
+        }
+        assert!(c.mutation_sent());
+        assert_eq!(logs.len(), 1, "{logs:?}");
+        assert!(
+            logs[0].starts_with("mutation ghost-double-delete:3 in seq"),
+            "{}",
+            logs[0]
+        );
+        assert!(logs[0].contains("two deletes of ghost index"));
+        // An accept mutation is the service's.
+        let mut c = Connection::new(&PROTOCOL_24, 0x400, 0);
+        c.set_mutation(Some((Mutation::AcceptProtocol, 1)));
+        assert!(c.mutation.is_none());
+    }
+
+    #[test]
+    fn a_raw_event_goes_only_to_a_table_that_has_its_class() {
+        let mut c = Connection::new(&PROTOCOL_24, 0x400, 0);
+        let fields = crate::graal3d::raw::parse_fields(&["i8:1", "f1"]).unwrap();
+        assert!(c.send_raw_event("TerrainChunkEvent", &fields));
+        assert!(!c.send_raw_event("NoSuchEvent", &fields));
+    }
+
+    #[test]
+    fn zlib_and_bzip2_texts_are_unpacked() {
+        let text = b"s client.a=1\n".repeat(20);
+        let bz = seihai_core::protocol::bz2_compress(&text).unwrap();
+        assert_eq!(unpack(&bz, 2).unwrap(), text);
+        let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        std::io::Write::write_all(&mut z, &text).unwrap();
+        assert_eq!(unpack(&z.finish().unwrap(), 1).unwrap(), text);
+        assert!(unpack(b"junk", 2).is_none());
     }
 
     #[test]
@@ -1287,26 +1839,28 @@ pub(crate) mod tests {
     #[test]
     fn a_lost_create_is_sent_whole_again() {
         let mut c = Connection::new(&PROTOCOL_24, 0x400, 0);
-        c.set_ghost(1, Ghost::Sun(Sun::default()));
         let mut client = FakeClient::new(&PROTOCOL_24);
-        c.receive(&client.packet(), 0);
-        c.update(60);
+        // Ghosts go after the phase 1 ack: get there first.
+        let now = run_512(&mut c, &mut client, 0, 2);
+        c.set_ghost(1, Ghost::Sun(Sun::default()));
+        c.receive(&client.packet(), now);
+        c.update(now + 60);
         let first = sends(&c.take_out()).remove(0);
         // Dropped on the way. The keep-alive gets through, so the
-        // client's next packet acks 2 and not 1: 1 is lost.
-        c.update(1100);
+        // client's next packet acks it and not the create: that is lost.
+        let now = now + 60;
+        c.update(now + 1100);
         let keep_alive = sends(&c.take_out()).remove(0);
         assert!(keep_alive.len() < first.len());
         client.take(&keep_alive);
-        c.receive(&client.packet(), 1150);
+        c.receive(&client.packet(), now + 1150);
         assert!(!c.ghost_delivered(1));
-        c.update(1200);
+        c.update(now + 1200);
         let again = sends(&c.take_out()).remove(0);
-        // The phase 1 command and the Sun's create, again.
+        // The Sun's create, again.
         assert_eq!(again.len(), first.len(), "{again:02x?}");
         client.take(&again);
-        assert!(client.answered(b"MissionStartPhase1"));
-        c.receive(&client.packet(), 1250);
+        c.receive(&client.packet(), now + 1250);
         assert!(c.ghost_delivered(1));
     }
 

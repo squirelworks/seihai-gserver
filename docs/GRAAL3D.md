@@ -15,8 +15,25 @@ In `config/server.txt`:
 
 ```text
 graal3d = true
-graal3d_port = 14901   # optional; the default is the TCP port + 1
+graal3d_port = 14901        # optional; the default is the TCP port + 1
+graal3d_shapecheck = skip   # optional; or warn, or off (see "Start-up check")
+graal3d_pushterrain = false # optional; see "Each build's row"
 ```
+
+Lab only (see "Lab options"):
+
+```text
+graal3d_terrainall = false  # the 5.x ground to every GameObject-era build
+graal3d_trace = g3d.tsv     # a trace file; empty: off
+graal3d_route = mission     # or sharp3d
+graal3d_mutate = off        # or <kind>[:<seed>]
+graal3d_stringprefix = true # false: game packet strings without the prefix flag
+```
+
+The clients open the UDP link on the listed TCP port + 1, so a set
+`graal3d_port` must be that. A 5.12 enters 3D through a warp only when the
+server's name carries the `3 ` tag (it uses `name` as given), so a lab world
+without a listserver names itself e.g. `3 Seihai Lab`.
 
 With it on:
 
@@ -27,8 +44,13 @@ With it on:
   server;
 - 3D-capable clients (3.153, 4.04r2, 4.20r6, 4.20r8, 5.x, 6.0x) get
   `PLO_SERVERLISTCONNECTED`, an answer to every file request (missing files
-  are refused instead of left unanswered), and texture lookups without an
-  extension (`.png`, `.jpg`, `.jpeg`, `.bmp`, `.gif`, `.dds` are tried);
+  are refused instead of left unanswered), and image lookups that try other
+  extensions: a bare name, or a name with the wrong image extension, also
+  finds the same stem as `.png`, `.jpg`, `.jpeg`, `.gif`, `.bmp`, `.tga` or
+  `.dds`, in that order, for file requests and "is my copy current?" checks
+  alike. The 5.x clients ask for Sky and terrain textures with no extension;
+  3.153 asks for Sky textures as `.gif` (lab, 2026-11-25), so a `.png`
+  answers it;
 - a UDP connect request is held until the same account (or a guest) from the
   same IP is logged in over TCP, and the link is closed with a disconnect
   when that TCP session ends.
@@ -44,11 +66,15 @@ sun <dir x> <dir y> <dir z> <r> <g> <b> <a> <ambient r> <g> <b> <a>
 sky <textures> [<visible distance> [<fog r> <g> <b>]]
 skyoptions <b1> <b2> <b3> <solid r> <g> <b>
 playershape <shape>
+movetype interpolate|rigid|list
 spawn <x> <y> <z>
 camera <x> <y> <z> [<axis x> <axis y> <axis z> <angle>]
 tgecontrol player|camera
 tgeplayershape <file.dts>
 weapon3d <name> <file>
+terrain <folder> [<square size>] [repeat]
+water <x> <y> <z> <sx> <sy> <sz> [<surface texture> [<liquid type>]]
+replicator <class> <x> <y> <z> <radius> <min> <max> <shapes> [<seed> [<x0> <y0> <x1> <y1>]]
 ```
 
 A sample:
@@ -61,11 +87,134 @@ playershape labcube.3ds
 spawn 0 0 1
 ```
 
+`movetype` gives every player's own GameObject a movetype (section 6). With
+`interpolate` or `rigid`, a server move (a `g3dpos` trigger) goes out as
+movement data (section 7: the position, the rotation as a quaternion, zero
+velocities) in place of a transform, and 5.12 glides its object there; with
+`list` the object goes out with an empty list and the transform still
+carries the position, so the client jumps. Without the line no movetype is
+sent, as before. This follows Graal_analysis
+`protocol/lab-appe-hosta-2026-11-20d.md` (E#505), where a lab copy of this
+server did the same on the real 5.12's control object; how other players'
+clients show a player object with a movetype has not been seen yet.
+
 A `.3ds` shape needs a material. One with only vertices and faces loads
 without an error, but 5.12 and 4.20r6 draw none of it (lab 2026-11-20).
 
 `weapon3d` files are relative to the world folder and are sent as script
 source over the text channel.
+
+## Terrain, water and ground cover (protocols 21 and 24)
+
+These three go to 4.20r6, 4.20r8 and 5.x only. Protocol 19 (3.153, 4.04r2)
+has stock TGE terrain, a different layout, and gets none of them. The wire
+layouts are from Graal_analysis `torque/terrain-512.md` and
+`torque/replicators-512.md`.
+
+**Terrain.** `terrain world/island` streams a 256 x 256 terrain centred on
+the origin, 8 metres a square unless the line gives a square size (1 to 64;
+a huge one killed a live 5.12). `repeat` tiles it past its edges. The folder
+(from the world folder) holds `heights<x>-<y>.dat`, x and y 0 to 15 with no
+padding: each one 16 x 16 squares as a zlib stream, at most 1023 bytes, the
+same file the client keeps in its own cache. Missing chunks are left out, and
+files that are too long or do not inflate are named at start-up. One terrain
+a world: a later `terrain` line replaces the first.
+
+Each client gets a `TerrainBlock` ghost. When it has the block it sends the
+stamp of every chunk it already holds, and the server sends every chunk whose
+stamp differs, so a returning client downloads only what changed. The client
+stamps its own re-encoding of each chunk, so write chunks in its form
+(`seihai-servertools gen terrain DIR --stream` does), or every chunk goes out
+again on every visit.
+
+Put `heights.info` (one texture name a line, in material order) and its
+textures in the file folders. Name the textures with their extension
+(`g3d_grass.png`): the Linux 4.20 client given bare names saved them without
+one and then could not load them. Terrain textures should be 256 x 256 24-bit.
+On a first visit 5.12 fetches only `heights.info` and draws the terrain white;
+it fetches the textures on the next visit.
+
+**Water.** `water -1024 -1024 -19.5 2048 2048 20 water_surface 0` is a
+`WaterBlock` from that corner, unrotated, of that size. Its surface is at
+z + the z size (0.5 here), not at z. The liquid types are stock TGE's (0
+water, 1 ocean, 2 river, 3 stagnant, 4 lava, ...); everything else takes
+stock TGE 1.x's defaults.
+
+**Ground cover.** `replicator DynamicGrass 0 0 0 4 1 3 grass.dts` ghosts a
+`DynamicShapeReplicator`, `DynamicGrass` or `DynamicGrassReplicator`: cover
+scattered on a grid of 8-unit cells around the client's own control object
+(not around the replicator). The radius is in cells (1 to 64), min and max
+are objects a cell (0 to 20), and the shapes are one comma-separated list
+with no spaces. The optional box `x0 y0 x1 y1` is the world x/y region a
+cell's corner must lie in; without one, cover may grow anywhere. Cover is
+placed by casting rays, so it needs real ground (streamed terrain or solid
+objects). The rest is fixed: scale 1, any turn about z, terrain only, slopes
+up to 90 degrees, shown.
+
+## Start-up check
+
+At start-up the server looks up every shape and texture the world file names
+(object and player shapes, replicator shapes, Sky and water textures, and with
+a `terrain` line `heights.info` and every texture it lists) and logs the ones
+the file folders do not have. Then it checks them for the faults that crashed
+or blanked a real client (Graal_analysis
+`torque/3d-fuzz-content-512-2026-11-25.md`):
+
+- a `.3ds` must hold at least one material (with none, 5.12 and 4.20r6 draw
+  nothing), every chunk must fit in its parent, every vertex and face list
+  must hold what it claims, and every face must use a vertex of its mesh. A
+  cut file, a face count past the list and a face index past the mesh each
+  killed 5.12;
+- a `.dts` must be version 24, the only one 5.12 drew; the memory buffer its
+  header claims must fit the file, its section starts must lie inside that
+  buffer, and its node, object, decal and sub-shape counts must fit it. A cut
+  file or a huge size word killed 5.12, and a bad login player shape killed
+  4.04r2 at login;
+- a PNG must claim 1 to 8192 pixels a side (30000 x 30000 killed 5.12). A
+  16-bit PNG, an image over 1024 a side, BMP, TGA, DDS and empty files get a
+  warning: 5.12 draws them white or not at all. Terrain textures other than
+  256 x 256 24-bit get a warning too.
+
+With `graal3d_shapecheck = skip` (the default) an object with a bad shape is
+left out of the world, a bad `playershape` is not used, and a bad
+`tgeplayershape` is not used either, so protocol 19 gets a Camera. `warn`
+logs and sends them anyway, for labs that send broken shapes on purpose;
+`off` checks nothing. A bad texture cannot be left out of the world; under
+`skip` it is logged as an error and refused when a 3D client asks for it (the
+client is told the server has no such file, which it survives: an oversized
+terrain PNG fetched by name crashed 5.12). The same goes for a bad shape.
+
+The check also says when `heights.info` lists a name with a space or comma (the
+client reads one name per line), when the `heights.info` the clients get is not
+the one in the terrain's folder, and when the world has a second `terrain`
+line (one TerrainBlock a world; the later line wins).
+
+## Several players
+
+The first player stands on the world's `spawn`. Each later one takes the
+first point no linked player stands on, of 8 points 2 units out, then 16 at 4
+units, and so on, so two players never start on one point.
+
+A `g3dpos` trigger moves the player's own object on every screen. The client
+goes on reporting where it was for a while; those reports are set aside until
+it reports somewhere else (and for two seconds whatever it reports).
+
+When a player leaves, its object is deleted on every other client, and the
+log says on how many.
+
+A 3D client draws only the objects it is ghosted, so a 2D (TCP only) player in
+a 3D player's level is ghosted to it as `G2DPlayer_<account>`: a GameObject
+with the world's `playershape` at the player's tile position, Torque (x, -y),
+at the spawn's height, with its nickname and chat. The levels are checked 5
+times a second; the object moves and talks as the player does and goes when
+the player leaves the level. Protocol 19 gets a stock Player in its place with
+`tgeplayershape` (and `tgecontrol player`), else nothing.
+
+Every 3D player is also an ordinary TCP player, and its TCP position follows
+its 3D object: Torque (x, y) is map tile (x, -y), set as the player's own
+classic `X`/`Y` props whenever it moves half a tile or more. So serverside
+scripts and 2D players in its level see where it is. Positions off the 64 x 64
+map are left alone.
 
 ## What each protocol gets
 
@@ -78,12 +227,43 @@ source over the text channel.
 All protocols: the challenge and connect handshake, the notify link (acks,
 keep-alives, 30 s timeout), guaranteed and unguaranteed events, ghost
 creates, updates and deletes with lost creates resent, and the text channel
-both ways (flags from the TCP world, `clientr.g3dpos`, weapons, and the
+both ways (flags from the TCP world, `server.` flags included, `clientr.g3dpos`, weapons, and the
 client's `s`/`w`/`t` lines, which go to the world as flags, weapons and
 trigger actions). Protocol 19 moves are read and applied to the Player, and
 each move is acked. Every other linked player reaches a protocol 19 client
 as a stock TGE Player, and a protocol 19 player's moves reach the others
 (as a TGE Player on protocol 19, as its GameObject on protocols 21 and 24).
+
+## Client scripts (`weapon3d`)
+
+A `weapon3d` script goes to the client as GS2 bytecode, compiled at link
+time by seihai-core's own compiler (the text after a `//#CLIENTSIDE` line,
+GS2 unless it starts with `//#GS1`, in legacy mode, which takes the loose
+forms live servers let through). A script that does not compile is logged and
+sent as source. Without a file, the server weapon of that name is used. The
+5.x client's 3D key bindings call `moveForward2`, `moveBackward2`,
+`moveLeft2`, `moveRight2` and `jump`, which only such a script defines; a
+script moves the player's own object with `triggerserver(<kind>, <weapon>,
+"g3dpos", x, y, z)`.
+
+## Each build's row
+
+At link time the server picks the client's row of seihai-core's
+`VersionProfile::three_d` (Graal_analysis `version-profiles/three-d.toml`):
+the login token's own row (the Linux 4.20 `G3D22126` has one), else its
+build's profile, else the protocol's default build (19: 4.04r2, 21: 4.20r6,
+24: 5.12). The log names the row and how many of its values are assumed rather
+than read. The 5.x `TerrainBlock`, `WaterBlock` and ground cover go only to
+builds whose row takes them, and terrain chunks only to those; a build that
+asks for Sky textures as `.gif` (3.153) is named in the log with the names it
+will ask for, and a build that crashes without a Sky gets a warning when the
+world has none.
+
+`graal3d_pushterrain = true` sends `heights.info` and its textures over TCP
+right after a link, once per account a run, to builds that take the terrain
+and fetch its textures (5.12 fetched the textures only on its second visit, so
+a first visit drew the terrain white). A refused texture is never pushed, and
+a name listed twice goes once.
 
 ## The camera (protocols 21 and 24)
 
@@ -102,17 +282,76 @@ same as `camera 0 -5 2 1 0 0 0.38`.
 
 ## Not done yet
 
-- `weapon3d` scripts are sent as source, not compiled to bytecode, and the
-  name-only form is not read.
-- Server flags (`server.`) are not sent.
-- The `graal3dstringprefix = false` mode is not ported.
-- bzip2 text channel bodies are not decoded.
-- No TerrainBlock, and no movetype on GameObjects.
+- Server flags are sent under the names they have in
+  `config/serverflags.txt`, so a script reads `server.x` only from a line
+  `server.x=…`; the server warns at start about a line without the prefix.
+- A real 5.12 got `server.` flags as `events` `s` lines and its script
+  still read `server.x` empty (lab, 2026-11-26). They now also go as one
+  `set` text each, which may or may not reach the script; how a 5.12 in 3D
+  mode is meant to get server flags is not known yet.
+- A movetype on other players' screens was seen only from a 2D client
+  (the sprite follows); `rigid` and `list` have not been run.
+- Movement data never carries a velocity, and a `list` never carries
+  entries: what the client does with them is not known.
+- The Sharp3D route and the mutations have loopback tests only.
 - 3.153 has been seen to crash on the first frame in the C++ fork; the cause
   is unknown.
 - The Linux 4.20r6 (`G3D22126`) links as protocol 24, so the protocol 21
   path has not been run; no Windows 4.20r6 was found.
 - 3.151, 3.153 and 4.20r8 have not been run against this server.
+
+## Lab options
+
+Never on a public server.
+
+- `graal3d_trace = <file>` appends one tab-separated line (milliseconds,
+  account, protocol, what) for each link, each event and control object
+  change a client sends, each flag line sent (`text out: …`), each 2D player shown or gone, each terrain push and
+  each mutation.
+- `graal3d_terrainall = true` sends the 5.x ground to every GameObject-era
+  client, whatever its row says.
+- `graal3d_route = sharp3d` gives protocol 24 clients the Sharp3D route: the
+  class table of a server a real 5.12 joined and drew (objects Sun,
+  GameObject, Camera, Sky; events BigDataStart, BigDataChunk,
+  ConnectionMessage, GhostAlwaysObject), the world as GhostAlwaysObjectEvents,
+  no mission start commands (the start is over once the client has every
+  object), and its Camera as the control object, named in every packet.
+- `rawobject <class> <fields...>` and `rawevent [late] <class> <fields...>` in
+  the world file ghost an object or send a guaranteed event of any class the
+  client's table has, built from fields: `f0`/`f1`, `i<N>:<v>`, `u8:`, `u16:`,
+  `u32:`, `f32:<v>`, `str:<text>` (`%20` a space, `-` empty), `hex:<bytes>`,
+  `file:<path>` and `zfile:<path>` (zlib), the byte fields with an optional
+  length prefix (`file@10:<path>`). `late` events go after the mission start.
+- `graal3d_mutate = <kind>[:<seed>]`: one seeded mutation a link.
+  `accept-protocol` and `accept-classtable` change the connect accept; the
+  others go in one packet 2 seconds after the mission start: `event-unknown-class`,
+  `event-bad-length`, `ghost-uncreated`, `ghost-double-delete`,
+  `ghost-index-width`, `control-wrong-class`, `control-deleted`. The log and
+  the trace get what changed and the packet's bytes.
+
+  A seed gives the same packet on every run and build of this server, for
+  the same world and the same client. The generator is fixed (a test pins
+  it): the state starts at seed x 0x9E3779B9 (wrapping) with its low bit
+  set, each draw is xorshift32 (x ^= x << 13; x ^= x >> 17; x ^= x << 5),
+  and "draw mod n" picks among n. Each kind draws in this order:
+
+  | Kind | Draws |
+  |---|---|
+  | `accept-protocol` | the protocol: one of p-1, p+1, 0, 0xFFFFFFFF, p+100 |
+  | `accept-classtable` | the change (mod 3): drop the last 1 + (draw mod 3) event classes; add `SeihaiLabEvent`; or rename object class (draw mod count) `SeihaiLabObject` |
+  | `control-deleted` | the index: the first free one + (draw mod 8) |
+  | `control-wrong-class` | one of the created ghosts of another class, in ghost order |
+  | `event-unknown-class` | the bit count (mod 64), the class id: the table's size + (draw mod (4096 - size)), then one draw per bit (its low bit) |
+  | `event-bad-length` | the bit count (mod 64), the class (mod the table), the length error (1, 8, -1 or 16383), then one draw per bit |
+  | `ghost-uncreated` | the index: the first free one + (draw mod 8), the bit count (mod 64), then one draw per bit |
+  | `ghost-double-delete` | the index, as above |
+  | `ghost-index-width` | the index (drawn, unused), then the width: (needed + 1 + (draw mod 14)) mod 16, one more if that is the right one |
+
+  seihai-gserver-v2 draws from `std::mt19937` in another order, so its seeds
+  do not carry over.
+- `graal3d_stringprefix = false` writes and reads strings in game packets
+  without Torque's "shares a prefix" flag, for every link. Every Graal
+  client seen so far reads the flag, so the default is true.
 
 ## Lab runs
 
@@ -179,5 +418,9 @@ total when the link closes.
 `src/graal3d/`: `bits`, `huffman`, `link` and `events` are the Torque wire
 layer (shared in spirit with Ato; moving it into `seihai-core` is a
 follow-up), `handshake` holds the protocol tables, `objects` and `tge` the
-ghost and datablock layouts, `conn` one client's link, `scene` the world
-file, and `service` the UDP socket and its tie to the TCP server.
+ghost and datablock layouts, `ground` the terrain, water and ground cover,
+`assets` the start-up check, `caps` each build's row, `raw` the lab raw
+fields, `mutate` the lab mutations, `conn` one client's link, `scene` the
+world file, and `service` the UDP socket and its tie to the TCP server. Most
+of the 3D side is ported from the 3D add-on the Seihai project wrote for
+seihai-gserver-v2, at the owner's direction (2026-11-25).

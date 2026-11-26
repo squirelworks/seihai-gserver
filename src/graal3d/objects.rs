@@ -8,7 +8,7 @@
 //!
 //! ```text
 //!  1 name        pstring                   8 shape data     int14 length + data
-//!  2 velocity    3 f32                     9 chat           pstring
+//!  2 scale       3 f32 (not a velocity)    9 chat           pstring
 //!  3 shape       pstring (.dts .dif ...)  10 script classes pstring
 //!  4 skin        pstring                  11 attr[1..8]     8 x (flag -> pstring)
 //!  5 transform   3 f32 position, 3 f32    12 nickname       pstring + R, G, B, A bytes
@@ -17,8 +17,13 @@
 //!  7 movement data, only while the object has a movement object
 //! ```
 //!
-//! The server never sends a movetype, so it always writes section 7's flag
-//! as 0; it reads a client's movement data by the movetype it sent.
+//! A movetype is off unless the world file's `movetype` line asks for one
+//! on the players' objects. With `interpolate` or `rigid` the server sends
+//! movement data (section 7) for a position change in place of a transform,
+//! and the 5.12 client glides its object there (Graal_analysis
+//! `protocol/lab-appe-hosta-2026-11-20d.md`, E#505). `list` sends no
+//! entries: the transform carries the position and the client jumps. The
+//! server reads a client's movement data by the movetype the client sent.
 
 use super::bits::{BitReader, BitWriter, OutOfBits};
 use super::tge;
@@ -28,7 +33,7 @@ type R<T> = Result<T, OutOfBits>;
 /// GameObject dirty bits (the server's masks; the wire has only the flags).
 pub mod bits {
     pub const NAME: u32 = 0x1;
-    pub const VELOCITY: u32 = 0x2;
+    pub const SCALE: u32 = 0x2;
     pub const SHAPE: u32 = 0x8;
     pub const SKIN: u32 = 0x10;
     pub const TRANSFORM: u32 = 0x20;
@@ -131,7 +136,7 @@ impl Transform {
 #[derive(Debug, Clone, PartialEq)]
 pub struct GameObject {
     pub name: Vec<u8>,
-    pub velocity: [f32; 3],
+    pub scale: [f32; 3],
     pub shape: Vec<u8>,
     pub skin: Vec<u8>,
     pub transform: Transform,
@@ -140,13 +145,15 @@ pub struct GameObject {
     pub nickname: Vec<u8>,
     pub nick_color: [u8; 4],
     pub flags: u16,
+    /// Section 6; empty: none sent.
+    pub movetype: Vec<u8>,
 }
 
 impl Default for GameObject {
     fn default() -> Self {
         GameObject {
             name: Vec::new(),
-            velocity: [0.0; 3],
+            scale: [1.0; 3],
             shape: Vec::new(),
             skin: Vec::new(),
             transform: Transform::default(),
@@ -155,6 +162,7 @@ impl Default for GameObject {
             nickname: Vec::new(),
             nick_color: [255; 4],
             flags: 0,
+            movetype: Vec::new(),
         }
     }
 }
@@ -184,6 +192,29 @@ pub fn has_movement_object(move_type: &[u8]) -> bool {
     matches!(move_type, b"interpolate" | b"list" | b"rigid")
 }
 
+/// The movetypes whose movement data is a position the client glides to.
+fn glides(move_type: &[u8]) -> bool {
+    matches!(move_type, b"interpolate" | b"rigid")
+}
+
+/// Torque's signed float: (v + 1) / 2 scaled to `bits` bits.
+fn signed_float(w: &mut BitWriter, v: f32, bits: u32) {
+    let max = (1u32 << bits) - 1;
+    let v = v.clamp(-1.0, 1.0);
+    w.int((((v + 1.0) * 0.5) * max as f32) as u32, bits);
+}
+
+/// The rotation as a quaternion (x, y, z, w); identity for a zero axis.
+fn quaternion(t: &Transform) -> [f32; 4] {
+    let [x, y, z] = t.axis;
+    let len = (x * x + y * y + z * z).sqrt();
+    if len < 1e-6 || !len.is_finite() || !t.angle.is_finite() {
+        return [0.0, 0.0, 0.0, 1.0];
+    }
+    let (s, c) = (t.angle * 0.5).sin_cos();
+    [x / len * s, y / len * s, z / len * s, c]
+}
+
 impl GameObject {
     /// The sections that differ from `before`.
     pub fn changes_from(&self, before: &GameObject) -> u32 {
@@ -192,8 +223,8 @@ impl GameObject {
         if self.name != before.name {
             m |= NAME;
         }
-        if self.velocity != before.velocity {
-            m |= VELOCITY;
+        if self.scale != before.scale {
+            m |= SCALE;
         }
         if self.shape != before.shape {
             m |= SHAPE;
@@ -203,6 +234,21 @@ impl GameObject {
         }
         if self.transform != before.transform {
             m |= TRANSFORM;
+        }
+        if self.movetype != before.movetype {
+            m |= MOVE_TYPE | TRANSFORM;
+            if has_movement_object(&self.movetype) {
+                m |= MOVE_DATA;
+            }
+        } else if m & TRANSFORM != 0 && glides(&self.movetype) {
+            // The client glides to a new position; a turn still goes as a
+            // transform.
+            m |= MOVE_DATA;
+            if self.transform.axis == before.transform.axis
+                && self.transform.angle == before.transform.angle
+            {
+                m &= !TRANSFORM;
+            }
         }
         if self.chat != before.chat {
             m |= CHAT;
@@ -226,8 +272,8 @@ impl GameObject {
     pub fn full_mask(&self) -> u32 {
         use bits::*;
         let mut m = NAME | TRANSFORM | FLAGS;
-        if self.velocity != [0.0; 3] {
-            m |= VELOCITY;
+        if self.scale != [1.0; 3] {
+            m |= SCALE;
         }
         if !self.shape.is_empty() {
             m |= SHAPE;
@@ -246,6 +292,12 @@ impl GameObject {
         if !self.nickname.is_empty() {
             m |= NICKNAME;
         }
+        if !self.movetype.is_empty() {
+            m |= MOVE_TYPE;
+        }
+        if glides(&self.movetype) {
+            m |= MOVE_DATA;
+        }
         m
     }
 
@@ -255,8 +307,8 @@ impl GameObject {
         if w.flag(mask & NAME != 0) {
             w.pstring_alone(&self.name);
         }
-        if w.flag(mask & VELOCITY != 0) {
-            floats(w, &self.velocity);
+        if w.flag(mask & SCALE != 0) {
+            floats(w, &self.scale);
         }
         if w.flag(mask & SHAPE != 0) {
             w.pstring_alone(&self.shape);
@@ -269,8 +321,14 @@ impl GameObject {
             floats(w, &self.transform.axis);
             w.f32(self.transform.angle);
         }
-        w.flag(false); // 6 movetype: never sent
-        w.flag(false); // 7 movement data: the client has no movement object from us
+        if w.flag(mask & MOVE_TYPE != 0) {
+            w.pstring_alone(&self.movetype);
+        }
+        // 7: interpolate and rigid only; a list goes out empty, so its
+        // flag stays 0.
+        if w.flag(mask & MOVE_DATA != 0 && glides(&self.movetype)) {
+            self.write_movement(w);
+        }
         w.flag(false); // 8 shape data (animation threads)
         if w.flag(mask & CHAT != 0) {
             w.pstring_alone(&self.chat);
@@ -294,6 +352,22 @@ impl GameObject {
         }
     }
 
+    /// Section 7 for interpolate and rigid: the position (3 x f32), the
+    /// rotation (4 x signed 8-bit float), two vectors (6 x signed 9-bit
+    /// int; zero: no velocity) and a closing flag of 0, as the lab sent
+    /// them (E#505).
+    fn write_movement(&self, w: &mut BitWriter) {
+        floats(w, &self.transform.position);
+        for q in quaternion(&self.transform) {
+            signed_float(w, q, 8);
+        }
+        for _ in 0..6 {
+            w.flag(false); // sign
+            w.int(0, 8);
+        }
+        w.flag(false);
+    }
+
     /// Reads an update into `self`. `move_type` is the movetype the
     /// writer's object has (it decides whether section 7 is there) and is
     /// updated from section 6. Returns the sections it carried.
@@ -305,8 +379,8 @@ impl GameObject {
             m |= NAME;
         }
         if r.flag()? {
-            self.velocity = read_floats(r)?;
-            m |= VELOCITY;
+            self.scale = read_floats(r)?;
+            m |= SCALE;
         }
         if r.flag()? {
             self.shape = r.pstring()?;
@@ -324,6 +398,7 @@ impl GameObject {
         }
         if r.flag()? {
             *move_type = r.pstring()?;
+            self.movetype.clone_from(move_type);
             m |= MOVE_TYPE;
         }
         if r.flag()? && has_movement_object(move_type) {
@@ -538,6 +613,13 @@ pub enum Ghost {
     TgeCamera(tge::Camera),
     /// Protocol 19: a stock TGE Player.
     TgePlayer(tge::Player),
+    /// Protocols 21 and 24: the streamed terrain's settings.
+    Terrain(Box<super::ground::Terrain>),
+    Water(super::ground::Water),
+    Replicator(super::ground::Replicator),
+    /// Lab: a `rawobject` line, to every client whose class table has its
+    /// class.
+    Raw(super::raw::RawObject),
 }
 
 /// Protocol 19 masks: position and rotation, and the datablock (creates).
@@ -545,13 +627,17 @@ pub const TGE_MOVE: u32 = 1;
 pub const TGE_DATABLOCK: u32 = 2;
 
 impl Ghost {
-    pub fn class_name(&self) -> &'static str {
+    pub fn class_name(&self) -> &str {
         match self {
             Ghost::GameObject(_) => "GameObject",
             Ghost::Sun(_) => "Sun",
             Ghost::Sky(_) => "Sky",
             Ghost::Camera(_) | Ghost::TgeCamera(_) => "Camera",
             Ghost::TgePlayer(_) => "Player",
+            Ghost::Terrain(_) => "TerrainBlock",
+            Ghost::Water(_) => "WaterBlock",
+            Ghost::Replicator(r) => r.class,
+            Ghost::Raw(r) => &r.class,
         }
     }
 
@@ -563,6 +649,10 @@ impl Ghost {
             Ghost::Sky(s) => String::from_utf8_lossy(&s.name).into(),
             Ghost::TgeCamera(_) => "camera".into(),
             Ghost::TgePlayer(_) => "player".into(),
+            Ghost::Terrain(_) => "Terrain".into(),
+            Ghost::Water(_) => "water".into(),
+            Ghost::Replicator(r) => String::from_utf8_lossy(&r.name).into(),
+            Ghost::Raw(r) => format!("raw {}", r.class),
         }
     }
 
@@ -572,13 +662,18 @@ impl Ghost {
 
     /// Whether a client of that era takes this kind; a Sky goes to both.
     pub fn sent_to(&self, tge_era: bool) -> bool {
-        matches!(self, Ghost::Sky(_)) || self.is_tge() == tge_era
+        matches!(self, Ghost::Sky(_) | Ghost::Raw(_)) || self.is_tge() == tge_era
     }
 
     pub fn full_mask(&self) -> u32 {
         match self {
             Ghost::GameObject(o) | Ghost::Camera(o) => o.full_mask(),
-            Ghost::Sun(_) | Ghost::Sky(_) => 1,
+            Ghost::Sun(_)
+            | Ghost::Sky(_)
+            | Ghost::Terrain(_)
+            | Ghost::Water(_)
+            | Ghost::Replicator(_)
+            | Ghost::Raw(_) => 1,
             Ghost::TgeCamera(_) | Ghost::TgePlayer(_) => TGE_MOVE | TGE_DATABLOCK,
         }
     }
@@ -591,6 +686,10 @@ impl Ghost {
             }
             (Ghost::Sun(a), Ghost::Sun(b)) => u32::from(a != b),
             (Ghost::Sky(a), Ghost::Sky(b)) => u32::from(a != b),
+            (Ghost::Terrain(a), Ghost::Terrain(b)) => u32::from(a != b),
+            (Ghost::Water(a), Ghost::Water(b)) => u32::from(a != b),
+            (Ghost::Replicator(a), Ghost::Replicator(b)) => u32::from(a != b),
+            (Ghost::Raw(a), Ghost::Raw(b)) => u32::from(a != b),
             (Ghost::TgeCamera(a), Ghost::TgeCamera(b)) => {
                 if a == b {
                     0
@@ -623,6 +722,10 @@ impl Ghost {
             Ghost::Sky(s) => s.write(w),
             Ghost::TgeCamera(c) => c.write_update(w, mask & TGE_DATABLOCK != 0),
             Ghost::TgePlayer(p) => p.write_update(w, mask & TGE_DATABLOCK != 0, controlled),
+            Ghost::Terrain(t) => t.write_block(w),
+            Ghost::Water(o) => o.write(w),
+            Ghost::Replicator(o) => o.write(w),
+            Ghost::Raw(o) => super::raw::write_fields(w, &o.fields),
         }
     }
 }
@@ -758,7 +861,7 @@ mod tests {
         let mut o = lab_player();
         o.chat = b"hi".to_vec();
         o.attr[2] = b"three".to_vec();
-        o.velocity = [1.0, 2.0, 3.0];
+        o.scale = [1.0, 2.0, 3.0];
         let mut w = BitWriter::new();
         o.write(&mut w, o.full_mask());
         let bytes = w.into_bytes();
@@ -767,6 +870,57 @@ mod tests {
         let m = back.read(&mut BitReader::new(&bytes), &mut mt).unwrap();
         assert_eq!(back, o);
         assert_eq!(m, o.full_mask());
+    }
+
+    #[test]
+    fn a_movetype_and_its_movement_data_are_written() {
+        let mut o = GameObject {
+            name: b"p".to_vec(),
+            movetype: b"interpolate".to_vec(),
+            ..GameObject::default()
+        };
+        let mut w = BitWriter::new();
+        o.write(&mut w, o.full_mask());
+        let bytes = w.into_bytes();
+        let mut back = GameObject::default();
+        let mut mt = Vec::new();
+        let m = back.read(&mut BitReader::new(&bytes), &mut mt).unwrap();
+        assert_eq!(mt, b"interpolate");
+        assert_eq!(back, o);
+        assert_eq!(m, o.full_mask());
+        assert_ne!(m & bits::MOVE_DATA, 0);
+
+        // A move alone is movement data; a turn is a transform as well.
+        let before = o.clone();
+        o.transform.position = [1.0, 2.0, 3.0];
+        assert_eq!(o.changes_from(&before), bits::MOVE_DATA);
+        o.transform.angle = 1.0;
+        o.transform.axis = [0.0, 0.0, 1.0];
+        assert_eq!(o.changes_from(&before), bits::MOVE_DATA | bits::TRANSFORM);
+
+        // Section 7's size for one move.
+        let mut a = BitWriter::new();
+        o.write(&mut a, bits::MOVE_DATA);
+        let mut b = BitWriter::new();
+        o.write(&mut b, 0);
+        assert_eq!(a.bit_len() - b.bit_len(), RIGID_MOVE_BITS);
+
+        // An identity rotation is (127, 127, 127, 255).
+        let mut q = BitWriter::new();
+        for v in quaternion(&Transform::default()) {
+            signed_float(&mut q, v, 8);
+        }
+        assert_eq!(q.into_bytes(), vec![127, 127, 127, 255]);
+
+        // A list sends its movetype and no movement data.
+        let l = GameObject {
+            movetype: b"list".to_vec(),
+            ..GameObject::default()
+        };
+        assert_eq!(l.full_mask() & bits::MOVE_DATA, 0);
+        let mut moved = l.clone();
+        moved.transform.position[0] = 4.0;
+        assert_eq!(moved.changes_from(&l), bits::TRANSFORM);
     }
 
     #[test]

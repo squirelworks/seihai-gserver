@@ -690,6 +690,8 @@ impl Conn {
                     ip: self.peer.ip(),
                     nickname: crate::wire::latin1(&account.nick),
                     flags: account.flags.clone(),
+                    token: login.token.clone(),
+                    label: version.label().to_string(),
                 },
             );
         }
@@ -1819,11 +1821,11 @@ impl Session {
                     };
                     let raw: &[u8] = &asked;
                     let name = seihai_core::protocol::latin1(raw);
-                    let found = server.files.find(&name).or_else(|| {
-                        self.graal3d
-                            .then(|| crate::graal3d::extensionless_texture(&server.files, &name))
-                            .flatten()
-                    });
+                    let found = if self.graal3d {
+                        crate::graal3d::client_file(&server.files, &name, server.graal3d.as_deref())
+                    } else {
+                        server.files.find(&name)
+                    };
                     let key = server.files.package_key(&name);
                     let newer = match (&found, since) {
                         (Some(f), Some(t)) => f.mod_time > t,
@@ -1854,7 +1856,11 @@ impl Session {
                     let crc = crate::wire::read_gint5(crc) as u32;
                     let raw = crate::files::verify_name(rest);
                     let name = seihai_core::protocol::latin1(raw);
-                    let found = server.files.find(&name);
+                    let found = if self.graal3d {
+                        crate::graal3d::client_file(&server.files, &name, server.graal3d.as_deref())
+                    } else {
+                        server.files.find(&name)
+                    };
                     let key = server.files.package_key(&name);
                     let mut sent =
                         crate::files::verify(self.profile, raw, &name, found.as_ref(), crc, key);

@@ -10,6 +10,11 @@ publish = false
 [dependencies]
 # Protocol, framing, version profiles and scripting shared with the Seihai client.
 seihai-core = { git = "https://github.com/squirelworks/seihai-core", tag = "v0.7.2", default-features = false }
+# The Torque 3D side of each client build (`VersionProfile::three_d`, from
+# Graal_analysis version-profiles/three-d.toml) is on seihai-core main but in
+# no tag yet. Only `graal3d::caps` uses it; everything else stays on the tag
+# above, which npcserver and rc share. Fold into the tag at the next release.
+seihai-core-3d = { package = "seihai-core", git = "https://github.com/squirelworks/seihai-core", rev = "18f9b62e104f7b86ea3a1233c98d00d71c3fd329", default-features = false }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time", "macros", "sync", "signal", "process"] }
 # The NPC-server link's wire format (PROTOCOL.md), shared with the NPC-server
 # so both sides use one codec.
