@@ -98,6 +98,9 @@ pub struct Scene {
     /// The files `graal3d_pushterrain` sends for this world's terrain
     /// ([`super::assets::Checked::terrain_files`]).
     pub push_files: Vec<String>,
+    /// The file it was read from, which `g3dedit` saves to
+    /// ([`super::edit`]); `None` for a world made in code.
+    pub file: Option<PathBuf>,
 }
 
 fn floats<const N: usize>(words: &[&str]) -> Option<[f32; N]> {

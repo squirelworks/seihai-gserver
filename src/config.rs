@@ -150,6 +150,10 @@ pub struct Config {
     /// Lab only: `<kind>[:<seed>]`, one seeded mutation per 3D link
     /// (`graal3d::mutate`); off by default.
     pub graal3d_mutate: Option<(crate::graal3d::mutate::Mutation, u32)>,
+    /// `graal3d_edit = staff`: staff accounts' 3D client scripts may move,
+    /// add and remove world objects (`g3dedit` triggers), saved to the
+    /// world files. `off` (the default) refuses every edit.
+    pub graal3d_edit: bool,
     /// Which NewWorld beta a `G2N15041` login is served as: 1 (the
     /// default) or 2. The two betas send the same login line and the same
     /// props, and nothing they send on a plain level tells them apart (lab,
@@ -229,6 +233,7 @@ impl Config {
             graal3d_trace: String::new(),
             graal3d_sharp3d: false,
             graal3d_mutate: None,
+            graal3d_edit: false,
             anticheat: crate::anticheat::Policy::default(),
             gpaks: Vec::new(),
             rules: crate::rules::Rules::default(),
@@ -359,6 +364,13 @@ impl Config {
             "graal3d_stringprefix" => self.graal3d_stringprefix = flag(v)?,
             "graal3d_pushterrain" => self.graal3d_pushterrain = flag(v)?,
             "graal3d_trace" => self.graal3d_trace = v.trim().to_string(),
+            "graal3d_edit" => {
+                self.graal3d_edit = match v.trim() {
+                    "staff" => true,
+                    "off" | "" => false,
+                    _ => return Err(format!("graal3d_edit: `{v}` is not staff or off")),
+                }
+            }
             "graal3d_route" => {
                 self.graal3d_sharp3d = match v.trim() {
                     "mission" => false,

@@ -144,7 +144,8 @@ pub async fn start_graal3d(
         Err(e) => return Err(e),
     };
     let mut refused = std::collections::BTreeSet::new();
-    let scene = load_3d_world(server, "graal3dworld.txt", &text, &mut refused);
+    let mut scene = load_3d_world(server, "graal3dworld.txt", &text, &mut refused);
+    scene.file = Some(path.clone());
     // More worlds: config/graal3dworlds/<name>.txt, entered from the 2D
     // level of that name or with a g3dworld trigger.
     let mut worlds = Vec::new();
@@ -167,7 +168,8 @@ pub async fn start_graal3d(
                 continue;
             };
             let label = format!("graal3dworlds/{name}.txt");
-            let w = load_3d_world(server, &label, &text, &mut refused);
+            let mut w = load_3d_world(server, &label, &text, &mut refused);
+            w.file = Some(p.clone());
             eprintln!("Graal3D: 3D world {name} ({} objects)", w.objects.len());
             worlds.push((name, w));
         }
@@ -181,7 +183,11 @@ pub async fn start_graal3d(
         trace: (!trace.is_empty()).then(|| std::path::PathBuf::from(trace)),
         sharp3d: server.cfg.graal3d_sharp3d,
         mutation: server.cfg.graal3d_mutate,
+        edit: server.cfg.graal3d_edit,
     };
+    if server.cfg.graal3d_edit {
+        eprintln!("Graal3D: staff may edit the 3D worlds in game (graal3d_edit = staff); world files are saved with backups");
+    }
     graal3d::bits::set_packet_string_prefix(server.cfg.graal3d_stringprefix);
     if !server.cfg.graal3d_stringprefix {
         eprintln!("Graal3D: game packet strings go without the prefix flag (graal3d_stringprefix = false, lab)");

@@ -24,6 +24,7 @@ pub mod assets;
 pub mod bits;
 pub mod caps;
 pub mod conn;
+pub mod edit;
 pub mod events;
 pub mod ground;
 pub mod handshake;

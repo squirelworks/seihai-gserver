@@ -18,6 +18,7 @@ graal3d = true
 graal3d_port = 14901        # optional; the default is the TCP port + 1
 graal3d_shapecheck = skip   # optional; or warn, or off (see "Start-up check")
 graal3d_pushterrain = false # optional; see "Each build's row"
+graal3d_edit = off          # optional; staff: in-game world editing (see "Editing a world in game")
 ```
 
 Lab only (see "Lab options"):
@@ -273,6 +274,51 @@ from its own player, and bring it back, by name:
 object is deleted on, or sent again to, that client only. Hidden objects
 come back on a relink or a world switch.
 
+## Editing a world in game
+
+The 5.12 client has Torque's `WorldEditor`, `TerrainEditor` and
+`EditManager`, and a `weapon3d` can create them, but they work only on
+objects the script made itself, `TerrainEditor` cannot attach to the
+server's terrain, and nothing is saved: against a remote server their sync
+does nothing (Graal_analysis `torque/3d-batch-w-rows-2026-11-26.md`,
+T3D-126). So in-game editing goes through the server.
+
+With `graal3d_edit = staff`, a client script of a `STAFF` account (not a
+guest) sends:
+
+```text
+triggerserver("gui", <weapon>, "g3dedit", "move", <name>, x, y, z [, ax, ay, az, angle])
+triggerserver("gui", <weapon>, "g3dedit", "add", <name>, <shape>, x, y, z [, ax, ay, az, angle])
+triggerserver("gui", <weapon>, "g3dedit", "remove", <name>)
+triggerserver("gui", <weapon>, "g3dedit", "list")
+```
+
+The edit applies to the world the player is in: every client in that world
+sees the object move, appear or go at once (a removed object's later
+objects are deleted and sent again under their new keys), and the world
+file (`config/graal3dworld.txt` or `config/graal3dworlds/<name>.txt`) is
+saved. Only the object's own line changes, keeping its comment, accounts
+(`objectfor`) and scale; a new object goes after the last object line; the
+old file is kept as `<file>.bak-<unix seconds>` and the new one written
+through a temporary file and a rename. A move without a turn keeps the
+object's turn. Names and shapes are one word without `#`, `,`, `:` or `"`;
+a shape is a `.3ds`, `.dts` or `.dif`.
+
+The client gets `clientr.g3dedit` back: `ok <op> <name>` or `error <why>`
+(off, not staff, no such object, a name taken, a bad number). `list` also
+sets `clientr.g3dedit_objects` to every object as
+`name:shape:x:y:z:ax:ay:az:angle`, space separated. The server log names
+the account, the edit and the backup. Everyone else's edits are refused,
+and the option is off by default.
+
+`docs/examples/g3deditor.gs2` is an editor weapon built on this: N and B
+pick an object, the arrows and Page Up/Down move it, Q and E turn it, C
+copies it, Delete removes it, and the camera follows the selected object.
+Give it to staff as a `weapon3d` line (`weapon3d G3DEditor
+weapons/g3deditor.gs2`, the file copied into the world folder). Terrain is
+not edited in game yet; use `seihai-edit3d` from seihai-servertools on the
+world folder for terrain, and for objects offline.
+
 ## What each protocol gets
 
 | Torque protocol | Clients | Mission start | Objects | Control |
@@ -349,6 +395,9 @@ same as `camera 0 -5 2 1 0 0 0.38`.
   `set` text each, which may or may not reach the script; how a 5.12 in 3D
   mode is meant to get server flags is not known yet.
 - World switches and per-player objects have loopback tests only.
+- In-game editing (`g3dedit`) and the example editor weapon have loopback
+  tests only; whether a 5.12 redraws a moved world object from its
+  transform update has not been seen yet.
 - A movetype on other players' screens was seen only from a 2D client
   (the sprite follows), with `interpolate`.
 - Movement data never carries a velocity, and a `list` never carries
