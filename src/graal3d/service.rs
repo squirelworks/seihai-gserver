@@ -32,7 +32,7 @@ use super::mutate::{self, Mutation};
 use super::objects::{bits, flags, GameObject, Ghost, Sky, Transform};
 use super::scene::{Scene, TgeControl};
 use super::tge;
-use crate::wire::ids::{PLO_FLAGDEL, PLO_FLAGSET, PLO_RAWDATA};
+use crate::wire::ids::{PLO_FLAGDEL, PLO_FLAGSET, PLO_LEVELNAME, PLO_RAWDATA};
 use seihai_core::protocol::ClientVersion;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
@@ -101,8 +101,10 @@ pub struct Options {
     /// its textures go to the client over TCP unasked, once per account a
     /// run (5.12 fetches the textures only on its second visit).
     pub push_terrain: bool,
-    /// What the push sends: [`super::assets::Checked::terrain_files`].
-    pub terrain_files: Vec<String>,
+    /// The other 3D worlds (`config/graal3dworlds/<name>.txt`), by
+    /// lower-case name. A player is in the one named after its 2D level,
+    /// else in the default world; a `g3dworld` trigger picks one.
+    pub worlds: Vec<(String, Scene)>,
     /// `graal3d_trace`: a file that gets one tab-separated line for each
     /// link, each event and control object change a client sends, and
     /// each 2D player shown, for multi-client labs.
@@ -123,6 +125,8 @@ enum Cmd {
         set: bool,
         text: Vec<u8>,
     },
+    /// The player was sent a level over TCP (`PLO_LEVELNAME`).
+    Level { player: u16, level: String },
 }
 
 #[derive(Default)]
@@ -132,6 +136,8 @@ struct Shared {
     /// Lower-case names of the files a 3D client is told the server does
     /// not have (see [`super::assets::Checked::refused`]).
     refused: std::collections::BTreeSet<String>,
+    /// Each 3D-capable player's 2D level, as last sent to it over TCP.
+    levels: HashMap<u16, String>,
 }
 
 /// The handle the rest of the server holds.
@@ -183,7 +189,11 @@ impl Graal3d {
 
     /// Its TCP session ended; its 3D link goes too.
     pub fn tcp_left(&self, id: u16) {
-        let had = self.lock().players.remove(&id).is_some();
+        let had = {
+            let mut s = self.lock();
+            s.levels.remove(&id);
+            s.players.remove(&id).is_some()
+        };
         if had {
             let _ = self.tx.send(Cmd::Left(id));
         }
@@ -196,7 +206,18 @@ impl Graal3d {
     /// Frames about to go to player `id` over TCP: its flag changes go to
     /// its 3D link too, and are kept for a link opened later.
     pub fn mirror(&self, id: u16, frames: &[Vec<u8>]) {
-        let changes = flag_messages(frames);
+        let (changes, level) = tcp_messages(frames);
+        if let Some(level) = level {
+            let level = String::from_utf8_lossy(&level).into_owned();
+            let linked = {
+                let mut s = self.lock();
+                s.levels.insert(id, level.clone());
+                s.linked.contains(&id)
+            };
+            if linked {
+                let _ = self.tx.send(Cmd::Level { player: id, level });
+            }
+        }
         if changes.is_empty() {
             return;
         }
@@ -277,8 +298,17 @@ pub fn compile_weapon3d(source: &str) -> Result<Vec<u8>, String> {
 /// still to skip carry over to the next frame, so a file's bytes are never
 /// read as messages (a pushed terrain PNG cut into 32000-byte frames sent
 /// its bytes to a 5.12 as flags, lab 2026-11-25).
-fn flag_messages(frames: &[Vec<u8>]) -> Vec<(bool, Vec<u8>)> {
+#[cfg(test)]
+fn flag_messages(frames: &[Vec<u8>]) -> FlagChanges {
+    tcp_messages(frames).0
+}
+
+/// [`flag_messages`], and the last level name (`PLO_LEVELNAME`) sent.
+type FlagChanges = Vec<(bool, Vec<u8>)>;
+
+fn tcp_messages(frames: &[Vec<u8>]) -> (FlagChanges, Option<Vec<u8>>) {
     let mut out = Vec::new();
+    let mut level = None;
     let mut skip = 0usize;
     for frame in frames {
         let mut rest = frame.as_slice();
@@ -299,6 +329,7 @@ fn flag_messages(frames: &[Vec<u8>]) -> Vec<(bool, Vec<u8>)> {
             match id {
                 PLO_FLAGSET => out.push((true, body.to_vec())),
                 PLO_FLAGDEL => out.push((false, body.to_vec())),
+                PLO_LEVELNAME => level = Some(body.to_vec()),
                 PLO_RAWDATA => {
                     // The next message is this long, newline and all.
                     let n = seihai_core::protocol::read_gint3(body).unwrap_or(0) as usize;
@@ -310,7 +341,7 @@ fn flag_messages(frames: &[Vec<u8>]) -> Vec<(bool, Vec<u8>)> {
             }
         }
     }
-    out
+    (out, level)
 }
 
 /// What the service asks of the game world.
@@ -500,7 +531,12 @@ fn camera_key(p: u16) -> Key {
 /// The UDP side's own state; owned by its task, or by a test.
 pub struct Service {
     hub: Arc<Graal3d>,
-    scene: Scene,
+    /// The 3D worlds by lower-case name; `""` is `graal3dworld.txt`.
+    scenes: BTreeMap<String, Arc<Scene>>,
+    /// The world each linked player is in (absent: the default).
+    world_of: HashMap<u16, String>,
+    /// Objects each player's client script hid (`g3dhide`), by name.
+    hidden: HashMap<u16, HashSet<Vec<u8>>>,
     world_dir: PathBuf,
     world: Box<dyn WorldInput>,
     secret: [u8; 32],
@@ -541,7 +577,9 @@ impl Service {
         let _ = getrandom::getrandom(&mut secret);
         Service {
             hub,
-            scene,
+            scenes: BTreeMap::from([(String::new(), Arc::new(scene))]),
+            world_of: HashMap::new(),
+            hidden: HashMap::new(),
             world_dir,
             world,
             secret,
@@ -591,8 +629,42 @@ impl Service {
         if opts.sharp3d {
             log("protocol 24 clients get the Sharp3D route (graal3d_route = sharp3d)");
         }
+        let mut opts = opts;
+        for (name, scene) in std::mem::take(&mut opts.worlds) {
+            self.scenes
+                .insert(name.to_ascii_lowercase(), Arc::new(scene));
+        }
         self.opts = opts;
         self
+    }
+
+    /// The world player `p` is in.
+    fn scene_of(&self, p: u16) -> Arc<Scene> {
+        let name = self.world_of.get(&p).map_or("", String::as_str);
+        self.scenes
+            .get(name)
+            .or_else(|| self.scenes.get(""))
+            .cloned()
+            .expect("the default world")
+    }
+
+    fn same_world(&self, a: u16, b: u16) -> bool {
+        self.world_of.get(&a) == self.world_of.get(&b)
+    }
+
+    /// The world a player in 2D level `level` is in: the one named after
+    /// the level (without its extension), else the default (`""`).
+    fn world_for_level(&self, level: &str) -> String {
+        let base = level.rsplit(['/', '\\']).next().unwrap_or(level);
+        let stem = base
+            .rsplit_once('.')
+            .map_or(base, |(a, _)| a)
+            .to_ascii_lowercase();
+        if !stem.is_empty() && self.scenes.contains_key(&stem) {
+            stem
+        } else {
+            String::new()
+        }
     }
 
     /// One trace line: milliseconds, the account, the protocol (0: the
@@ -629,6 +701,7 @@ impl Service {
                 cmd = rx.recv() => match cmd {
                     Some(Cmd::Left(id)) => self.player_left(id),
                     Some(Cmd::Flag { player, set, text }) => self.flag_to_client(player, set, &text),
+                    Some(Cmd::Level { player, level }) => self.level_changed(player, &level),
                     None => break,
                 },
                 _ = frame.tick() => {
@@ -788,23 +861,31 @@ impl Service {
             },
         );
         self.by_player.insert(id, from);
-        self.hub.lock().linked.insert(id);
-
-        let taken: Vec<[f32; 3]> = self
-            .avatars
-            .iter()
-            .filter(|(p, _)| **p != id)
-            .map(|(_, a)| a.transform.position)
-            .collect();
-        let mut start = self.scene.spawn;
-        start.position = spawn_point(start.position, &taken);
+        let level = {
+            let mut hub = self.hub.lock();
+            hub.linked.insert(id);
+            hub.levels.get(&id).cloned().unwrap_or_default()
+        };
+        let world = self.world_for_level(&level);
+        self.hidden.remove(&id);
+        if world.is_empty() {
+            self.world_of.remove(&id);
+        } else {
+            log(&format!(
+                "{} is in 3D world {world} ({level})",
+                player.account
+            ));
+            self.world_of.insert(id, world);
+        }
+        let scene = self.scene_of(id);
+        let start = self.free_spawn(id, &scene);
         let avatar = GameObject {
             name: format!("G3DPlayer_{}", player.account).into_bytes(),
-            shape: self.scene.player_shape.clone(),
+            shape: scene.player_shape.clone(),
             transform: start,
             nickname: player.nickname.clone(),
             flags: flags::SHADOW,
-            movetype: self.scene.player_movetype.clone(),
+            movetype: scene.player_movetype.clone(),
             ..GameObject::default()
         };
         self.avatars.insert(id, avatar.clone());
@@ -866,8 +947,9 @@ impl Service {
         caps: Option<&Caps>,
         profile: &handshake::Profile,
     ) {
+        let scene = self.scene_of(id);
         if !self.opts.push_terrain
-            || self.scene.terrain.is_none()
+            || scene.terrain.is_none()
             || !self.takes_terrain(caps, profile.tge)
         {
             return;
@@ -880,10 +962,11 @@ impl Service {
             );
             return;
         }
-        if !self.pushed_to.insert(account.to_string()) {
+        let world = self.world_of.get(&id).cloned().unwrap_or_default();
+        if !self.pushed_to.insert(format!("{account}\n{world}")) {
             return;
         }
-        let files = self.opts.terrain_files.clone();
+        let files = scene.push_files.clone();
         self.world.push_files(id, &files);
         let line = format!(
             "pushed {} terrain files over TCP (graal3d_pushterrain)",
@@ -896,17 +979,27 @@ impl Service {
     fn ghost_world(&mut self, at: SocketAddr) {
         // Every other linked player, as a stock TGE Player for a protocol 19
         // client (the GameObject form goes to the others).
-        let me = self.sessions.get(&at).map(|s| s.player);
+        let Some(me) = self.sessions.get(&at).map(|s| s.player) else {
+            return;
+        };
+        let scene = self.scene_of(me);
         let others: Vec<(u16, Ghost)> = self
             .avatars
             .keys()
-            .filter(|p| Some(**p) != me)
+            .filter(|p| **p != me && self.same_world(**p, me))
             .filter_map(|p| self.tge_avatar(*p).map(|g| (*p, g)))
             .collect();
-        let start = me
-            .and_then(|p| self.avatars.get(&p))
-            .map_or(self.scene.spawn.position, |a| a.transform.position);
-        let scene = &self.scene;
+        let start = self
+            .avatars
+            .get(&me)
+            .map_or(scene.spawn.position, |a| a.transform.position);
+        let shown = self.shown_objects(me, &scene);
+        let world_avatars: Vec<(u16, GameObject)> = self
+            .avatars
+            .iter()
+            .filter(|(p, _)| self.same_world(**p, me))
+            .map(|(p, a)| (*p, a.clone()))
+            .collect();
         let s = self.sessions.get_mut(&at).expect("just added");
         let id = s.player;
         if s.conn.profile().tge {
@@ -965,7 +1058,7 @@ impl Service {
                 }
             }
             for (i, o) in scene.objects.iter().enumerate() {
-                if matches!(o, Ghost::Raw(_)) {
+                if matches!(o, Ghost::Raw(_)) && shown[i] {
                     s.conn.set_ghost(i as Key + 1, o.clone());
                 }
             }
@@ -991,7 +1084,7 @@ impl Service {
             }
         };
         for (i, o) in scene.objects.iter().enumerate() {
-            if p21 && matches!(o, Ghost::Sky(_)) {
+            if p21 && matches!(o, Ghost::Sky(_)) || !shown[i] {
                 continue;
             }
             if offers(o) {
@@ -1027,9 +1120,8 @@ impl Service {
                 s.conn.set_ghost(TERRAIN, g);
             }
         }
-        for (other, a) in &self.avatars {
-            s.conn
-                .set_ghost(avatar_key(*other), Ghost::GameObject(a.clone()));
+        for (other, a) in world_avatars {
+            s.conn.set_ghost(avatar_key(other), Ghost::GameObject(a));
         }
         // The Sharp3D route's control object is the Camera (below).
         let sharp3d = s.conn.profile().ghost_always;
@@ -1058,8 +1150,11 @@ impl Service {
     /// Lab: the world's `rawevent` lines (`late`: the ones for after the
     /// mission start).
     fn send_raw_events(&mut self, at: SocketAddr, late: bool) {
+        let Some(player) = self.sessions.get(&at).map(|s| s.player) else {
+            return;
+        };
         let events: Vec<_> = self
-            .scene
+            .scene_of(player)
             .raw_events
             .iter()
             .filter(|e| e.late == late)
@@ -1139,23 +1234,24 @@ impl Service {
     /// position, Torque (x, -y), at the spawn's height, with its nickname
     /// and chat; it goes when the player leaves the level.
     pub fn show_2d_players(&mut self, roster: crate::world::Roster) {
-        let z = self.scene.spawn.position[2];
         let mut traces = Vec::new();
         for (me, others) in roster {
             let Some(at) = self.by_player.get(&me).copied() else {
                 continue;
             };
+            let scene = self.scene_of(me);
+            let z = scene.spawn.position[2];
             let want: BTreeMap<u16, GameObject> = others
                 .into_iter()
                 .filter(|o| !self.by_player.contains_key(&o.id))
                 .map(|o| {
-                    let mut transform = self.scene.spawn;
+                    let mut transform = scene.spawn;
                     transform.position = [o.x, -o.y, z];
                     (
                         o.id,
                         GameObject {
                             name: format!("G2DPlayer_{}", o.account).into_bytes(),
-                            shape: self.scene.player_shape.clone(),
+                            shape: scene.player_shape.clone(),
                             transform,
                             nickname: o.nick,
                             chat: o.chat,
@@ -1165,8 +1261,8 @@ impl Service {
                     )
                 })
                 .collect();
-            let tge_shape = self.scene.tge_player_shape.clone();
-            let tge_others = self.scene.tge_control == TgeControl::Player && !tge_shape.is_empty();
+            let tge_shape = scene.tge_player_shape.clone();
+            let tge_others = scene.tge_control == TgeControl::Player && !tge_shape.is_empty();
             let Some(s) = self.sessions.get_mut(&at) else {
                 continue;
             };
@@ -1263,7 +1359,8 @@ impl Service {
     /// Player state when it plays on protocol 19, else at its object's
     /// position. `None` without a `tgeplayershape`.
     fn tge_avatar(&self, p: u16) -> Option<Ghost> {
-        if self.scene.tge_player_shape.is_empty() {
+        let scene = self.scene_of(p);
+        if scene.tge_player_shape.is_empty() {
             return None;
         }
         let state = self
@@ -1274,12 +1371,12 @@ impl Service {
                 position: self
                     .avatars
                     .get(&p)
-                    .map_or(self.scene.spawn.position, |a| a.transform.position),
+                    .map_or(scene.spawn.position, |a| a.transform.position),
                 ..tge::PlayerState::default()
             });
         Some(Ghost::TgePlayer(tge::Player {
             state,
-            shape: self.scene.tge_player_shape.clone(),
+            shape: scene.tge_player_shape.clone(),
         }))
     }
 
@@ -1291,8 +1388,10 @@ impl Service {
         };
         let tge_form = self.tge_avatar(p);
         let own = self.by_player.get(&p).copied();
+        let world = self.world_of.get(&p).cloned();
         for (addr, s) in self.sessions.iter_mut() {
-            if Some(*addr) == skip {
+            // Only the players in its world see it.
+            if Some(*addr) == skip || self.world_of.get(&s.player) != world.as_ref() {
                 continue;
             }
             s.conn
@@ -1343,7 +1442,8 @@ impl Service {
             return;
         };
         let (caps, tge, account) = (s.caps, s.conn.profile().tge, s.account.clone());
-        if self.scene.terrain.is_none() {
+        let scene = self.scene_of(s.player);
+        if scene.terrain.is_none() {
             log(&format!(
                 "{account} asked for terrain chunks; the world has no terrain line"
             ));
@@ -1356,7 +1456,7 @@ impl Service {
             ));
             return;
         }
-        let Some(t) = &self.scene.terrain else {
+        let Some(t) = &scene.terrain else {
             return;
         };
         let events = t.answer(stamps);
@@ -1409,7 +1509,7 @@ impl Service {
                 // Sky, and they arrive over TCP after the first: again.
                 if !tge {
                     let keys: Vec<Key> = self
-                        .scene
+                        .scene_of(player)
                         .objects
                         .iter()
                         .enumerate()
@@ -1472,7 +1572,10 @@ impl Service {
     }
 
     fn send_weapons(&mut self, at: SocketAddr) {
-        let weapons = self.scene.weapons.clone();
+        let Some(player) = self.sessions.get(&at).map(|s| s.player) else {
+            return;
+        };
+        let weapons = self.scene_of(player).weapons.clone();
         if weapons.is_empty() {
             return;
         }
@@ -1581,7 +1684,21 @@ impl Service {
                         .split(',')
                         .map(|f| f.trim().trim_matches('"'))
                         .collect();
-                    if fields.len() == 6 && fields[2] == "g3dpos" {
+                    if fields.len() == 4 && fields[2] == "g3dworld" {
+                        if !self.switch_world(player, fields[3]) {
+                            log(&format!(
+                                "player {player}: no 3D world {} ({text})",
+                                fields[3]
+                            ));
+                        }
+                    } else if fields.len() == 4 && matches!(fields[2], "g3dhide" | "g3dshow") {
+                        if !self.hide_object(player, fields[3], fields[2] == "g3dhide") {
+                            log(&format!(
+                                "player {player}: no 3D object {} ({text})",
+                                fields[3]
+                            ));
+                        }
+                    } else if fields.len() == 6 && fields[2] == "g3dpos" {
                         let pos = format!("{} {} {}", fields[3], fields[4], fields[5]);
                         if !self.move_avatar(player, &pos) {
                             log(&format!("player {player}: g3dpos not moved ({text})"));
@@ -1693,7 +1810,7 @@ impl Service {
             st.position = to;
             let ghost = Ghost::TgePlayer(tge::Player {
                 state: *st,
-                shape: self.scene.tge_player_shape.clone(),
+                shape: self.scene_of(player).tge_player_shape.clone(),
             });
             if let Some(s) = self
                 .by_player
@@ -1705,6 +1822,176 @@ impl Service {
         }
         self.broadcast_avatar(player, None);
         self.follow_on_tcp(player);
+        true
+    }
+
+    /// Where a player arriving in its world stands: the spawn point, or
+    /// the first free spot around it.
+    fn free_spawn(&self, id: u16, scene: &Scene) -> Transform {
+        let taken: Vec<[f32; 3]> = self
+            .avatars
+            .iter()
+            .filter(|(p, _)| **p != id && self.same_world(**p, id))
+            .map(|(_, a)| a.transform.position)
+            .collect();
+        let mut start = scene.spawn;
+        start.position = spawn_point(start.position, &taken);
+        start
+    }
+
+    /// For each of the world's objects, whether player `p` is sent it:
+    /// not an `objectfor` object for others, and not hidden by `g3dhide`.
+    fn shown_objects(&self, p: u16, scene: &Scene) -> Vec<bool> {
+        let account = self
+            .by_player
+            .get(&p)
+            .and_then(|at| self.sessions.get(at))
+            .map(|s| s.account.to_ascii_lowercase())
+            .unwrap_or_default();
+        let hidden = self.hidden.get(&p);
+        scene
+            .objects
+            .iter()
+            .enumerate()
+            .map(|(i, o)| {
+                let for_me = scene
+                    .only
+                    .get(&i)
+                    .is_none_or(|accounts| accounts.contains(&account));
+                let name = match o {
+                    Ghost::GameObject(g) => Some(&g.name),
+                    _ => None,
+                };
+                let hid = name.is_some_and(|n| hidden.is_some_and(|h| h.contains(n)));
+                for_me && !hid
+            })
+            .collect()
+    }
+
+    /// The player's TCP level changed: it goes to the world named after
+    /// that level, or back to the default one.
+    fn level_changed(&mut self, player: u16, level: &str) {
+        let world = self.world_for_level(level);
+        if self.world_of.get(&player).map_or("", String::as_str) != world {
+            self.switch_world(player, &world);
+        }
+    }
+
+    /// Takes player `p` to 3D world `name` (`""` or `default`: the
+    /// default) without a relink: its client's ghosts of the old world are
+    /// deleted, the new world's sent, and its object stands at the new
+    /// spawn. False when there is no such world.
+    pub fn switch_world(&mut self, p: u16, name: &str) -> bool {
+        let mut name = name.trim().to_ascii_lowercase();
+        if name == "default" || name == "-" {
+            name.clear();
+        }
+        if !self.scenes.contains_key(&name) {
+            return false;
+        }
+        let Some(at) = self.by_player.get(&p).copied() else {
+            return false;
+        };
+        if self.world_of.get(&p).map_or("", String::as_str) == name {
+            return true;
+        }
+        // The old world's players lose it, and it loses everything but its
+        // own object, its Camera and the 2D players of its level.
+        for s in self.sessions.values_mut() {
+            if s.player != p {
+                s.conn.remove_ghost(avatar_key(p));
+            }
+        }
+        if let Some(s) = self.sessions.get_mut(&at) {
+            let keep = [avatar_key(p), camera_key(p)];
+            for k in s.conn.ghost_keys() {
+                if !keep.contains(&k) && !(PLAYER_2D..PLAYER_2D + 0x1_0000).contains(&k) {
+                    s.conn.remove_ghost(k);
+                }
+            }
+        }
+        if name.is_empty() {
+            self.world_of.remove(&p);
+        } else {
+            self.world_of.insert(p, name.clone());
+        }
+        self.hidden.remove(&p);
+        let scene = self.scene_of(p);
+        let start = self.free_spawn(p, &scene);
+        let now = self.now();
+        if let Some(a) = self.avatars.get_mut(&p) {
+            a.transform = start;
+            a.shape = scene.player_shape.clone();
+            a.movetype = scene.player_movetype.clone();
+        }
+        if let Some(st) = self.tge_seen.get_mut(&p) {
+            st.position = start.position;
+        }
+        self.moved_until.insert(p, now + SERVER_MOVE_HOLD_MS);
+        if let Some(r) = self.last_report.get(&p) {
+            self.stale_report.insert(p, *r);
+        }
+        let (account, protocol, caps, profile) = {
+            let s = &self.sessions[&at];
+            (
+                s.account.clone(),
+                s.conn.profile().protocol,
+                s.caps,
+                s.conn.profile(),
+            )
+        };
+        self.push_terrain(p, &account, caps.as_ref(), profile);
+        self.ghost_world(at);
+        self.broadcast_avatar(p, None);
+        self.follow_on_tcp(p);
+        self.send_weapons(at);
+        if let Some(s) = self.sessions.get_mut(&at) {
+            let pos = start.position;
+            let label = if name.is_empty() { "default" } else { &name };
+            let lines = format!(
+                "s clientr.g3dworld={label}\ns clientr.g3dpos={} {} {}\n",
+                pos[0], pos[1], pos[2]
+            );
+            s.conn.send_text(b"", b"events", b"", lines.as_bytes());
+        }
+        let line = format!(
+            "now in 3D world {}",
+            if name.is_empty() { "default" } else { &name }
+        );
+        log(&format!("{account}: {line}"));
+        self.trace(&account, protocol, &line);
+        true
+    }
+
+    /// `g3dhide` / `g3dshow`: the world object named `name` goes from, or
+    /// back to, player `p`'s screen only.
+    pub fn hide_object(&mut self, p: u16, name: &str, hide: bool) -> bool {
+        let scene = self.scene_of(p);
+        let Some(i) = scene.objects.iter().position(|o| match o {
+            Ghost::GameObject(g) => g.name == name.as_bytes(),
+            _ => false,
+        }) else {
+            return false;
+        };
+        let set = self.hidden.entry(p).or_default();
+        if hide {
+            set.insert(name.as_bytes().to_vec());
+        } else {
+            set.remove(name.as_bytes());
+        }
+        let shown = self.shown_objects(p, &scene)[i];
+        let Some(s) = self
+            .by_player
+            .get(&p)
+            .and_then(|at| self.sessions.get_mut(at))
+        else {
+            return true;
+        };
+        if shown {
+            s.conn.set_ghost(i as Key + 1, scene.objects[i].clone());
+        } else {
+            s.conn.remove_ghost(i as Key + 1);
+        }
         true
     }
 
@@ -1731,10 +2018,14 @@ impl Service {
             self.stale_report.remove(&s.player);
             self.last_report.remove(&s.player);
             self.tcp_position.remove(&s.player);
+            self.world_of.remove(&s.player);
+            self.hidden.remove(&s.player);
             let mut deleted = 0;
             for other in self.sessions.values_mut() {
+                if other.conn.ghost_index(avatar_key(s.player)).is_some() {
+                    deleted += 1;
+                }
                 other.conn.remove_ghost(avatar_key(s.player));
-                deleted += 1;
             }
             log(&format!(
                 "{}: object deleted on {deleted} other clients",
@@ -2277,6 +2568,136 @@ spawn 0 0 1
         // Well past the two-second hold.
         run(&mut s, &mut clients, now, 60);
         assert_eq!(s.avatars[&1].transform.position, [5.0, 6.0, 7.0]);
+    }
+
+    fn object_names(s: &Service, at: &SocketAddr) -> Vec<String> {
+        let c = s.connection(at).unwrap();
+        c.ghost_keys()
+            .into_iter()
+            .filter_map(|k| match c.ghost(k) {
+                Some(Ghost::GameObject(g)) => Some(String::from_utf8_lossy(&g.name).into_owned()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_player_goes_to_another_3d_world_without_a_relink() {
+        let (s, hub, _) = service(
+            "object house house.dif 1 2 3
+playershape labcube.3ds
+spawn 0 0 1
+",
+        );
+        let (cave, errors) = Scene::parse("object rock rock.dts 4 4 0\nspawn 10 10 1\n");
+        assert!(errors.is_empty());
+        let mut s = s.with_options(Options {
+            worlds: vec![("Cave".into(), cave)],
+            ..Options::default()
+        });
+        hub.tcp_joined(1, tcp("one"));
+        hub.tcp_joined(2, tcp("two"));
+        let a: SocketAddr = "127.0.0.1:40000".parse().unwrap();
+        let b: SocketAddr = "127.0.0.1:40001".parse().unwrap();
+        handshake(&mut s, a, 24, b"one").unwrap();
+        handshake(&mut s, b, 24, b"two").unwrap();
+        let mut clients = [
+            (a, FakeClient::new(&PROTOCOL_24)),
+            (b, FakeClient::new(&PROTOCOL_24)),
+        ];
+        let now = run(&mut s, &mut clients, 0, 12);
+        assert!(object_names(&s, &a).contains(&"house".to_string()));
+        assert!(object_names(&s, &a).contains(&"G3DPlayer_two".to_string()));
+
+        // A g3dworld trigger takes player one to the cave.
+        let mut text = Vec::new();
+        for ev in crate::graal3d::events::big_data_events(
+            1,
+            b"",
+            b"events",
+            b"",
+            b"t weapon,-x,g3dworld,cave\n",
+        ) {
+            text.push(ev);
+        }
+        for ev in text {
+            clients[0].1.events.send(ev);
+        }
+        let now = run(&mut s, &mut clients, now, 12);
+        let one = object_names(&s, &a);
+        assert!(one.contains(&"rock".to_string()), "{one:?}");
+        assert!(!one.contains(&"house".to_string()), "{one:?}");
+        assert!(!one.contains(&"G3DPlayer_two".to_string()), "{one:?}");
+        assert!(one.contains(&"G3DPlayer_one".to_string()), "{one:?}");
+        assert!(!object_names(&s, &b).contains(&"G3DPlayer_one".to_string()));
+        assert_eq!(s.avatars[&1].transform.position, [10.0, 10.0, 1.0]);
+        let c = s.connection(&a).unwrap();
+        assert!(c.control_delivered());
+
+        // Its 2D level leads back: a level with no world is the default one.
+        s.level_changed(1, "start.nw");
+        let now = run(&mut s, &mut clients, now, 12);
+        assert!(object_names(&s, &a).contains(&"house".to_string()));
+        assert!(object_names(&s, &b).contains(&"G3DPlayer_one".to_string()));
+        s.level_changed(1, "levels/Cave.nw");
+        run(&mut s, &mut clients, now, 12);
+        assert!(object_names(&s, &a).contains(&"rock".to_string()));
+        assert!(!s.switch_world(1, "nowhere"));
+    }
+
+    #[test]
+    fn a_level_sent_over_tcp_before_the_link_picks_the_world() {
+        let (s, hub, _) = service("object house house.dif 1 2 3\n");
+        let (cave, _) = Scene::parse("object rock rock.dts 4 4 0\n");
+        let mut s = s.with_options(Options {
+            worlds: vec![("cave".into(), cave)],
+            ..Options::default()
+        });
+        hub.tcp_joined(1, tcp("one"));
+        let mut f = vec![PLO_LEVELNAME + 32];
+        f.extend_from_slice(b"cave.nw\n");
+        hub.mirror(1, &[f]);
+        let a: SocketAddr = "127.0.0.1:40000".parse().unwrap();
+        handshake(&mut s, a, 24, b"one").unwrap();
+        let mut clients = [(a, FakeClient::new(&PROTOCOL_24))];
+        run(&mut s, &mut clients, 0, 12);
+        let one = object_names(&s, &a);
+        assert!(one.contains(&"rock".to_string()), "{one:?}");
+        assert!(!one.contains(&"house".to_string()), "{one:?}");
+    }
+
+    #[test]
+    fn objects_can_be_for_some_players_only() {
+        let (mut s, hub, _) = service(
+            "objectfor one,three secret box.3ds 1 1 1
+object door door.3ds 2 2 2
+",
+        );
+        hub.tcp_joined(1, tcp("one"));
+        hub.tcp_joined(2, tcp("two"));
+        let a: SocketAddr = "127.0.0.1:40000".parse().unwrap();
+        let b: SocketAddr = "127.0.0.1:40001".parse().unwrap();
+        handshake(&mut s, a, 24, b"one").unwrap();
+        handshake(&mut s, b, 24, b"two").unwrap();
+        let mut clients = [
+            (a, FakeClient::new(&PROTOCOL_24)),
+            (b, FakeClient::new(&PROTOCOL_24)),
+        ];
+        let now = run(&mut s, &mut clients, 0, 12);
+        assert!(object_names(&s, &a).contains(&"secret".to_string()));
+        assert!(!object_names(&s, &b).contains(&"secret".to_string()));
+
+        // Player one hides the door on its own screen only, then shows it.
+        assert!(s.hide_object(1, "door", true));
+        let now = run(&mut s, &mut clients, now, 6);
+        assert!(!object_names(&s, &a).contains(&"door".to_string()));
+        assert!(object_names(&s, &b).contains(&"door".to_string()));
+        assert!(s.hide_object(1, "door", false));
+        run(&mut s, &mut clients, now, 6);
+        assert!(object_names(&s, &a).contains(&"door".to_string()));
+        assert!(!s.hide_object(1, "nothing", true));
+        // Two only sees the door; one cannot hide what two is not sent.
+        assert!(!s.hide_object(2, "nothing", true));
     }
 
     #[test]

@@ -75,6 +75,7 @@ weapon3d <name> <file>
 terrain <folder> [<square size>] [repeat]
 water <x> <y> <z> <sx> <sy> <sz> [<surface texture> [<liquid type>]]
 replicator <class> <x> <y> <z> <radius> <min> <max> <shapes> [<seed> [<x0> <y0> <x1> <y1>]]
+objectfor <accounts> <name> <shape> <x> <y> <z> [...as object]
 ```
 
 A sample:
@@ -216,6 +217,36 @@ classic `X`/`Y` props whenever it moves half a tile or more. So serverside
 scripts and 2D players in its level see where it is. Positions off the 64 x 64
 map are left alone.
 
+## More worlds and level warps
+
+`config/graal3dworld.txt` is the default world. Each
+`config/graal3dworlds/<name>.txt` is another, in the same format. A 3D player
+is in the world named after its 2D level (`cave.nw` or `levels/cave.nw` is
+world `cave`, any case), else in the default one, so a warp on the TCP side
+(a link, or a serverside `setlevel2`) takes its 3D client along. A client
+script can also ask: `triggerserver(<kind>, <weapon>, "g3dworld", "cave")`, or
+`"default"` to go back.
+
+The switch needs no relink. The client is sent deletes for every ghost of the
+old world (objects, Sky, terrain, other players), then the new world's, as on
+a first link; its own object and Camera stay and move to the new `spawn`
+(or the first free spot around it) and `camera`. Weapons of the new world's
+`weapon3d` lines are sent, and the terrain files are pushed again with
+`graal3d_pushterrain` (once per account and world). The client gets
+`clientr.g3dworld` (`default` or the name) and a new `clientr.g3dpos`. Each
+player sees only the players in its own world. Clients ask for
+`heights.info` by its bare name, so all worlds with a `terrain` line share
+one `heights.info`.
+
+## Objects for some players only
+
+`objectfor one,two door door.3ds 2 2 0` is an `object` line that only the
+accounts `one` and `two` are sent. A client script can hide any world object
+from its own player, and bring it back, by name:
+`triggerserver(<kind>, <weapon>, "g3dhide", "door")` and `"g3dshow"`. The
+object is deleted on, or sent again to, that client only. Hidden objects
+come back on a relink or a world switch.
+
 ## What each protocol gets
 
 | Torque protocol | Clients | Mission start | Objects | Control |
@@ -289,6 +320,7 @@ same as `camera 0 -5 2 1 0 0 0.38`.
   still read `server.x` empty (lab, 2026-11-26). They now also go as one
   `set` text each, which may or may not reach the script; how a 5.12 in 3D
   mode is meant to get server flags is not known yet.
+- World switches and per-player objects have loopback tests only.
 - A movetype on other players' screens was seen only from a 2D client
   (the sprite follows), with `interpolate`.
 - Movement data never carries a velocity, and a `list` never carries

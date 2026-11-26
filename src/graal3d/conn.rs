@@ -305,6 +305,16 @@ impl Connection {
         self.slots.len()
     }
 
+    /// The keys of the ghosts this client has or is getting (not those
+    /// being deleted).
+    pub fn ghost_keys(&self) -> Vec<Key> {
+        self.slots
+            .iter()
+            .filter(|(_, s)| !s.kill)
+            .map(|(k, _)| *k)
+            .collect()
+    }
+
     /// Everything the connection wants done since the last call.
     pub fn take_out(&mut self) -> Vec<Out> {
         std::mem::take(&mut self.out)

@@ -345,7 +345,8 @@ pub fn check_scene_files(
     };
 
     let mut kept = Vec::with_capacity(scene.objects.len());
-    for o in std::mem::take(&mut scene.objects) {
+    let only = std::mem::take(&mut scene.only);
+    for (i, o) in std::mem::take(&mut scene.objects).into_iter().enumerate() {
         let ok = match &o {
             Ghost::GameObject(g) => shape_ok(
                 &format!("object {}", String::from_utf8_lossy(&g.name)),
@@ -361,6 +362,10 @@ pub fn check_scene_files(
             _ => true,
         };
         if ok {
+            // An `objectfor` object keeps its accounts at its new index.
+            if let Some(a) = only.get(&i) {
+                scene.only.insert(kept.len(), a.clone());
+            }
             kept.push(o);
         }
     }
