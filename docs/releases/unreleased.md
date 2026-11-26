@@ -41,6 +41,7 @@ Notes for the next seihai-gserver release.
 
 ## Fixed
 
+- **3D: grass replicators are big enough to see.** `DynamicGrass` and `DynamicGrassReplicator` went out at scale 1, about 0.6-unit quads, and a real 5.12 on OpenGL drew none (lab, 2026-11-26); a lab line at scale 3 drew. Grass lines now default to scale 3, and any `replicator` line takes `scale=<n>` or `scale=<min>,<max>`.
 - **3D: `triggerserver("gui", ...)` from a `weapon3d` reaches the weapon's serverside.** A real 5.12 sends it over the 3D link as a `t gui,<weapon>,<params>` line, and the server ignored it (lab capture, 2026-11-26). It now goes to the world as a serverside trigger, the same as `t weapon,...`.
 - **Listed by a listserver with a `gservers` allow-list.** The new `listserver_hq_password` setting is sent as `SERVERHQPASS` (23) before `NEWSERVER`, inside the encrypted link; such a listserver ignored `NEWSERVER` without it and never listed the server. Off when empty; a warning says when the link is plain. Loopback test against seihai-listserver with an allow-list row and HQ password.
 - **`seihai-rc nc discover` finds the NC.** An RC's player list now starts with the NPC-Server (`NPC-Server (Server)`, account `(npcserver)`, at the id kept for it), so an RC asks its `location` (94) and gets this server's own address (79), where NC logins are served. Before, the list had no `(Server)` player, so discover asked nothing. Loopback test with seihai-rc's gen5 and classic RC logins, then an NC login at the found address.
@@ -76,3 +77,5 @@ Notes for the next seihai-gserver release.
 
 
 - Adopt NPC-server script GANI attribute persistence and reload replay; an offline integration test exercises the existing gserver mirror through production script updates and fresh NPC database reload. Native NC attribute editing remains open (#49).
+
+- `weapon3d` scripts are compiled without the GS2 variable cache for clients before 6.x (3.153 to 5.x). Only a 6.x loader keeps a cached command name callable, so on a 4.x or 5.x client a command used five times or in a loop did nothing. Frankenstein 6.037 and other 6.x logins keep the official shape. Uses seihai-core #168 (`Options::no_var_cache`).

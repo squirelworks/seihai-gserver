@@ -260,6 +260,9 @@ pub struct Replicator {
     pub seed: u32,
     /// World x/y region a cell's corner must lie in: x0, y0, x1, y1.
     pub area: [i16; 4],
+    /// Each copy's size, picked between these (the same on every axis).
+    /// For the grass classes this is the quad size: 1 is about 0.6 units.
+    pub scale: [f32; 2],
 }
 
 /// A whole-world box.
@@ -282,7 +285,7 @@ impl Replicator {
     }
 
     /// A whole GameObject update (name and position), then the replicator's
-    /// part. Fixed: scale 1, any turn about z, terrain only, slopes to 90
+    /// part. Fixed: any turn about z, terrain only, slopes to 90
     /// degrees, no alignment, shown.
     pub fn write(&self, w: &mut BitWriter) {
         use super::objects::bits;
@@ -306,7 +309,8 @@ impl Replicator {
         for v in [x0, y0, -32767, x1, y1, 32767] {
             signed(w, v.into(), 16);
         }
-        for v in [1.0, 1.0, 1.0, 1.0, 1.0, 1.0] {
+        let [lo, hi] = self.scale;
+        for v in [lo, lo, lo, hi, hi, hi] {
             w.f32(v); // scale min, max
         }
         for v in [0.0, 0.0, 0.0, 0.0, 0.0, 360.0] {
@@ -438,6 +442,7 @@ mod tests {
             shapes: b"grass.dts".to_vec(),
             seed: 1,
             area: ANYWHERE,
+            scale: [3.0, 3.0],
         };
         let mut w = BitWriter::new();
         rep.write(&mut w);

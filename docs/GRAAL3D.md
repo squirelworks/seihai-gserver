@@ -156,11 +156,14 @@ with no spaces. `DynamicGrass` and `DynamicGrassReplicator` are different:
 they build their own flat ground pieces from a **texture** named in that list
 (`replicator DynamicGrass 0 0 0 4 20 40 blades.png`), draw nothing for a
 `.3ds` or `.dts`, and take up to 100 a cell. The start-up check says so when
-a grass line names a shape. The optional box `x0 y0 x1 y1` is the world x/y region a
+a grass line names a shape. A mostly transparent grass texture draws next to
+nothing. The optional box `x0 y0 x1 y1` is the world x/y region a
 cell's corner must lie in; without one, cover may grow anywhere. Cover is
 placed by casting rays, so it needs real ground (streamed terrain or solid
-objects). The rest is fixed: scale 1, any turn about z, terrain only, slopes
-up to 90 degrees, shown.
+objects). `scale=<n>` or `scale=<min>,<max>` anywhere after the class sizes
+the copies (default 1; for the grass classes 3, since a grass quad at 1 is
+only about 0.6 units). The rest is fixed: any turn about z, terrain only,
+slopes up to 90 degrees, shown.
 
 A 5.12 grows cover only from the shapes and ground it has when it reads the
 replicator, and grows it again on each update. On a first visit those files
