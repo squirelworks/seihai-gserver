@@ -4,6 +4,11 @@
 //!
 //! ```text
 //! object <name> <shape> <x> <y> <z> [<axis x> <axis y> <axis z> <angle> [<sx> <sy> <sz>]]
+//! objectfor <accounts> <name> <shape> <x> <y> <z> ...
+//!                           an object only those accounts (comma
+//!                           separated) are sent; a client script can also
+//!                           hide or show any object for its own player
+//!                           (`g3dhide`, `g3dshow`)
 //! sun <dir x> <dir y> <dir z> <r> <g> <b> <a> <ambient r> <g> <b> <a>
 //! sky <textures> [<visible distance> [<fog r> <g> <b>]]
 //!                           six names, comma separated, no spaces ("-" for none)
@@ -86,6 +91,12 @@ pub struct Scene {
     pub terrain: Option<Terrain>,
     /// Lab: the `rawevent` lines.
     pub raw_events: Vec<super::raw::RawEvent>,
+    /// `objectfor`: the index in `objects` of each object only some
+    /// players see, and their lower-case accounts.
+    pub only: std::collections::BTreeMap<usize, Vec<String>>,
+    /// The files `graal3d_pushterrain` sends for this world's terrain
+    /// ([`super::assets::Checked::terrain_files`]).
+    pub push_files: Vec<String>,
 }
 
 fn floats<const N: usize>(words: &[&str]) -> Option<[f32; N]> {
@@ -106,7 +117,21 @@ impl Scene {
         let mut errors = Vec::new();
         for (n, raw) in text.lines().enumerate() {
             let line = raw.split('#').next().unwrap_or("");
-            let w: Vec<&str> = line.split_whitespace().collect();
+            let mut w: Vec<&str> = line.split_whitespace().collect();
+            // `objectfor <accounts> <object words>`: an object line seen
+            // only by those accounts.
+            let mut only = None;
+            if w.first() == Some(&"objectfor") && w.len() >= 3 {
+                only = Some(
+                    w[1].split(',')
+                        .filter(|a| !a.is_empty())
+                        .map(str::to_ascii_lowercase)
+                        .collect::<Vec<_>>(),
+                );
+                w.drain(..2);
+                w.insert(0, "object");
+            }
+            let objects_before = s.objects.len();
             let Some(first) = w.first() else {
                 continue;
             };
@@ -402,6 +427,9 @@ impl Scene {
                 }
                 _ => false,
             };
+            if let Some(accounts) = only.filter(|_| ok && s.objects.len() > objects_before) {
+                s.only.insert(objects_before, accounts);
+            }
             if !ok {
                 errors.push(format!("line {}: {}", n + 1, raw.trim()));
             }
@@ -462,6 +490,19 @@ mod tests {
         assert_eq!(s.player_movetype, b"rigid");
         assert_eq!(s.weapons[0].name, "-walk3d");
         assert_eq!(Scene::parse("movetype walk\n").1.len(), 1);
+    }
+
+    #[test]
+    fn an_objectfor_line_names_its_accounts() {
+        let (s, errors) =
+            Scene::parse("object a a.dts 0 0 0\nobjectfor One,two b b.dts 1 1 1\nobjectfor x\n");
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(s.objects.len(), 2);
+        assert_eq!(
+            s.only.get(&1),
+            Some(&vec!["one".to_string(), "two".to_string()])
+        );
+        assert!(!s.only.contains_key(&0));
     }
 
     #[test]

@@ -137,73 +137,41 @@ pub async fn start_graal3d(
         }
         Err(e) => return Err(e),
     };
-    let (mut scene, errors) = graal3d::scene::Scene::parse(&text);
-    for e in errors {
-        eprintln!("Graal3D: graal3dworld.txt {e} (not understood)");
-    }
-    for note in scene.load_terrain(&server.cfg.world) {
-        eprintln!("Graal3D: terrain {note}");
-    }
-    // Every file the world names, looked up as a 3D client asks for it,
-    // and checked for the faults that crashed real clients.
-    let find = |name: &str| {
-        server
-            .files
-            .find(name)
-            .or_else(|| graal3d::extensionless_texture(&server.files, name))
-            .map(|f| (f.name, f.data))
-    };
-    let heights_info = scene
-        .terrain
-        .as_ref()
-        .and_then(|_| server.files.find("heights.info"))
-        .map(|f| f.data);
-    // Clients ask for heights.info by its bare name, so the one the file
-    // folders find must be the terrain's own.
-    if let Some(t) = &scene.terrain {
-        let own = server.cfg.world.join(&t.folder).join("heights.info");
-        if !own.is_file() && heights_info.is_some() {
-            eprintln!(
-                "Graal3D: ERROR terrain: the heights.info the clients get is not the one in {}",
-                t.folder
-            );
-        }
-    }
-    // Lab: the files of the rawobject and rawevent lines.
-    let read = |name: &str| -> Option<Vec<u8>> {
-        let p = std::path::Path::new(name);
-        p.components()
-            .all(|c| matches!(c, std::path::Component::Normal(_)))
-            .then(|| std::fs::read(server.cfg.world.join(p)).ok())
-            .flatten()
-    };
-    for o in &mut scene.objects {
-        if let graal3d::objects::Ghost::Raw(r) = o {
-            for e in graal3d::raw::load_files(&mut r.fields, &read) {
-                eprintln!("Graal3D: rawobject {}: {e}", r.class);
+    let mut refused = std::collections::BTreeSet::new();
+    let scene = load_3d_world(server, "graal3dworld.txt", &text, &mut refused);
+    // More worlds: config/graal3dworlds/<name>.txt, entered from the 2D
+    // level of that name or with a g3dworld trigger.
+    let mut worlds = Vec::new();
+    let dir = server.cfg.world.join("config").join("graal3dworlds");
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        let mut paths: Vec<_> = entries.flatten().map(|e| e.path()).collect();
+        paths.sort();
+        for p in paths {
+            let is_txt = p.extension().is_some_and(|e| e.eq_ignore_ascii_case("txt"));
+            let Some(name) = p.file_stem().and_then(|n| n.to_str()).filter(|_| is_txt) else {
+                continue;
+            };
+            let name = name.to_ascii_lowercase();
+            if name.is_empty() || name == "default" {
+                eprintln!("Graal3D: graal3dworlds/{name}.txt: that name is the default world's; not loaded");
+                continue;
             }
+            let Ok(text) = std::fs::read_to_string(&p) else {
+                eprintln!("Graal3D: cannot read graal3dworlds/{name}.txt");
+                continue;
+            };
+            let label = format!("graal3dworlds/{name}.txt");
+            let w = load_3d_world(server, &label, &text, &mut refused);
+            eprintln!("Graal3D: 3D world {name} ({} objects)", w.objects.len());
+            worlds.push((name, w));
         }
     }
-    for ev in &mut scene.raw_events {
-        for e in graal3d::raw::load_files(&mut ev.fields, &read) {
-            eprintln!("Graal3D: rawevent {}: {e}", ev.class);
-        }
-    }
-    let checked = graal3d::assets::check_scene_files(
-        &mut scene,
-        &find,
-        heights_info,
-        server.cfg.graal3d_shapecheck,
-    );
-    for note in &checked.notes {
-        eprintln!("Graal3D: {note}");
-    }
-    g.set_refused(checked.refused);
+    g.set_refused(refused);
     let trace = server.cfg.graal3d_trace.as_str();
     let opts = graal3d::service::Options {
         terrain_all: server.cfg.graal3d_terrainall,
         push_terrain: server.cfg.graal3d_pushterrain,
-        terrain_files: checked.terrain_files,
+        worlds,
         trace: (!trace.is_empty()).then(|| std::path::PathBuf::from(trace)),
         sharp3d: server.cfg.graal3d_sharp3d,
         mutation: server.cfg.graal3d_mutate,
@@ -221,6 +189,81 @@ pub async fn start_graal3d(
         opts,
     )
     .await
+}
+
+/// One 3D world file read, its terrain loaded and its files checked; the
+/// files it refuses are added to `refused`.
+fn load_3d_world(
+    server: &Arc<server::Server>,
+    label: &str,
+    text: &str,
+    refused: &mut std::collections::BTreeSet<String>,
+) -> graal3d::scene::Scene {
+    let (mut scene, errors) = graal3d::scene::Scene::parse(text);
+    for e in errors {
+        eprintln!("Graal3D: {label} {e} (not understood)");
+    }
+    for note in scene.load_terrain(&server.cfg.world) {
+        eprintln!("Graal3D: {label} terrain {note}");
+    }
+    // Every file the world names, looked up as a 3D client asks for it,
+    // and checked for the faults that crashed real clients.
+    let find = |name: &str| {
+        server
+            .files
+            .find(name)
+            .or_else(|| graal3d::extensionless_texture(&server.files, name))
+            .map(|f| (f.name, f.data))
+    };
+    let heights_info = scene
+        .terrain
+        .as_ref()
+        .and_then(|_| server.files.find("heights.info"))
+        .map(|f| f.data);
+    // Clients ask for heights.info by its bare name, so the one the file
+    // folders find must be the terrain's own (and every world's terrain
+    // shares it).
+    if let Some(t) = &scene.terrain {
+        let own = server.cfg.world.join(&t.folder).join("heights.info");
+        if !own.is_file() && heights_info.is_some() {
+            eprintln!(
+                "Graal3D: ERROR {label} terrain: the heights.info the clients get is not the one in {}",
+                t.folder
+            );
+        }
+    }
+    // Lab: the files of the rawobject and rawevent lines.
+    let read = |name: &str| -> Option<Vec<u8>> {
+        let p = std::path::Path::new(name);
+        p.components()
+            .all(|c| matches!(c, std::path::Component::Normal(_)))
+            .then(|| std::fs::read(server.cfg.world.join(p)).ok())
+            .flatten()
+    };
+    for o in &mut scene.objects {
+        if let graal3d::objects::Ghost::Raw(r) = o {
+            for e in graal3d::raw::load_files(&mut r.fields, &read) {
+                eprintln!("Graal3D: {label} rawobject {}: {e}", r.class);
+            }
+        }
+    }
+    for ev in &mut scene.raw_events {
+        for e in graal3d::raw::load_files(&mut ev.fields, &read) {
+            eprintln!("Graal3D: {label} rawevent {}: {e}", ev.class);
+        }
+    }
+    let checked = graal3d::assets::check_scene_files(
+        &mut scene,
+        &find,
+        heights_info,
+        server.cfg.graal3d_shapecheck,
+    );
+    for note in &checked.notes {
+        eprintln!("Graal3D: {label}: {note}");
+    }
+    refused.extend(checked.refused);
+    scene.push_files = checked.terrain_files;
+    scene
 }
 
 /// Bind and serve until the listener fails.
