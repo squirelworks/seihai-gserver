@@ -290,15 +290,13 @@ same as `camera 0 -5 2 1 0 0 0.38`.
   `set` text each, which may or may not reach the script; how a 5.12 in 3D
   mode is meant to get server flags is not known yet.
 - A movetype on other players' screens was seen only from a 2D client
-  (the sprite follows); `rigid` and `list` have not been run.
+  (the sprite follows), with `interpolate`.
 - Movement data never carries a velocity, and a `list` never carries
   entries: what the client does with them is not known.
 - The Sharp3D route and the mutations have loopback tests only.
-- 3.153 has been seen to crash on the first frame in the C++ fork; the cause
-  is unknown.
-- The Linux 4.20r6 (`G3D22126`) links as protocol 24, so the protocol 21
-  path has not been run; no Windows 4.20r6 was found.
-- 3.151, 3.153 and 4.20r8 have not been run against this server.
+- No Windows 4.20r6 has been found; protocol 21 has been run only with the
+  Mac 4.20r6 (below). The Mac 3.153 has not been run against this server
+  since the Sky fix, because its Tiger VM cannot reach a loopback server.
 
 ## Lab options
 
@@ -363,6 +361,18 @@ Never on a public server.
 | 4.04r2, native Linux, with Ato (`--version 4.04r2`) on the same world (2026-11-20, #188) | Each client got the other's Player as a third ghost. The real 4.04r2 drew Ato's octahedron and saw it walk away as Ato held Up. Both links held, and neither side had an unread packet. |
 | 4.04r2, Windows under Wine | Crashes while starting 3D, before sending anything (a Wine limit). |
 | 5.12, Windows under Wine (protocol 24) | Linked, assets downloaded, ghosts and mission start done, control object delivered, link held 97 s. Stays on "Starting 3D mode...", the same as the C++ fork. In 2 of 5 runs the client never opened TCP to the 3D server after the lobby warp (a client-side race; holding the lobby link open 20 s avoided it for 4.x). |
+
+2026-11-26, main at 5daf3b9, headless VMs, loopback:
+
+| Client | Result |
+|---|---|
+| 5.12 and 5.24r4, Windows under Wine | Sky, terrain (textured on the first visit, with `graal3d_pushterrain`), objects and 2D players both ways. A compiled `weapon3d`'s `g3dpos` trigger moves the player, and the 2D client sees it move. No panic or client crash; the link held. |
+| 5.12, `movetype interpolate` | The player glides to each `g3dpos` target; a 2D client's sprite glides with it. |
+| 5.12, `movetype rigid` | Glides with a small lag; the client echoes no object section. |
+| 5.12, `movetype list` | Jumps exactly onto each target. |
+| 5.12, a `server.labflag=on` server flag | Sent as an `events` `s` line and as a `set` text; the 3D script reads it empty. |
+| 4.20r8 (`G3D20126`), Windows under Wine | Linked as protocol 24, control object delivered, sky, water and objects drawn, terrain untextured (its row takes no terrain files), link held about 90 s. It draws no 2D players. |
+| `G3D27015`, native Linux (protocol 19, the 3.153 row) | Linked, Camera control object, mission start done, sky drawn, link held until quit. No first-frame crash. |
 
 2026-11-20, the same world (no `camera` line), real 5.12 (protocol 24):
 
