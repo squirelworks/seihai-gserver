@@ -45,7 +45,9 @@
 //!                           (1 to 64), min and max objects a cell (0 to 20;
 //!                           0 to 100 for the grass classes), shapes comma
 //!                           separated (for the grass classes textures), the
-//!                           box the cover may grow in (default: anywhere)
+//!                           box the cover may grow in (default: anywhere);
+//!                           `scale=<n>` or `scale=<min>,<max>` anywhere after
+//!                           the class sizes the copies (default 1, grass 3)
 //! rawobject <class> <fields...>
 //!                           lab: a ghost of any class whose update is the
 //!                           fields (see [`super::raw`]), to every client
@@ -131,6 +133,23 @@ impl Scene {
                 );
                 w.drain(..2);
                 w.insert(0, "object");
+            }
+            // `replicator ... scale=<n>` or `scale=<min>,<max>`: the copies'
+            // size, anywhere after the class.
+            let mut rep_scale: Option<Option<[f32; 2]>> = None;
+            if w.first() == Some(&"replicator") {
+                w.retain(|t| match t.strip_prefix("scale=") {
+                    Some(v) => {
+                        let n: Vec<f32> = v.split(',').filter_map(|x| x.parse().ok()).collect();
+                        rep_scale = Some(match n[..] {
+                            [a] if a > 0.0 => Some([a, a]),
+                            [a, b] if a > 0.0 && b >= a => Some([a, b]),
+                            _ => None,
+                        });
+                        false
+                    }
+                    None => true,
+                });
             }
             let objects_before = s.objects.len();
             let Some(first) = w.first() else {
@@ -349,6 +368,13 @@ impl Scene {
                     } else {
                         100
                     };
+                    // Grass quads at scale 1 are about 0.6 units: too small to
+                    // see from a player's height; 3 drew on a real 5.12.
+                    let scale = match rep_scale {
+                        None if most == 100 => Some([3.0, 3.0]),
+                        None => Some([1.0, 1.0]),
+                        Some(v) => v,
+                    };
                     match (
                         class,
                         floats::<3>(&w[2..5]),
@@ -357,6 +383,7 @@ impl Scene {
                         small(w[7], 0, most),
                         seed,
                         area,
+                        scale,
                     ) {
                         (
                             Some(class),
@@ -366,6 +393,7 @@ impl Scene {
                             Some(max),
                             Some(seed),
                             Some(area),
+                            Some(scale),
                         ) => {
                             s.objects.push(Ghost::Replicator(Replicator {
                                 class,
@@ -377,6 +405,7 @@ impl Scene {
                                 shapes: w[8].as_bytes().to_vec(),
                                 seed,
                                 area,
+                                scale,
                             }));
                             true
                         }
@@ -460,6 +489,32 @@ impl Scene {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_replicator_takes_a_scale() {
+        let scale = |line: &str| match Scene::parse(line).0.objects.first() {
+            Some(Ghost::Replicator(r)) => Some(r.scale),
+            _ => None,
+        };
+        assert_eq!(
+            scale("replicator DynamicShapeReplicator 0 0 0 4 1 3 a.3ds"),
+            Some([1.0, 1.0])
+        );
+        assert_eq!(
+            scale("replicator DynamicGrass 0 0 0 4 1 3 g.png"),
+            Some([3.0, 3.0])
+        );
+        assert_eq!(
+            scale("replicator DynamicGrass scale=2 0 0 0 4 1 3 g.png 7"),
+            Some([2.0, 2.0])
+        );
+        assert_eq!(
+            scale("replicator DynamicShapeReplicator 0 0 0 4 1 3 a.3ds scale=1,2.5"),
+            Some([1.0, 2.5])
+        );
+        let (_, errors) = Scene::parse("replicator DynamicGrass 0 0 0 4 1 3 g.png scale=0");
+        assert_eq!(errors.len(), 1);
+    }
 
     #[test]
     fn grass_takes_more_a_cell_than_shapes() {
