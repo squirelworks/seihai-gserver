@@ -332,6 +332,13 @@ fn next_compile_number() -> u32 {
     GS2_COMPILES.fetch_add(1, Ordering::Relaxed)
 }
 
+/// The built-in `weapon3d` sent with streamed terrain (see `send_weapons_but`).
+pub const TILES_CONTROL: &str = "TilesControl";
+/// Four tile names a client never finds: one missing-file request a
+/// session, then the blended terrain up to the camera (lab, real 5.12,
+/// 2026-11-27).
+pub const TILES_CONTROL_SCRIPT: &str = "//#CLIENTSIDE\nfunction getTilesForSpot(xy) {\n  return {\"g3dnotile\",\"g3dnotile\",\"g3dnotile\",\"g3dnotile\"};\n}\n";
+
 /// A `weapon3d` script as the GS2 bytecode the client runs, compiled by
 /// seihai-core's own compiler. The text after a `//#CLIENTSIDE` line, if
 /// there is one; GS2 unless the script starts with `//#GS1`. The bytecode
@@ -1995,13 +2002,32 @@ impl Service {
         let Some(player) = self.sessions.get(&at).map(|s| s.player) else {
             return;
         };
-        let weapons: Vec<_> = self
-            .scene_of(player)
+        let scene = self.scene_of(player);
+        let weapons: Vec<_> = scene
             .weapons
             .iter()
             .filter(|w| !skip.contains(&w.name))
             .cloned()
             .collect();
+        // Near the camera a 5.x draws a tile layer over the terrain from a
+        // client object `TilesControl`, and without one paints every square
+        // there in the first heights.info texture (Graal_analysis
+        // torque/terrain-512.md, "Near the camera only the first material
+        // draws"). The built-in weapon answers with tiles that never load,
+        // which leaves the blended terrain. A world's own TilesControl wins.
+        let tiles = scene.terrain.is_some()
+            && !scene
+                .weapons
+                .iter()
+                .any(|w| w.name.eq_ignore_ascii_case(TILES_CONTROL))
+            && !skip.contains(TILES_CONTROL)
+            && self
+                .sessions
+                .get(&at)
+                .is_some_and(|s| self.takes_terrain(s.caps.as_ref(), s.conn.profile().tge));
+        if tiles {
+            self.send_script(at, TILES_CONTROL, TILES_CONTROL_SCRIPT.as_bytes().to_vec());
+        }
         if weapons.is_empty() {
             return;
         }
@@ -2040,30 +2066,35 @@ impl Service {
                     }
                 },
             };
-            // The client's script reader takes LF lines; a CR stays in the
-            // token before it.
-            let source: Vec<u8> = script.into_iter().filter(|b| *b != b'\r').collect();
-            // A 5.x client in 3D mode runs a weaponscript as GS2 bytecode,
-            // compiled for its loader.
-            let var_cache = self.sessions.get(&at).is_some_and(|s| s.var_cache);
-            let script = match compile_weapon3d(&String::from_utf8_lossy(&source), var_cache) {
-                Ok(code) => code,
-                Err(e) => {
-                    log(&format!(
-                        "weapon3d {}: not compiled ({e}); sending the source",
-                        w.name
-                    ));
-                    source
-                }
-            };
-            if let Some(s) = self.sessions.get_mut(&at) {
-                // The client reads characters 1 to 5 of addweapon's text
-                // as a number; spaces read as 0.
-                s.conn
-                    .send_text(b"", b"addweapon", w.name.as_bytes(), b"      ");
-                s.conn
-                    .send_text(b"", b"weaponscript", w.name.as_bytes(), &script);
+            self.send_script(at, &w.name, script);
+        }
+    }
+
+    /// One `weapon3d` script to the client at `at`, compiled for it.
+    fn send_script(&mut self, at: SocketAddr, name: &str, script: Vec<u8>) {
+        // The client's script reader takes LF lines; a CR stays in the
+        // token before it.
+        let source: Vec<u8> = script.into_iter().filter(|b| *b != b'\r').collect();
+        // A 5.x client in 3D mode runs a weaponscript as GS2 bytecode,
+        // compiled for its loader.
+        let var_cache = self.sessions.get(&at).is_some_and(|s| s.var_cache);
+        let script = match compile_weapon3d(&String::from_utf8_lossy(&source), var_cache) {
+            Ok(code) => code,
+            Err(e) => {
+                log(&format!(
+                    "weapon3d {}: not compiled ({e}); sending the source",
+                    name
+                ));
+                source
             }
+        };
+        if let Some(s) = self.sessions.get_mut(&at) {
+            // The client reads characters 1 to 5 of addweapon's text
+            // as a number; spaces read as 0.
+            s.conn
+                .send_text(b"", b"addweapon", name.as_bytes(), b"      ");
+            s.conn
+                .send_text(b"", b"weaponscript", name.as_bytes(), &script);
         }
     }
 
@@ -3372,6 +3403,17 @@ spawn 0 0 1
         assert_eq!(s.connection(&a).unwrap().ghost_count(), 6);
         // Protocol 19 gets none of the ground: a Sky and its Camera.
         assert_eq!(s.connection(&b).unwrap().ghost_count(), 2);
+        // With the terrain goes the built-in TilesControl, so a 5.x draws
+        // the blended terrain up to the camera.
+        assert!(
+            clients[0].1.got.iter().any(|e| matches!(
+                e,
+                crate::graal3d::events::Event::BigDataStart { kind, option, .. }
+                    if kind == b"weaponscript" && option == TILES_CONTROL.as_bytes()
+            )),
+            "TilesControl sent"
+        );
+        assert!(compile_weapon3d(TILES_CONTROL_SCRIPT, false).is_ok());
 
         // A client holding chunk (0, 0) gets the other two.
         clients[0]
