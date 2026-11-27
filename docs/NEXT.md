@@ -16,8 +16,8 @@ merges. Lab items stay open until a real-client write-up lands under
   (`docs/CLIENT-PROFILES.md`, #114, #118, #98). The five-client same-level
   lab acceptance is checked on #45 after the recorded 2026-11-20 move/chat
   run. Consolidating the shared profile table remains open.
-- **Dependencies:** direct `seihai-core` is `v0.7.2`; the temporary
-  `[patch]` is gone. The pinned NPC-server and RC also declare `v0.7.2`.
+- **Dependencies:** direct `seihai-core` is `v0.8.0` (0.2.0); the temporary
+  `[patch]` is gone. The NPC-server (v0.1.3), listserver (v0.1.2) and RC (v0.2.0) are pinned by tag on the same core.
 - **Early OTHERPLPROPS (#132):** done. Builds before 1.33 get their
   own-prop set plus 50/51, with join (50) first, and prop 30 comes from the
   connection. A real 1.28 beta 2 draws a real 1.35 (lab 2026-11-18,

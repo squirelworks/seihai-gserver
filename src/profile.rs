@@ -60,16 +60,18 @@ impl ClientProfile {
     /// this path while it is true, including transitional 5.00r7 / 5.12 that
     /// also list 197/140.
     pub fn reads_classic_weapon_bytecode(&self) -> bool {
-        [PLO_WEAPONHASH, PLO_UNKNOWN132, PLO_RAWDATA]
-            .into_iter()
-            .all(|id| self.reads(id))
+        !RAWDATA_STATIC_ONLY.contains(&self.version)
+            && [PLO_WEAPONHASH, PLO_UNKNOWN132, PLO_RAWDATA]
+                .into_iter()
+                .all(|id| self.reads(id))
     }
 
     /// Classic class bytecode: 133 behind `PLO_RAWDATA` (3.153–5.12).
     pub fn reads_classic_class_bytecode(&self) -> bool {
-        [PLO_UNKNOWN133, PLO_RAWDATA]
-            .into_iter()
-            .all(|id| self.reads(id))
+        !RAWDATA_STATIC_ONLY.contains(&self.version)
+            && [PLO_UNKNOWN133, PLO_RAWDATA]
+                .into_iter()
+                .all(|id| self.reads(id))
     }
 
     /// Modern script cache path: 197 + 140. Never send those to a build
@@ -149,27 +151,35 @@ const GPAKE: &[ClientVersion] = &[
     ClientVersion::V603R7Linux,
 ];
 
-/// Builds that take 108 before their main switch, as 4.20 does, so the
-/// profile's PLO list (read from the switch alone) leaves it out: Linux
-/// 6.01r1 and 6.03r7, and the Windows 6.03r7 (Graal_analysis
-/// `protocol/unknown-ids-2026-11-06.md`, "PLI 162 and PLO 108", and
-/// `protocol/v6x-clients.md`, both from the binaries). 6.015 and 6.034
-/// have no binary and take their id sets from those two Linux builds, so
-/// they follow them. 6.00r2 is not listed: its switch was read, not what
-/// comes before it. Goes when `seihai-core`'s 6.x profiles list 108
-/// (squirelworks/seihai-core#7).
-const PING_BEFORE_SWITCH: &[ClientVersion] = &[
-    ClientVersion::V6015,
-    ClientVersion::V6034,
-    ClientVersion::V603R7,
-    ClientVersion::V603R7Linux,
+/// Builds whose 108 (`PLO_PING`) seihai-core lists from a static read only:
+/// from v0.8.0 its 5.00r7 delta keeps 100 and 108, which 4.11 and later test
+/// before the main switch (Graal_analysis G262), so every later row has 108.
+/// No lab has shown a 5.x or 6.00 client answer 108 with 162, so this server
+/// keeps not pinging them, as before. The 6.01r1 to 6.03r7 builds were read
+/// for it (Graal_analysis `protocol/unknown-ids-2026-11-06.md`, "PLI 162 and
+/// PLO 108") and are pinged. Goes when a lab shows these builds answer.
+const PING_STATIC_ONLY: &[ClientVersion] = &[
+    ClientVersion::V500R7,
+    ClientVersion::V512,
+    ClientVersion::V524R4,
+    ClientVersion::V530R3,
+    ClientVersion::V531R4,
+    ClientVersion::V600R2,
+    ClientVersion::V600R4,
 ];
+
+/// Transitional 5.00r7 and Windows 5.12: seihai-core v0.8.0 lists 100
+/// (`PLO_RAWDATA`) for them from the same static read (Graal_analysis G262),
+/// which would turn on the RAWDATA-wrapped classic bytecode paths. This
+/// server keeps both off for them until a lab run against it says which path
+/// they take.
+const RAWDATA_STATIC_ONLY: &[ClientVersion] = &[ClientVersion::V500R7, ClientVersion::V512];
 
 /// Builds that read own prop 83 as five bytes, the gralat count: the
 /// 6.03r7 probe (Graal_analysis `protocol/probe-targets-2026-11-18.md`). 2.22
 /// and 2.31 end the prop message at 83, and 4.20r8 and 5.24r4 skip it as one
 /// byte, so it goes to none of them. 6.015 and 6.034 take their id sets from
-/// the Linux 6.x builds, as for [`PING_BEFORE_SWITCH`]; 6.00r2 was not
+/// the Linux 6.x builds; 6.00r2 was not
 /// probed. Goes when `seihai-core`'s 6.x own-prop sets list 83.
 const GRALATS_83: &[ClientVersion] = &[
     ClientVersion::V6015,
@@ -188,7 +198,7 @@ impl ServerProfile {
             loads_gpak: GPAKE.contains(&version) && version != ClientVersion::V420R8,
             loads_gpake: GPAKE.contains(&version),
             prop10_bow: core.props.bow_prop10,
-            ping: core.protocol.plo.contains(PLO_PING) || PING_BEFORE_SWITCH.contains(&version),
+            ping: core.protocol.plo.contains(PLO_PING) && !PING_STATIC_ONLY.contains(&version),
             one_byte_id: ONE_BYTE_ID.contains(&version),
             image_ext: core.files.image_ext,
             // A static read of 1.39 shows status value 4 setting its
@@ -246,9 +256,9 @@ mod tests {
             }
             assert!(!p.loads_gpak || p.loads_gpake, "{v:?}");
             let core_ping = core.protocol.plo.contains(PLO_PING);
-            if PING_BEFORE_SWITCH.contains(&v) {
-                // Drop the override once seihai-core lists 108 for 6.x.
-                assert!(p.ping && !core_ping, "{v:?}: override no longer needed");
+            if PING_STATIC_ONLY.contains(&v) {
+                // Drop the override once a lab shows these answer 108.
+                assert!(!p.ping && core_ping, "{v:?}: override no longer needed");
             } else {
                 assert_eq!(p.ping, core_ping, "{v:?}");
             }
@@ -327,15 +337,16 @@ mod tests {
             assert!(!c.reads_classic_class_bytecode(), "{v:?}");
             assert!(c.reads_modern_script_cache(), "{v:?}");
         }
-        // Transitional 5.00r7 / 5.12: core lists 193/132/133 and 197/140, but
-        // not 100 (`PLO_RAWDATA`), so this server's RAWDATA-wrapped classic
-        // send stays off until a lab says otherwise.
+        // Transitional 5.00r7 / 5.12: core lists 193/132/133 and 197/140, and
+        // from v0.8.0 100 (`PLO_RAWDATA`) from a static read only, so this
+        // server's RAWDATA-wrapped classic send stays off until a lab says
+        // otherwise (`RAWDATA_STATIC_ONLY`).
         for v in [V500R7, V512] {
             let c = ClientProfile::of(v);
             assert!(c.reads(PLO_WEAPONHASH) && c.reads(PLO_UNKNOWN132), "{v:?}");
             assert!(c.reads(PLO_UNKNOWN133), "{v:?}");
             assert!(c.reads_modern_script_cache(), "{v:?}");
-            assert!(!c.reads(PLO_RAWDATA), "{v:?}");
+            assert!(RAWDATA_STATIC_ONLY.contains(&v), "{v:?}");
             assert!(!c.reads_classic_weapon_bytecode(), "{v:?}");
             assert!(!c.reads_classic_class_bytecode(), "{v:?}");
         }

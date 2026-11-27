@@ -1,6 +1,6 @@
 [package]
 name = "seihai-gserver"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "A new Graal game server written in Rust on Seihai's core, for classic clients (1.33 to 2.31 first) and Seihai."
@@ -9,20 +9,11 @@ publish = false
 
 [dependencies]
 # Protocol, framing, version profiles and scripting shared with the Seihai client.
-seihai-core = { git = "https://github.com/squirelworks/seihai-core", tag = "v0.7.2", default-features = false }
-# The Torque 3D side of each client build (`VersionProfile::three_d`, from
-# Graal_analysis version-profiles/three-d.toml) is on seihai-core main but in
-# no tag yet, and neither is the GS2 compiler's `compile_with` (a lambda
-# number from the server's compile count, seihai-core #166; `no_var_cache`
-# for clients before 6.x, seihai-core #168). Only
-# `graal3d::caps` and the `weapon3d` compile use it; everything else stays on
-# the tag above, which npcserver and rc share. Fold into the tag at the next
-# release.
-seihai-core-3d = { package = "seihai-core", git = "https://github.com/squirelworks/seihai-core", rev = "4dc30434e7e0a2ec70cf23c580e8781b9789e94b", default-features = false }
+seihai-core = { git = "https://github.com/squirelworks/seihai-core", tag = "v0.8.0", default-features = false }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time", "macros", "sync", "signal", "process"] }
 # The NPC-server link's wire format (PROTOCOL.md), shared with the NPC-server
 # so both sides use one codec.
-seihai-npcserver = { git = "https://github.com/squirelworks/seihai-npcserver", rev = "fd149ba61fbb811f874fce64f424b27352101244" }
+seihai-npcserver = { git = "https://github.com/squirelworks/seihai-npcserver", tag = "v0.1.3" }
 sha2 = "0.10"
 getrandom = "0.2"
 pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
@@ -32,13 +23,12 @@ flate2 = { version = "1", features = ["zlib-rs"] }
 [dev-dependencies]
 # Paused time for the world-tick tests.
 tokio = { version = "1", features = ["test-util"] }
-# The RC tests log in with Seihai's own RC client. Pin its v0.7.2 repin so
-# npcserver, rc and this crate all declare seihai-core v0.7.2 without a
-# temporary [patch] (squirelworks/seihai-core#79).
-seihai-rc = { git = "https://github.com/squirelworks/seihai-rc", rev = "d52fc395a7936b41f3bc8dd9082dcf6c42977fe1" }
+# The RC tests log in with Seihai's own RC client, on the same seihai-core
+# tag (squirelworks/seihai-core#79).
+seihai-rc = { git = "https://github.com/squirelworks/seihai-rc", tag = "v0.2.0" }
 # The allow-list test registers with the real listserver (its `gservers`
 # rows and `SERVERHQPASS` check), on the same seihai-core tag.
-seihai-listserver = { git = "https://github.com/squirelworks/seihai-listserver", rev = "b23e71be7fc5c2107e1ac6214ffef13660a63b12" }
+seihai-listserver = { git = "https://github.com/squirelworks/seihai-listserver", tag = "v0.1.2" }
 
 # PBKDF2 and the codecs are slow unoptimised; the tests log in dozens of times.
 [profile.dev.package."*"]
