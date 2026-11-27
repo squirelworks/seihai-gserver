@@ -31,7 +31,7 @@
 //!                           text channel (addweapon, weaponscript): the
 //!                           file's text, or without one the server's weapon
 //!                           of that name (its clientside part)
-//! terrain <folder> [<square size>] [repeat]
+//! terrain <folder> [<square size>] [repeat] [detail=<texture>] [bump=<texture>]
 //!                           streamed terrain (protocols 21 and 24): the folder
 //!                           of heights<x>-<y>.dat chunks; square size 1 to 64
 //!                           metres (default 8)
@@ -292,13 +292,18 @@ impl Scene {
                     s.tge_player_shape = w[1].as_bytes().to_vec();
                     true
                 }
-                ("terrain", 2..=4) => {
+                ("terrain", 2..=6) => {
                     let mut size = 8;
                     let mut repeat = false;
                     let mut ok = true;
+                    let (mut detail, mut bump) = (String::new(), String::new());
                     for word in &w[2..] {
                         if *word == "repeat" {
                             repeat = true;
+                        } else if let Some(name) = word.strip_prefix("detail=") {
+                            detail = name.to_string();
+                        } else if let Some(name) = word.strip_prefix("bump=") {
+                            bump = name.to_string();
                         } else {
                             match word.parse::<u32>() {
                                 Ok(n) if (1..=MAX_SQUARE_SIZE).contains(&n) => size = n,
@@ -318,7 +323,10 @@ impl Scene {
                                 n + 1
                             ));
                         }
-                        s.terrain = Some(Terrain::new(w[1], size, repeat));
+                        let mut t = Terrain::new(w[1], size, repeat);
+                        t.detail = detail;
+                        t.bump = bump;
+                        s.terrain = Some(t);
                     }
                     ok && safe
                 }
@@ -492,6 +500,17 @@ impl Scene {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_terrain_line_takes_detail_and_bump_textures() {
+        let (s, errors) = Scene::parse("terrain files/ter 4 repeat detail=d.png bump=b.png\n");
+        assert!(errors.is_empty(), "{errors:?}");
+        let t = s.terrain.unwrap();
+        assert_eq!((t.square_size, t.repeat), (4, true));
+        assert_eq!((t.detail.as_str(), t.bump.as_str()), ("d.png", "b.png"));
+        let (s, _) = Scene::parse("terrain files/ter 2\n");
+        assert!(s.terrain.unwrap().detail.is_empty());
+    }
 
     #[test]
     fn a_replicator_takes_a_scale() {
