@@ -1316,7 +1316,8 @@ impl Service {
         // object the window stays black (lab 2026-11-20, real 5.12 on
         // Windows 10). `camera` in the world file moves it.
         let off = scene.camera_offset.unwrap_or(DEFAULT_CAMERA_OFFSET);
-        let t = camera_transform(scene.spawn.position, off, scene.camera_rotation);
+        // From where its player stands: the spawn, or the free spot by it.
+        let t = camera_transform(start, off, scene.camera_rotation);
         let camera = GameObject {
             name: format!("G3DCamera_{}", s.account).into_bytes(),
             transform: t,
@@ -2309,10 +2310,39 @@ impl Service {
             {
                 s.conn.set_ghost(camera_key(player), ghost);
             }
+        } else {
+            self.camera_follows(player, to);
         }
         self.broadcast_avatar(player, None);
         self.follow_on_tcp(player);
         true
+    }
+
+    /// A protocol 21/24 client's Camera, moved to where it sits from its
+    /// player at `to` (the world's `camera` offset and turn, as at the
+    /// spawn). A 5.12 never moves its own Camera when the server moves its
+    /// player, so without this a door, a warp in the same world or a staff
+    /// move left the view behind.
+    fn camera_follows(&mut self, player: u16, to: [f32; 3]) {
+        let scene = self.scene_of(player);
+        let off = scene.camera_offset.unwrap_or(DEFAULT_CAMERA_OFFSET);
+        let t = camera_transform(to, off, scene.camera_rotation);
+        let Some(s) = self
+            .by_player
+            .get(&player)
+            .and_then(|at| self.sessions.get_mut(at))
+        else {
+            return;
+        };
+        if s.conn.profile().tge || s.conn.ghost_index(camera_key(player)).is_none() {
+            return;
+        }
+        let camera = GameObject {
+            name: format!("G3DCamera_{}", s.account).into_bytes(),
+            transform: t,
+            ..GameObject::default()
+        };
+        s.conn.set_ghost(camera_key(player), Ghost::Camera(camera));
     }
 
     /// Where a player arriving in its world stands: the spawn point, or
@@ -3733,6 +3763,30 @@ spawn 0 0 1
                 _ => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn a_server_move_takes_the_camera_along() {
+        let (s, hub, _) = service("playershape labcube.3ds\nspawn 0 0 1\ncamera 0 -5 2\n");
+        let mut s = s;
+        hub.tcp_joined(1, tcp("one"));
+        let a: SocketAddr = "127.0.0.1:40000".parse().unwrap();
+        handshake(&mut s, a, 24, b"one").unwrap();
+        let mut clients = [(a, FakeClient::new(&PROTOCOL_24))];
+        let now = run(&mut s, &mut clients, 0, 12);
+        let camera = |s: &Service| match s.connection(&a).unwrap().ghost(camera_key(1)) {
+            Some(Ghost::Camera(g)) => g.transform,
+            other => panic!("{other:?}"),
+        };
+        // A door or a warp in the same world: g3dpos.
+        assert!(s.move_avatar(1, "100 50 1"));
+        run(&mut s, &mut clients, now, 12);
+        let t = camera(&s);
+        assert_eq!(t.position, [100.0, 45.0, 3.0]);
+        // Still facing its player, as at the spawn.
+        let facing = Transform::facing([100.0, 45.0, 3.0], [100.0, 50.0, 1.0]);
+        assert_eq!((t.axis, t.angle), (facing.axis, facing.angle));
+        assert!(s.connection(&a).unwrap().ghost_delivered(camera_key(1)));
     }
 
     #[test]

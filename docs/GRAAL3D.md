@@ -601,6 +601,15 @@ world position: `spawn 2 -6 1` with `camera 0 -5 2` puts the camera at
 2 -11 3. This is on purpose: moving the spawn moves the camera with it, and
 a world switch puts the camera at the new world's spawn plus its offset.
 
+A 5.12 never moves its own Camera when the server moves its player, so a
+server move (a `g3dpos` trigger: a door, a warp in the same world, a staff
+move) also moves the Camera to the same offset and turn from the player's new
+spot, as at the spawn. Without it the view stayed where the player started
+while the player, the terrain window and the scoped objects moved away (lab,
+2026-11-27). The client's own moves, from a walker weapon that turns the
+camera itself, are left alone. A world switch puts the Camera by the
+player's spot round the new spawn.
+
 The Camera and the client's own object are created before the world's
 objects. A 5.12 gets about 140 creates a second, so on a big world the view
 comes up first and the objects fill in.
