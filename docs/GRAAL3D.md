@@ -694,6 +694,32 @@ server sends it: the TCP `PLO_FLAGSET`, the 3D `events` line and the 3D
 compiles `server.x` reads the same way the official compiler does. So send
 a value a 3D script must read as `serverr.x=…` in `config/serverflags.txt`.
 
+## Known limits on a real 5.12
+
+These come from the client, not from this server; the server works round the
+ones it can. Evidence is in Graal_analysis `torque/`.
+
+- **Ghost table of 4096.** A client holds at most 4096 ghosts. Turn on
+  distance scoping (`graal3d_scope = auto` or `on`) for a world with more
+  than about 2000 objects; a scoped client holds at most 3584 world objects,
+  nearest first. A dense town at that cap ran at 11 to 12 frames a second
+  under software rendering in the lab.
+- **No ground cover in the origin cell.** A 5.12 grows no grass or shape
+  cover while the avatar stands within 8 units of the world's origin on x and
+  y. The start-up log notes a spawn there; put the spawn elsewhere.
+- **A world with no terrain, water or Sun freezes it on a switch.** A world
+  switch (`g3dworld`, or a level warp to another 3D world) into a world that
+  has none of the three leaves a 5.12 on a sky-only frame, with events
+  stopped. Give every 3D world at least a Sun, or a terrain, until this is
+  fixed.
+- **Lighting only at `MissionStartPhase2`.** The server holds phase 2 until
+  the terrain is in and sends it again after a world switch or a terrain
+  window move; a client that misses it draws the terrain unshaded.
+- **A gen-5 frame that does not inflate** drops the client ("corrupt deflate
+  stream"), seen in 3 of 18 lab runs right after the terrain push; the server
+  now retries the other cipher step rule and logs the frame, and the cause is
+  still being looked for.
+
 ## Not done yet
 
 - A large terrain (sliding window) has been run on one real 5.12 on
@@ -703,9 +729,10 @@ a value a 3D script must read as `serverr.x=…` in `config/serverflags.txt`.
   real 5.12 on loopback only; a faster send rate has not been tried over a
   lossy or slow link.
 - World switches and per-player objects have loopback tests only.
-- In-game editing (`g3dedit`) and the example editor weapon have loopback
-  tests only; whether a 5.12 redraws a moved world object from its
-  transform update has not been seen yet.
+- In-game editing (`g3dedit`) and the example editor weapon were run on a
+  real 5.12 (lab, 2026-11-26: list, move, add, remove, backups, a second
+  client seeing each edit, edits kept after a restart); editing logins for
+  guests (`g3dedit,login`) have loopback tests only.
 - A movetype on other players' screens was seen only from a 2D client
   (the sprite follows), with `interpolate`.
 - Movement data never carries a velocity, and a `list` never carries
