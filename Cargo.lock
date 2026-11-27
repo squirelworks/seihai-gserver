@@ -636,7 +636,7 @@ dependencies = [
 
 [[package]]
 name = "seihai-gserver"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "flate2",
  "getrandom",
@@ -673,7 +673,7 @@ dependencies = [
 [[package]]
 name = "seihai-rc"
 version = "0.2.0"
-source = "git+https://github.com/squirelworks/seihai-rc?rev=10da570185964e89ef43f632209a419f5a95a43e#10da570185964e89ef43f632209a419f5a95a43e"
+source = "git+https://github.com/squirelworks/seihai-rc?tag=v0.2.0#47004c2e1d6c2990f5d14df9687131e82dff6622"
 dependencies = [
  "seihai-core",
 ]

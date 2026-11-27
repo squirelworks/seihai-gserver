@@ -1,6 +1,6 @@
 [package]
 name = "seihai-gserver"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "A new Graal game server written in Rust on Seihai's core, for classic clients (1.33 to 2.31 first) and Seihai."
@@ -25,7 +25,7 @@ flate2 = { version = "1", features = ["zlib-rs"] }
 tokio = { version = "1", features = ["test-util"] }
 # The RC tests log in with Seihai's own RC client, on the same seihai-core
 # tag (squirelworks/seihai-core#79).
-seihai-rc = { git = "https://github.com/squirelworks/seihai-rc", rev = "10da570185964e89ef43f632209a419f5a95a43e" }
+seihai-rc = { git = "https://github.com/squirelworks/seihai-rc", tag = "v0.2.0" }
 # The allow-list test registers with the real listserver (its `gservers`
 # rows and `SERVERHQPASS` check), on the same seihai-core tag.
 seihai-listserver = { git = "https://github.com/squirelworks/seihai-listserver", tag = "v0.1.2" }
