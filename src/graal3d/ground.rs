@@ -234,10 +234,6 @@ impl Water {
     }
 }
 
-/// The least radius, in cells, a 5.12 grows grass at (see
-/// [`Replicator::sent_radius`]).
-pub const GRASS_MIN_RADIUS: u8 = 8;
-
 /// The three replicator classes.
 pub const REPLICATOR_CLASSES: [&str; 3] = [
     "DynamicShapeReplicator",
@@ -288,18 +284,6 @@ impl Replicator {
         self.class != "DynamicShapeReplicator"
     }
 
-    /// The radius sent: the grass classes get at least 8 cells. On a real
-    /// 5.12, radius 4 with 5 or 10 a cell drew nothing where 8 drew, but
-    /// radius 4 with 40 to 60 a cell drew (conformance C036), so the cause
-    /// is not radius alone; a larger radius only widens the patch.
-    pub fn sent_radius(&self) -> u8 {
-        if self.grass() {
-            self.radius.max(GRASS_MIN_RADIUS)
-        } else {
-            self.radius
-        }
-    }
-
     /// A whole GameObject update (name and position), then the replicator's
     /// part. Fixed: any turn about z, terrain only, slopes to 90
     /// degrees, no alignment, shown.
@@ -318,7 +302,7 @@ impl Replicator {
         write_quat(w, [0.0, 0.0, 1.0], 0.0);
         w.u32(self.seed);
         w.pstring_alone(&self.shapes);
-        w.u8(self.sent_radius());
+        w.u8(self.radius);
         w.u8(self.min);
         w.u8(self.max);
         let [x0, y0, x1, y1] = self.area;
@@ -475,12 +459,8 @@ mod tests {
         r.flag().unwrap();
         assert_eq!(r.u32().unwrap(), 1);
         assert_eq!(r.pstring().unwrap(), b"grass.dts");
-        // Grass goes out with at least 8 cells; shapes keep their radius.
-        assert_eq!(r.u8().unwrap(), 8);
-        let shapes = Replicator {
-            class: "DynamicShapeReplicator",
-            ..rep
-        };
-        assert_eq!(shapes.sent_radius(), 4);
+        // Grass keeps its radius: a 5.12 grows grass at any radius
+        // (Graal_analysis grass sweep, 2026-11-27).
+        assert_eq!(r.u8().unwrap(), 4);
     }
 }

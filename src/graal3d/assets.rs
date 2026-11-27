@@ -355,14 +355,6 @@ pub fn check_scene_files(
             ),
             // Grass takes textures; they are checked below.
             Ghost::Replicator(r) if r.grass() => {
-                if r.radius < super::ground::GRASS_MIN_RADIUS {
-                    notes.push(format!(
-                        "replicator {}: radius {} goes out as {}; a 5.12 drew no grass at 4 with few blades a cell",
-                        r.class,
-                        r.radius,
-                        r.sent_radius()
-                    ));
-                }
                 for t in String::from_utf8_lossy(&r.shapes).split(',') {
                     let lower = t.to_ascii_lowercase();
                     if lower.ends_with(".3ds") || lower.ends_with(".dts") {
@@ -508,6 +500,23 @@ pub fn check_scene_files(
             if !scene.only.contains_key(&i) && !g.name.is_empty() {
                 *seen.entry(g.name.clone()).or_insert(0) += 1;
             }
+        }
+    }
+    // A 5.12 grows no ground cover, shapes or grass, while its control
+    // object stands in the origin cell (|x| and |y| both under 8): the
+    // ghost is made and nothing grows until the player walks out of it
+    // (Graal_analysis torque/replicators-512.md; lab, 2026-11-27).
+    let [sx, sy, _] = scene.spawn.position;
+    if sx.abs() < 8.0 && sy.abs() < 8.0 {
+        if let Some(Ghost::Replicator(r)) = scene
+            .objects
+            .iter()
+            .find(|o| matches!(o, Ghost::Replicator(_)))
+        {
+            notes.push(format!(
+                "replicator {}: the spawn {sx} {sy} is in the origin cell (x and y both between -8 and 8); a 5.12 grows no cover there until the player walks out of it, so spawn at least 8 units out",
+                r.class
+            ));
         }
     }
     for (name, n) in seen.into_iter().filter(|(_, n)| *n > 1) {
@@ -705,10 +714,39 @@ mod tests {
         let none = |_: &str| -> Option<(String, Vec<u8>)> { None };
         let notes = check_scene(&mut scene, &none, None, ShapeCheck::Skip);
         assert_eq!(notes.len(), 3, "{notes:?}");
-        assert!(notes[0].contains("radius 4 goes out as 8"), "{notes:?}");
-        assert!(notes[1].contains("grass.3ds is a shape"), "{notes:?}");
-        assert!(notes[2].contains("texture blades.png"), "{notes:?}");
+        assert!(notes[0].contains("grass.3ds is a shape"), "{notes:?}");
+        assert!(notes[1].contains("texture blades.png"), "{notes:?}");
+        // No spawn line: the players start at 0 0, in the origin cell.
+        assert!(notes[2].contains("origin cell"), "{notes:?}");
         assert_eq!(scene.objects.len(), 1);
+    }
+
+    #[test]
+    fn cover_needs_a_spawn_out_of_the_origin_cell() {
+        let none = |_: &str| -> Option<(String, Vec<u8>)> { None };
+        for (spawn, warned) in [
+            ("4 4 1", true),
+            ("-7.5 7.5 1", true),
+            ("9 4 1", false),
+            ("4 20 1", false),
+            ("8 8 1", false),
+        ] {
+            let (mut scene, _) = Scene::parse(&format!(
+                "replicator DynamicShapeReplicator 0 0 0 4 1 3 rock.dts\nspawn {spawn}\n"
+            ));
+            let notes = check_scene(&mut scene, &none, None, ShapeCheck::Skip);
+            assert_eq!(
+                notes.iter().any(|n| n.contains("origin cell")),
+                warned,
+                "{spawn}: {notes:?}"
+            );
+        }
+        let (mut scene, _) = Scene::parse("spawn 0 0 1\n");
+        let notes = check_scene(&mut scene, &none, None, ShapeCheck::Skip);
+        assert!(
+            !notes.iter().any(|n| n.contains("origin cell")),
+            "{notes:?}"
+        );
     }
 
     #[test]
