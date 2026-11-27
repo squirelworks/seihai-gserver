@@ -191,6 +191,18 @@ one and then could not load them. Terrain textures should be 256 x 256 24-bit.
 On a first visit 5.12 fetches only `heights.info` and draws the terrain white;
 it fetches the textures on the next visit.
 
+**The terrain up close (`TilesControl`).** Within 150 units of the camera a
+4.20r8 or 5.x draws a second, per-square tile layer over the terrain, and asks
+a client object named `TilesControl` for it (`getTilesForSpot("x,y")`, four
+texture names, one per quarter square). With no such object it paints every
+square there in the first `heights.info` texture, fully below 75 units, so a
+world looked all water up close on a real 5.12 while it drew right from 150
+units up (lab, 2026-11-27; Graal_analysis `torque/terrain-512.md`). With a
+terrain, the server sends those builds a built-in `weapon3d TilesControl`
+whose tiles never load (`g3dnotile`, one missing-file request a session), so
+the blended terrain shows up to the camera. A world's own `weapon3d
+TilesControl` replaces it, for example to lay real tiles on chosen squares.
+
 **Water.** `water -1024 -1024 -19.5 2048 2048 20 water_surface 0` is a
 `WaterBlock` from that corner, unrotated, of that size. Its surface is at
 z + the z size (0.5 here), not at z. The liquid types are stock TGE's (0
@@ -357,6 +369,27 @@ graal3d_scopehysteresis = 200  # world units
   0.4 to 0.5 s after they came in range, well inside the 100 units between
   the radius and the 5.12's draw distance. Players that move much faster need
   a larger radius.
+
+### Doors into another part of the world (`portal`)
+
+A house or cave can sit in the same world as the land it is entered from,
+far enough away that it is never drawn from there (seihai-pw3d places each
+2D interior at least 1536 units from everything else). Walking through its
+door is then a move in one world: no `g3dworld` switch, no terrain resend,
+no second phase 2. With scoping on, the room would only come in on the next
+scope pass after the player arrives, and the land outside would only come
+back after the player leaves, so a world can name its doors:
+
+```text
+portal <x> <y> <z> <radius> <to x> <to y> <to z>
+```
+
+While a player is within `radius` of the portal's point, objects within the
+scope radius of the `to` point are in scope as well as those round the
+player. They are ghosted while the player stands at the door, more than
+1050 units from the camera, so a 5.12 does not draw them until the player is
+through. The rest of the world goes as usual once the player is past radius
+plus hysteresis. Without scoping, `portal` lines change nothing.
 
 `graal3d_sendms` is the least time between two data packets to one client
 (default 50 ms, each at most 400 bytes, so about 8 KB/s). The 5.12 says it

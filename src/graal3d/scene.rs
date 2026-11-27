@@ -118,6 +118,33 @@ pub struct Scene {
     /// The file it was read from, which `g3dedit` saves to
     /// ([`super::edit`]); `None` for a world made in code.
     pub file: Option<PathBuf>,
+    /// `portal`: doors into another part of this world. With
+    /// `graal3d_scope` on, a player within a portal's radius also has the
+    /// objects round its far side in scope, so walking through shows the
+    /// room at once ([`super::scope::plan_from`]).
+    pub portals: Vec<Portal>,
+}
+
+/// `portal <x> <y> <z> <radius> <to x> <to y> <to z>`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Portal {
+    pub at: [f32; 3],
+    pub radius: f32,
+    pub to: [f32; 3],
+}
+
+impl Portal {
+    /// Where, besides the player, objects come into scope from.
+    pub fn far_sides(portals: &[Portal], player: [f32; 3]) -> Vec<[f32; 3]> {
+        let mut out = vec![player];
+        out.extend(
+            portals
+                .iter()
+                .filter(|p| super::scope::distance(p.at, player) <= p.radius)
+                .map(|p| p.to),
+        );
+        out
+    }
 }
 
 fn floats<const N: usize>(words: &[&str]) -> Option<[f32; N]> {
@@ -259,6 +286,17 @@ impl Scene {
                         _ => false,
                     }
                 }
+                ("portal", 8) => match floats::<7>(&w[1..]) {
+                    Some(v) if v[3] > 0.0 => {
+                        s.portals.push(Portal {
+                            at: [v[0], v[1], v[2]],
+                            radius: v[3],
+                            to: [v[4], v[5], v[6]],
+                        });
+                        true
+                    }
+                    _ => false,
+                },
                 ("playershape", 2) => {
                     s.player_shape = w[1].as_bytes().to_vec();
                     true
@@ -583,6 +621,23 @@ impl Scene {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn portal_lines_read() {
+        let (s, e) = Scene::parse("portal 10 -20 0 3 0 -1600 1\nportal 1 2 3 0 4 5 6\n");
+        assert_eq!(e.len(), 1, "a radius of 0 is refused: {e:?}");
+        assert_eq!(
+            s.portals,
+            vec![Portal {
+                at: [10.0, -20.0, 0.0],
+                radius: 3.0,
+                to: [0.0, -1600.0, 1.0],
+            }]
+        );
+        let from = Portal::far_sides(&s.portals, [11.0, -20.0, 0.0]);
+        assert_eq!(from, vec![[11.0, -20.0, 0.0], [0.0, -1600.0, 1.0]]);
+        assert_eq!(Portal::far_sides(&s.portals, [20.0, -20.0, 0.0]).len(), 1);
+    }
 
     #[test]
     fn a_large_terrain_line_reads() {
