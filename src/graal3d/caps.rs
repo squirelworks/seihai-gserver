@@ -10,8 +10,8 @@
 //! cover only to builds whose row takes them.
 
 use super::objects::Ghost;
-use seihai_core_3d::protocol::three_d::{self, Field, GameLayer, ThreeD};
-use seihai_core_3d::protocol::ClientVersion;
+use seihai_core::protocol::three_d::{self, Field, GameLayer, ThreeD};
+use seihai_core::protocol::ClientVersion;
 
 /// One client's row.
 #[derive(Debug, Clone, Copy)]

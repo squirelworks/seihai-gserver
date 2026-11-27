@@ -364,7 +364,7 @@ pub fn compile_weapon3d(source: &str, var_cache: bool) -> Result<Vec<u8>, String
         let compiled = compile(text, language, Mode::Legacy).map_err(|e| e.to_string())?;
         compiled.script.write()
     } else {
-        use seihai_core_3d::scripting::gs2::compile::{compile_with, Language, Mode, Options};
+        use seihai_core::scripting::gs2::compile::{compile_with, Language, Mode, Options};
         let options = Options {
             mode: Mode::Legacy,
             lambda_id: Some(next_compile_number()),
@@ -4601,7 +4601,7 @@ movetype interpolate
     /// variable cache: any opcode 45, 46 or 47.
     fn uses_var_cache(code: &[u8]) -> bool {
         let code = code.strip_suffix(b"\n").unwrap_or(code);
-        let script = seihai_core_3d::scripting::gs2::Script::parse(code).unwrap();
+        let script = seihai_core::scripting::gs2::Script::parse(code).unwrap();
         script
             .code
             .iter()
