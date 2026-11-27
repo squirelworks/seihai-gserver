@@ -89,6 +89,19 @@ pub fn default_name(id: u8) -> Option<&'static str> {
     DEFAULT.iter().find(|(_, i)| *i == id).map(|(n, _)| *n)
 }
 
+/// Whether a weapon script has a serverside part: code before its
+/// `//#CLIENTSIDE` line (all of it when there is none), not counting blank
+/// lines and `//` comments.
+pub fn has_serverside(source: &str) -> bool {
+    let mut server = source
+        .lines()
+        .take_while(|l| !l.trim_start().starts_with("//#CLIENTSIDE"));
+    server.any(|l| {
+        let l = l.trim();
+        !l.is_empty() && !l.starts_with("//")
+    })
+}
+
 /// One weapon of the world.
 #[derive(Debug, Clone)]
 pub struct Weapon {
@@ -531,6 +544,19 @@ mod tests {
     }
 
     const FILE: &str = "GRAWP001\nREALNAME Lantern\nIMAGE lantern.png\nSCRIPT\nif (weaponfired) {\n  say2 light;\n}\nSCRIPTEND\n";
+
+    #[test]
+    fn serverside_is_the_code_before_clientside() {
+        assert!(!has_serverside("//#CLIENTSIDE\nfunction onCreated() {}\n"));
+        assert!(!has_serverside("// a note\n\n//#CLIENTSIDE\nx = 1;\n"));
+        assert!(has_serverside(
+            "function onActionServerSide() {}\n//#CLIENTSIDE\n"
+        ));
+        assert!(has_serverside(
+            "if (playerenters) { setplayerprop #c,hi; }\n"
+        ));
+        assert!(!has_serverside(""));
+    }
 
     #[test]
     fn a_weapon_file_reads_and_writes_back() {
