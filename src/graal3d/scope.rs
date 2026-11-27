@@ -107,7 +107,11 @@ pub struct Plan {
 /// what the client has now. An object not in scope comes in within
 /// `radius`; one in scope goes beyond `radius + hysteresis`, or when it is
 /// no longer shown. At most `budget` objects are in scope after the pass:
-/// the nearest are taken first, and the ones already in stay.
+/// the nearest are taken first. When the scope is full, a kept object
+/// farther than a waiting one by more than the hysteresis is swapped for
+/// it, at most [`SWAPS_A_PASS`] a pass, so a player who walks into a spot
+/// denser than the budget ends up holding the objects round it rather than
+/// the ones it saw on the way in.
 pub fn plan(
     scoped: &HashSet<usize>,
     at: [f32; 3],
@@ -117,24 +121,39 @@ pub fn plan(
 ) -> Plan {
     let mut out = Plan::default();
     let mut near: Vec<(f32, usize)> = Vec::new();
-    let mut kept = 0;
+    let mut kept: Vec<(f32, usize)> = Vec::new();
     for (i, p, shown) in objects {
         let d = distance(at, p);
         if scoped.contains(&i) {
             if !shown || d > opts.radius + opts.hysteresis {
                 out.remove.push(i);
             } else {
-                kept += 1;
+                kept.push((d, i));
             }
         } else if shown && d <= opts.radius {
             near.push((d, i));
         }
     }
-    near.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
-    let room = budget.saturating_sub(kept);
-    out.add = near.into_iter().take(room).map(|(_, i)| i).collect();
+    let order = |a: &(f32, usize), b: &(f32, usize)| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1));
+    near.sort_by(order);
+    let room = budget.saturating_sub(kept.len());
+    let mut waiting = near.into_iter();
+    out.add = waiting.by_ref().take(room).map(|(_, i)| i).collect();
+    // Full: trade the farthest kept for the nearest still waiting.
+    kept.sort_by(|a, b| order(b, a));
+    for ((far, k), (close, w)) in kept.into_iter().zip(waiting).take(SWAPS_A_PASS) {
+        if far <= close + opts.hysteresis {
+            break;
+        }
+        out.remove.push(k);
+        out.add.push(w);
+    }
     out
 }
+
+/// The most kept objects a pass swaps for nearer ones when the scope is
+/// full: about 1.2 KB of creates and deletes a pass at 5 passes a second.
+pub const SWAPS_A_PASS: usize = 24;
 
 #[cfg(test)]
 mod tests {
@@ -238,7 +257,7 @@ mod tests {
     }
 
     #[test]
-    fn the_budget_takes_the_nearest_and_keeps_what_is_in() {
+    fn the_budget_takes_the_nearest_and_trades_far_ones() {
         // Two already in scope (far), four new candidates; room for 4.
         let scoped: HashSet<usize> = [0, 1].into_iter().collect();
         let p = plan(
@@ -248,11 +267,39 @@ mod tests {
             &opts(),
             4,
         );
-        assert_eq!(p.add, vec![3, 5]);
-        assert!(p.remove.is_empty());
-        // A full scope adds nothing.
+        // Room for two (10 and 20); then 95 and 90 are traded for 30 and 40.
+        assert_eq!(p.add, vec![3, 5, 4, 2]);
+        assert_eq!(p.remove, vec![1, 0]);
+        // A full scope trades its farthest object for a much nearer one.
         let p = plan(&scoped, [0.0; 3], line(&[90.0, 95.0, 1.0]), &opts(), 2);
-        assert!(p.add.is_empty());
+        assert_eq!((p.add, p.remove), (vec![2], vec![1]));
+        // But not for one about as near: no churn at the edge.
+        let p = plan(&scoped, [0.0; 3], line(&[90.0, 95.0, 80.0]), &opts(), 2);
+        assert!(p.add.is_empty() && p.remove.is_empty());
+    }
+
+    #[test]
+    fn a_full_scope_converges_on_the_nearest_within_a_few_passes() {
+        // 100 seen on the way in, far; 100 dense ones round the player.
+        let o = opts();
+        let mut objs: Vec<(usize, [f32; 3], bool)> = (0..100)
+            .map(|i| (i, [99.0, i as f32 * 0.01, 0.0], true))
+            .collect();
+        objs.extend((100..200).map(|i| (i, [1.0, i as f32 * 0.01, 0.0], true)));
+        let mut scoped: HashSet<usize> = (0..100).collect();
+        let mut passes = 0;
+        while scoped.iter().any(|i| *i < 100) {
+            let p = plan(&scoped, [0.0; 3], objs.clone(), &o, 100);
+            assert!(p.add.len() <= SWAPS_A_PASS && p.add.len() == p.remove.len());
+            for i in p.remove {
+                scoped.remove(&i);
+            }
+            scoped.extend(p.add);
+            assert_eq!(scoped.len(), 100);
+            passes += 1;
+            assert!(passes < 10);
+        }
+        assert_eq!(passes, 100usize.div_ceil(SWAPS_A_PASS));
     }
 
     #[test]

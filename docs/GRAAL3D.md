@@ -81,6 +81,7 @@ tgecontrol player|camera
 tgeplayershape <file.dts>
 weapon3d <name> <file>
 terrain <folder> [<square size>] [repeat]
+regions <folder> <cols>x<rows> [<chunks a region>] [<square size>]
 water <x> <y> <z> <sx> <sy> <sz> [<surface texture> [<liquid type>]]
 replicator <class> <x> <y> <z> <radius> <min> <max> <shapes> [<seed> [<x0> <y0> <x1> <y1>]]
 objectfor <accounts> <name> <shape> <x> <y> <z> [...as object]
@@ -342,8 +343,10 @@ graal3d_scopehysteresis = 200  # world units
   changes nothing for players already in it.
 - At most 3584 world objects are in one client's scope (the table less 512
   entries for players and the rest of the world). In a denser spot the
-  nearest come in first, and objects already in scope stay until they are
-  out of range.
+  nearest come in first. When the scope is full, each pass trades up to 24
+  of the farthest objects in scope for waiting ones nearer by more than the
+  hysteresis, so a player who walks into a spot denser than that ends up
+  with the objects round it, not the ones it passed on the way in.
 - A `g3dhide`, `g3dshow` or in-game edit of an object out of a client's
   scope does not ghost it; it comes in when the player comes near.
 - The defaults come from the lab: with 20,164 objects on a 56-unit grid, a
@@ -361,6 +364,79 @@ takes 32 ms and 450 bytes. On loopback a real 5.12 took 10 ms with no loss:
 a cold 256-chunk terrain came in 2.1 s instead of 8.6 s, and 4000 objects in
 8.7 s instead of 31 s. It has not been tried over a real network, so the
 default stays 50.
+
+## A world built from regions
+
+A big overworld can be written as a grid of smaller **regions**, the way a
+2D playerworld is a gmap of levels, and served as one seamless world. In the
+world file, in place of a `terrain` line:
+
+```text
+regions world/enigma 8x8          # 8 x 8 regions of 8 chunks (1024 units)
+regions world/enigma 4x4 16       # 4 x 4 regions of 16 chunks (2048 units)
+regions world/enigma 16x16 8 8    # the last number is the square size (default 8)
+```
+
+The folder holds a subfolder a region, `<i>-<j>`: i from 0 going east, j from
+0 going north (the terrain's chunk order). A region is 2, 4, 8 (the default)
+or 16 terrain chunks a side, and the whole world must come to 16 to 256
+chunks a side. Each region folder may hold:
+
+- `heights<x>-<y>.dat` (x and y from 0 to its chunks less one): its piece of
+  the terrain, in the same form as any other terrain chunk.
+- `region.txt`: `object`, `objectfor`, `water` and `replicator` lines in the
+  region's own coordinates, from its south-west corner. Any other line is
+  named at start and left out (the Sun, Sky, spawn and so on belong to the
+  world file). A replicator without a box grows only inside its region.
+
+Put `heights.info` and the terrain textures in the regions folder itself. A
+missing region folder is flat and empty.
+
+The server stitches the regions into one large terrain (see "Large
+terrains") and one list of objects, moved to where each region lies; region
+(0, 0)'s corner is at minus half the world on each axis. So nothing switches
+or warps at a region's edge: the terrain slides round the player and, with
+`graal3d_scope` on or `auto`, objects are created as the player comes within
+the radius and deleted past it, from whichever region they are in. Each
+client is told the region it stands in as `clientr.g3dregion` (`<i>-<j>`,
+empty off the map), sent again whenever it changes, for scripts that want
+to know where the player is.
+
+At start the log says how many regions, chunks and objects were found, the
+fullest region, and the most objects within the scope radius plus hysteresis
+of any one spot, against the 3584 a client can hold:
+
+```text
+Graal3D: graal3dworld.txt regions world/enigma: 64 of 8x8 regions found (1024 units a side), 4096 terrain chunks of 64 x 64, 18230 region objects; the fullest region is 3-4 with 1950
+Graal3D: graal3dworld.txt regions world/enigma: at most about 2410 objects within 1300 units of one spot (near 412,-388 in region 4-3); a client holds 3584
+```
+
+A real 5.12 walked such a world (lab, 2026-11-27: Wine with software
+rendering on 2 vCPUs, one client, loopback; the `seihai-regions demo` world of
+8 x 8 regions, 18,055 objects, six towns of about 1440 houses):
+
+| | Result |
+|---|---|
+| Join next to a town (1952 objects in scope) | Phase 2 acked in 2.4 s at `graal3d_sendms = 10` (6.7 to 7.1 s at 50); all objects in by 5.5 s (20 s at 50); about 138 KB |
+| A region edge | an ordinary window slide: 16 chunks (31 at a corner), relit 0.1 to 0.3 s later; no seam, stall or pop-in; `clientr.g3dregion` changed at every edge |
+| Ghost table | peak 2075 of 4096 (about 2040 in a town, 750 in the open); a 3500-house stress town held at 3584 with no table full |
+| Walking | 10 to 23 creates a second, about 100 deletes a second leaving a town at 70 units/s; 1.2 to 2.5 KB/s |
+| Frame rate | 32 to 41 FPS in the open and at region corners, 18 to 20 in a 1440-house town, 11 to 12 in the 3500-house one; an edge costs one frame 20 to 40 ms longer |
+| Memory | committed at most 621 MB (681 MB in the stress town) of the 2 GB a 5.12 can address; resident at most 272 MB (331 MB) |
+
+So the limit is the client's frame rate in dense places, not memory or the
+ghost table. The same town as its own world behind a warp switched with no
+chunks resent and its houses in about 3 s, about as smooth as walking in.
+
+A line starting `WARNING` means a player there would get only the nearest
+3584, or that scoping is off for a world with more objects than that. A town
+too dense for one spot is better as its own world behind a warp (see "More
+worlds and level warps"), like a house or a cave.
+
+Region objects are edited in their `region.txt`: `g3dedit` refuses to move or
+remove one, since the world file does not hold its line. Objects added in
+game go in the world file, in world coordinates. `seihai-servertools world3d
+split` cuts an existing big world into regions.
 
 ## More worlds and level warps
 
@@ -738,7 +814,7 @@ total when the link closes.
 layer (shared in spirit with Ato; moving it into `seihai-core` is a
 follow-up), `handshake` holds the protocol tables, `objects` and `tge` the
 ghost and datablock layouts, `ground` the terrain, water and ground cover,
-`assets` the start-up check, `caps` each build's row, `raw` the lab raw
+`assets` the start-up check, `regions` a world built from regions, `caps` each build's row, `raw` the lab raw
 fields, `mutate` the lab mutations, `conn` one client's link, `scene` the
 world file, and `service` the UDP socket and its tie to the TCP server. Most
 of the 3D side is ported from the 3D add-on the Seihai project wrote for
