@@ -233,10 +233,10 @@ fn a_512_reaches_its_control_object_and_leaves_with_its_tcp_session() {
     ghosts.dedup();
     assert_eq!(
         ghosts,
-        vec!["0 Sun", "1 Sky", "2 house", "3 G3DPlayer_lab3d", "4 Camera"],
-        "the world, the player's own object and its Camera"
+        vec!["0 G3DPlayer_lab3d", "1 Camera", "2 Sun", "3 Sky", "4 house"],
+        "the player's own object and its Camera take the first entries, then the world, its objects last"
     );
-    assert_eq!(control, Some(3), "its own object is its control object");
+    assert_eq!(control, Some(0), "its own object is its control object");
 
     // The TCP session ends; the 3D link is closed with a disconnect.
     drop(rx);

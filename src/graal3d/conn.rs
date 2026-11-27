@@ -195,6 +195,9 @@ pub struct Connection {
     mutation: Option<(Mutation, u32)>,
     mutation_at: u64,
     mutation_done: bool,
+    /// The least time between two data packets ([`SEND_INTERVAL_MS`]
+    /// unless `graal3d_sendms` says otherwise).
+    send_interval: u64,
 }
 
 /// Bits that hold `index`, at least 1.
@@ -240,6 +243,7 @@ impl Connection {
             phase2_held: None,
             terrain_asked: false,
             chunk_seqs: Vec::new(),
+            send_interval: SEND_INTERVAL_MS,
             chunks_answered: false,
             relighting: false,
             relight_terrain: false,
@@ -263,6 +267,13 @@ impl Connection {
     }
 
     /// Lab: one mutation on this link (the accept ones are the service's).
+    /// Sets the least time between two data packets, in milliseconds
+    /// (`graal3d_sendms`). A real 5.12 took 10 ms on loopback with no loss
+    /// (lab, 2026-11-27), although it advertises 32 ms.
+    pub fn set_send_interval(&mut self, ms: u64) {
+        self.send_interval = ms.max(1);
+    }
+
     pub fn set_mutation(&mut self, m: Option<(Mutation, u32)>) {
         self.mutation = m.filter(|(k, _)| !k.in_accept());
     }
@@ -981,7 +992,7 @@ impl Connection {
                 || self.control_pending()
                 || (self.control_delivered && self.control_moved)
                 || self.mutation_due(now);
-            if (work && since >= SEND_INTERVAL_MS) || since >= KEEP_ALIVE_MS {
+            if (work && since >= self.send_interval) || since >= KEEP_ALIVE_MS {
                 self.send_data(now);
             }
         } else if self.ack_owed {

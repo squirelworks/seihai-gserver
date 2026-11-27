@@ -19,6 +19,8 @@ graal3d_port = 14901        # optional; the default is the TCP port + 1
 graal3d_shapecheck = skip   # optional; or warn, or off (see "Start-up check")
 graal3d_pushterrain = false # optional; see "Each build's row"
 graal3d_edit = off          # optional; staff: in-game world editing (see "Editing a world in game")
+graal3d_scope = off         # optional; on or auto: world objects only near each player (see "Big worlds")
+graal3d_sendms = 50         # optional; least ms between two data packets to a client (10 to 1000)
 ```
 
 Lab only (see "Lab options"):
@@ -252,6 +254,64 @@ takes the lead. A 3D player leads only a level with no 2D player in it. The
 5.12 shows a 2D player's nickname and chat to scripts (`G2DPlayer_<account>.nickname`
 and `.chat`) but does not draw them.
 
+## Big worlds: distance scoping
+
+Without scoping, every `object` line of a world is ghosted to each client at
+join. A GameObject-era client (4.20r6, 4.20r8, 5.x) has a ghost table of 4096
+entries, and a real 5.12 (lab, 2026-11-27) showed what that costs:
+
+- About 130 objects are created a second at the default pacing, so 4000
+  objects take about 31 s (209 KB) to come in.
+- A 5.12 never draws an object more than about 1000 units from its camera,
+  so most of those objects are never drawn.
+- Its table is the hard limit. Whatever is ghosted first takes the first
+  entries, so the server now ghosts the TerrainBlock, the player's own
+  object and its Camera first, then the Sun, Skies, water and ground cover,
+  then the other players, and the world objects last. Before, the objects
+  went first: at 4094 or more objects the table was full before the
+  player's own object, Camera and TerrainBlock, and the 5.12 drew a black
+  view for the whole session. Objects past the table are still left out
+  (the log says `cannot ghost: the client's table is full`).
+
+With `graal3d_scope` on, a world object is ghosted only while it is within
+`graal3d_scoperadius` of the player's own object (3D distance), and deleted
+once it is farther than the radius plus `graal3d_scopehysteresis`, so an
+object near the edge is not created and deleted on every step. Each client's
+scope is looked at 5 times a second; with `graal3d_trace` on, each look that changed something adds a `scope` line (objects added and deleted, the scope's size, the client's ghost count and the player's position). Only `object` and `objectfor` lines are
+scoped; the Sun, Skies, terrain, water, ground cover and players always go.
+
+```text
+graal3d_scope = auto           # off (the default), on (every world) or auto
+graal3d_scopeauto = 2000       # auto: only worlds with more objects than this
+graal3d_scoperadius = 1100     # world units
+graal3d_scopehysteresis = 200  # world units
+```
+
+- `auto` decides per world, when a player joins it, by the world's number of
+  `object` lines. An in-game edit that takes a world past the threshold
+  changes nothing for players already in it.
+- At most 3584 world objects are in one client's scope (the table less 512
+  entries for players and the rest of the world). In a denser spot the
+  nearest come in first, and objects already in scope stay until they are
+  out of range.
+- A `g3dhide`, `g3dshow` or in-game edit of an object out of a client's
+  scope does not ghost it; it comes in when the player comes near.
+- The defaults come from the lab: with 20,164 objects on a 56-unit grid, a
+  radius of 1100 joined in about 3 s, peaked at about 1400 table entries
+  while walking at about 70 units/s, and drew the same objects as a radius of
+  1500. Walking through dense objects costs about 2.5 KB/s to the client
+  (about 40 creates and 40 deletes a second); new objects were created
+  0.4 to 0.5 s after they came in range, well inside the 100 units between
+  the radius and the 5.12's draw distance. Players that move much faster need
+  a larger radius.
+
+`graal3d_sendms` is the least time between two data packets to one client
+(default 50 ms, each at most 400 bytes, so about 8 KB/s). The 5.12 says it
+takes 32 ms and 450 bytes. On loopback a real 5.12 took 10 ms with no loss:
+a cold 256-chunk terrain came in 2.1 s instead of 8.6 s, and 4000 objects in
+8.7 s instead of 31 s. It has not been tried over a real network, so the
+default stays 50.
+
 ## More worlds and level warps
 
 `config/graal3dworld.txt` is the default world. Each
@@ -468,6 +528,9 @@ a value a 3D script must read as `serverr.x=…` in `config/serverflags.txt`.
 
 ## Not done yet
 
+- Distance scoping and `graal3d_sendms` below 50 ms were checked on one
+  real 5.12 on loopback only; a faster send rate has not been tried over a
+  lossy or slow link.
 - World switches and per-player objects have loopback tests only.
 - In-game editing (`g3dedit`) and the example editor weapon have loopback
   tests only; whether a 5.12 redraws a moved world object from its
