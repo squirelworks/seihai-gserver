@@ -111,7 +111,21 @@ pub struct Codec {
     /// Short compressed client frames that only inflated under the other
     /// gen-5 step rule (see [`Self::decode`]); the cipher follows the client.
     pub step_rule_switches: u32,
+    /// Compressed client frames that inflated under neither step rule and
+    /// were skipped, in a row (see [`Self::decode`]).
+    skipped_in_a_row: u32,
+    /// What the last skipped frame was, for the server log.
+    skip_note: Option<String>,
 }
+
+/// How many compressed client frames in a row may fail to inflate before
+/// the client is dropped. A real 5.12 now and then sends one frame flagged
+/// zlib whose body is not zlib at all (a lab capture, 2026-11-27: the
+/// cipher was in step, and past the 16 XORed bytes the body was plain GS2
+/// bytecode, cut short). The client steps its cipher for that frame as for
+/// any other, so skipping it keeps both ends in step. A real desync fails
+/// every frame after it, so it still drops the client.
+pub const MAX_SKIPPED_IN_A_ROW: u32 = 2;
 
 impl Codec {
     /// Common transport envelope for the project NPC action bridge. Scratch
@@ -153,6 +167,8 @@ impl Codec {
             raw_left: 0,
             key,
             step_rule_switches: 0,
+            skipped_in_a_row: 0,
+            skip_note: None,
         }
     }
 
@@ -247,7 +263,10 @@ impl Codec {
                     Gen5Comp::Bz2 => bz2_decompress(body),
                 };
                 match inflate(&body) {
-                    Ok(b) => Ok(b),
+                    Ok(b) => {
+                        self.skipped_in_a_row = 0;
+                        Ok(b)
+                    }
                     Err(e) => {
                         // The two step rules differ only on a compressed
                         // body under 16 bytes whose length is not a
@@ -266,6 +285,7 @@ impl Codec {
                             if let Ok(b) = inflate(&alt) {
                                 *g = other;
                                 self.step_rule_switches += 1;
+                                self.skipped_in_a_row = 0;
                                 // One routine ciphers both directions in
                                 // the client, so its receive side steps
                                 // the same way.
@@ -280,7 +300,7 @@ impl Codec {
                                 return Ok(b);
                             }
                         }
-                        Err(bad(&format!(
+                        let what = format!(
                             "{e}: client frame type {c:#04x}, {} bytes, cipher {:08x}{}, starts {}",
                             rest.len(),
                             before.state(),
@@ -290,12 +310,27 @@ impl Codec {
                                 ""
                             },
                             hex_head(&body),
-                        )))
+                        );
+                        // The cipher has stepped for this frame as the
+                        // client's did: skip it, unless too many in a row
+                        // say the two are out of step.
+                        if self.skipped_in_a_row < MAX_SKIPPED_IN_A_ROW {
+                            self.skipped_in_a_row += 1;
+                            self.skip_note = Some(what);
+                            return Ok(Vec::new());
+                        }
+                        Err(bad(&what))
                     }
                 }
             }
             None => zlib_decompress(raw),
         }
+    }
+
+    /// The last skipped client frame, once: a compressed frame that
+    /// inflated under neither step rule (see [`MAX_SKIPPED_IN_A_ROW`]).
+    pub fn take_skip_note(&mut self) -> Option<String> {
+        self.skip_note.take()
     }
 
     /// Split a decoded body into messages, each with its `\n`, with the
@@ -487,14 +522,73 @@ mod tests {
         }
         // A frame that inflates under neither rule says what came in.
         let mut server = Codec::new(EncryptionGen::Gen5, key, Some(ClientVersion::V512));
-        let e = server
-            .decode(&[0x04, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13])
-            .unwrap_err();
-        let e = e.to_string();
+        let junk = [0x04, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13];
+        assert_eq!(server.decode(&junk).unwrap(), b"");
+        let note = server.take_skip_note().unwrap();
         assert!(
-            e.contains("client frame type 0x04, 13 bytes, cipher 04a80b38 (round down)"),
-            "{e}"
+            note.contains("client frame type 0x04, 13 bytes, cipher 04a80b38 (round down)"),
+            "{note}"
         );
+        assert_eq!(server.take_skip_note(), None);
+    }
+
+    /// A real 5.12 now and then sends a frame flagged zlib whose body is
+    /// not zlib (lab, 2026-11-27: in step, plain GS2 bytecode past the
+    /// XORed bytes). It is skipped and the frames after it read, so the
+    /// client stays on; a run of them (a real desync) still drops it.
+    #[test]
+    fn a_compressed_frame_that_is_not_zlib_is_skipped() {
+        let key = 0x35;
+        let mut client = Gen5::new(key).round_down();
+        let mut server = Codec::new(EncryptionGen::Gen5, key, Some(ClientVersion::V512));
+        let send = |client: &mut Gen5, packed: Vec<u8>| {
+            let mut frame = vec![Gen5Comp::Zlib as u8];
+            frame.extend(client.encode(packed, Gen5Comp::Zlib));
+            frame
+        };
+        let good: Vec<u8> = b"7basepackage.gupd\n".repeat(4);
+        // Made-up bytecode-like bytes, as long as the lab frame: segment
+        // headers, a string table, cut short, then `\n`.
+        let mut not_zlib = vec![0, 0, 0, 1, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 2];
+        not_zlib.extend(b"\0\0\0\x20\0\0\0\x01onWeaponFired\0\0\0\0\x21onTimeout\0");
+        not_zlib.resize(139, b'x');
+        not_zlib.push(b'\n');
+        assert_eq!(not_zlib.len(), 140);
+
+        let f = send(&mut client, zlib_compress(&good).unwrap());
+        assert_eq!(server.decode(&f).unwrap(), good);
+        let f = send(&mut client, not_zlib.clone());
+        assert_eq!(server.decode(&f).unwrap(), b"");
+        let note = server.take_skip_note().unwrap();
+        assert!(
+            note.contains("client frame type 0x04, 140 bytes")
+                && note.contains("starts 0000000100000004"),
+            "{note}"
+        );
+        // In step: the next frames read.
+        for _ in 0..2 {
+            let f = send(&mut client, zlib_compress(&good).unwrap());
+            assert_eq!(server.decode(&f).unwrap(), good);
+        }
+        // One such frame between good ones, again and again, is fine.
+        for _ in 0..5 {
+            let f = send(&mut client, not_zlib.clone());
+            assert_eq!(server.decode(&f).unwrap(), b"");
+            let f = send(&mut client, zlib_compress(&good).unwrap());
+            assert_eq!(server.decode(&f).unwrap(), good);
+        }
+        // Out of step: every frame fails, and the third in a row drops it.
+        let mut wrong = Gen5::with_state(0x1234_5678, key).round_down();
+        for i in 0..=MAX_SKIPPED_IN_A_ROW {
+            let f = send(&mut wrong, zlib_compress(&good).unwrap());
+            let r = server.decode(&f);
+            if i < MAX_SKIPPED_IN_A_ROW {
+                assert_eq!(r.unwrap(), b"");
+            } else {
+                let e = r.unwrap_err().to_string();
+                assert!(e.contains("client frame type 0x04"), "{e}");
+            }
+        }
     }
 
     /// What we send a gen-5 client reads back with the client's own reader,
