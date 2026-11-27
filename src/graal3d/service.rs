@@ -26,7 +26,7 @@
 //! a stock TGE Player; its moves reach the others the same way.
 
 use super::caps::{self, Caps};
-use super::conn::{ClientState, Connection, Key, Mission, Out};
+use super::conn::{ClientState, Connection, Key, Mission, Out, MAX_GHOSTS};
 use super::edit::{self, Edit};
 use super::handshake::{self, ConnectRequest};
 use super::mutate::{self, Mutation};
@@ -148,6 +148,23 @@ pub struct Options {
     /// add and remove world objects with `g3dedit` triggers, and the
     /// world files are saved ([`super::edit`]).
     pub edit: bool,
+    /// `graal3d_scope*`: world objects ghosted only near the player
+    /// ([`super::scope`]). Off by default.
+    pub scope: super::scope::Options,
+    /// `graal3d_sendms`: the least time between two data packets to one
+    /// client, in milliseconds; 0 is [`super::conn::SEND_INTERVAL_MS`].
+    pub send_ms: u64,
+}
+
+impl Options {
+    /// The send interval each connection gets.
+    fn send_interval(&self) -> u64 {
+        if self.send_ms == 0 {
+            super::conn::SEND_INTERVAL_MS
+        } else {
+            self.send_ms
+        }
+    }
 }
 
 enum Cmd {
@@ -520,10 +537,16 @@ struct Session {
     /// A large terrain ([`super::ground::Large`]): the world chunk each of
     /// the client's slots holds, once its terrain request is answered.
     window: Option<super::ground::Window>,
+    /// With distance scoping on for its world ([`super::scope`]): the
+    /// world objects (indices into the scene's objects) it is ghosted.
+    scope: Option<HashSet<usize>>,
 }
 
 /// How often each client's terrain window is looked at, in milliseconds.
 const SLIDE_MS: u64 = 200;
+
+/// The most world objects a scoped client is ghosted at once.
+const SCOPE_BUDGET: usize = MAX_GHOSTS as usize - super::scope::RESERVED;
 
 const AVATAR: Key = 0x1_0000;
 const CAMERA: Key = 0x2_0000;
@@ -706,6 +729,8 @@ pub struct Service {
     edit_fails: HashMap<SocketAddr, u32>,
     /// When the next terrain window pass is due ([`SLIDE_MS`]).
     next_slide: u64,
+    /// When the next scoping pass is due ([`super::scope::PASS_MS`]).
+    next_scope: u64,
 }
 
 impl Service {
@@ -743,6 +768,7 @@ impl Service {
             roster: None,
             next_roster: 0,
             next_slide: 0,
+            next_scope: 0,
             edit_staff: HashMap::new(),
             edit_checks: Vec::new(),
             edit_fails: HashMap::new(),
@@ -775,6 +801,24 @@ impl Service {
         }
         if opts.sharp3d {
             log("protocol 24 clients get the Sharp3D route (graal3d_route = sharp3d)");
+        }
+        match opts.scope.mode {
+            super::scope::Mode::Off => {}
+            m => log(&format!(
+                "world objects are ghosted within {} units of each player, deleted past {} ({})",
+                opts.scope.radius,
+                opts.scope.radius + opts.scope.hysteresis,
+                match m {
+                    super::scope::Mode::Auto(n) => format!("worlds of more than {n} objects"),
+                    _ => "every world".to_string(),
+                }
+            )),
+        }
+        if opts.send_interval() != super::conn::SEND_INTERVAL_MS {
+            log(&format!(
+                "3D data packets at most every {} ms (graal3d_sendms)",
+                opts.send_interval()
+            ));
         }
         let mut opts = opts;
         for (name, scene) in std::mem::take(&mut opts.worlds) {
@@ -993,6 +1037,7 @@ impl Service {
         let mut conn = Connection::new(profile, req.sequence, now);
         conn.set_tracing(self.trace_file.is_some());
         conn.set_mutation(self.opts.mutation);
+        conn.set_send_interval(self.opts.send_interval());
         let caps = caps::for_client(&player.token, &player.label, profile.protocol);
         if let Some(c) = &caps {
             log(&format!("{} is {}", player.account, c.describe()));
@@ -1008,6 +1053,7 @@ impl Service {
                 shown_2d: BTreeMap::new(),
                 regrow: None,
                 window: None,
+                scope: None,
             },
         );
         self.by_player.insert(id, from);
@@ -1155,6 +1201,7 @@ impl Service {
         let id = s.player;
         // A new TerrainBlock: the client asks for its chunks again.
         s.window = None;
+        s.scope = None;
         if s.conn.profile().tge {
             // 3.153 and 4.04r2: a Sky (the world's, else a plain one: 4.04r2
             // reads the scene's Sky without a null check) and one Player, or
@@ -1227,6 +1274,7 @@ impl Service {
         let caps = s.caps;
         let mut left_out = 0;
         let terrain_all = self.opts.terrain_all;
+        let scope_opts = self.opts.scope;
         let offers = |o: &Ghost| match &caps {
             Some(c) => c.offers(o, terrain_all),
             None => {
@@ -1236,36 +1284,12 @@ impl Service {
                 ) || terrain_all
             }
         };
-        for (i, o) in scene.objects.iter().enumerate() {
-            if p21 && matches!(o, Ghost::Sky(_)) || !shown[i] {
-                continue;
-            }
-            if offers(o) {
-                s.conn.set_ghost(i as Key + 1, o.clone());
-            } else {
-                left_out += 1;
-            }
-        }
-        if left_out > 0 {
-            log(&format!(
-                "{}'s build ({}) does not take the 5.x terrain or water layout: {left_out} objects not sent",
-                s.account,
-                caps.map_or("unknown", |c| c.label)
-            ));
-        }
-        if let Some(c) = caps.filter(|c| c.row.requires_sky) {
-            if !scene.objects.iter().any(|o| matches!(o, Ghost::Sky(_))) && !p21 {
-                log(&format!(
-                    "{}'s build ({}) crashes without a Sky, and graal3dworld.txt has no sky line",
-                    s.account, c.label
-                ));
-            }
-        }
-        if p21 {
-            for (key, sky) in padded_skies(&scene.objects) {
-                s.conn.set_ghost(key, Ghost::Sky(sky));
-            }
-        }
+        // The ghost table holds 4096. Its first entries go to what the
+        // client cannot draw without: the TerrainBlock, its own object and
+        // its Camera. With a world object first in line, a world of 4094 or
+        // more objects filled the table before them, and a real 5.12 drew a
+        // black view all session (lab, 2026-11-27).
+        //
         // The terrain's settings; its chunks follow the client's request.
         if let Some(t) = &scene.terrain {
             let g = Ghost::Terrain(Box::new(t.clone()));
@@ -1273,8 +1297,9 @@ impl Service {
                 s.conn.set_ghost(TERRAIN, g);
             }
         }
-        for (other, a) in world_avatars {
-            s.conn.set_ghost(avatar_key(other), Ghost::GameObject(a));
+        if let Some((_, a)) = world_avatars.iter().find(|(p, _)| *p == id) {
+            s.conn
+                .set_ghost(avatar_key(id), Ghost::GameObject(a.clone()));
         }
         // The Sharp3D route's control object is the Camera (below).
         let sharp3d = s.conn.profile().ghost_always;
@@ -1296,6 +1321,82 @@ impl Service {
         s.conn.set_camera_object(camera_key(id));
         if sharp3d {
             s.conn.set_control_object(camera_key(id));
+        }
+        // Then the rest of the world but its objects (Sun, Skies, water,
+        // ground cover), then the other players, then the objects.
+        let world_objects = scene
+            .objects
+            .iter()
+            .filter(|o| matches!(o, Ghost::GameObject(_)))
+            .count();
+        let scoped = scope_opts.applies(world_objects);
+        for (i, o) in scene.objects.iter().enumerate() {
+            if matches!(o, Ghost::GameObject(_)) || p21 && matches!(o, Ghost::Sky(_)) || !shown[i] {
+                continue;
+            }
+            if offers(o) {
+                s.conn.set_ghost(i as Key + 1, o.clone());
+            } else {
+                left_out += 1;
+            }
+        }
+        if p21 {
+            for (key, sky) in padded_skies(&scene.objects) {
+                s.conn.set_ghost(key, Ghost::Sky(sky));
+            }
+        }
+        for (other, a) in world_avatars {
+            if other != id {
+                s.conn.set_ghost(avatar_key(other), Ghost::GameObject(a));
+            }
+        }
+        if scoped {
+            let objects = scene
+                .objects
+                .iter()
+                .enumerate()
+                .filter_map(|(i, o)| match o {
+                    Ghost::GameObject(g) => Some((i, g.transform.position, shown[i])),
+                    _ => None,
+                });
+            let plan =
+                super::scope::plan(&HashSet::new(), start, objects, &scope_opts, SCOPE_BUDGET);
+            let mut set = HashSet::new();
+            for i in plan.add {
+                let key = i as Key + 1;
+                s.conn.set_ghost(key, scene.objects[i].clone());
+                if s.conn.ghost_index(key).is_some() {
+                    set.insert(i);
+                }
+            }
+            log(&format!(
+                "{}: {} of {world_objects} world objects in scope at link (radius {})",
+                s.account,
+                set.len(),
+                scope_opts.radius
+            ));
+            s.scope = Some(set);
+        } else {
+            for (i, o) in scene.objects.iter().enumerate() {
+                if matches!(o, Ghost::GameObject(_)) && shown[i] {
+                    s.conn.set_ghost(i as Key + 1, o.clone());
+                }
+            }
+        }
+        if left_out > 0 {
+            log(&format!(
+                "{}'s build ({}) does not take the 5.x terrain or water layout: {left_out} objects not sent",
+                s.account,
+                caps.map_or("unknown", |c| c.label)
+            ));
+        }
+        if let Some(c) = caps.filter(|c| c.row.requires_sky) {
+            if !scene.objects.iter().any(|o| matches!(o, Ghost::Sky(_))) && !p21 {
+                log(&format!(
+                    "{}'s build ({}) crashes without a Sky, and graal3dworld.txt has no sky line",
+                    s.account, c.label
+                ));
+            }
         }
         self.send_raw_events(at, false);
     }
@@ -1361,7 +1462,75 @@ impl Service {
         self.poll_roster(now);
         self.poll_edit_logins();
         self.regrow(now);
+        self.scope_pass(now);
         self.slide_terrain(now);
+    }
+
+    /// Distance scoping ([`super::scope`]): each scoped client is ghosted
+    /// the world objects that came within the radius of its own object,
+    /// and loses the ones past the radius and hysteresis.
+    fn scope_pass(&mut self, now: u64) {
+        if now < self.next_scope {
+            return;
+        }
+        self.next_scope = now + super::scope::PASS_MS;
+        let opts = self.opts.scope;
+        let addrs: Vec<SocketAddr> = self
+            .sessions
+            .iter()
+            .filter(|(_, s)| s.scope.is_some())
+            .map(|(a, _)| *a)
+            .collect();
+        for at in addrs {
+            let player = self.sessions[&at].player;
+            let Some(pos) = self.avatars.get(&player).map(|a| a.transform.position) else {
+                continue;
+            };
+            let scene = self.scene_of(player);
+            let shown = self.shown_objects(player, &scene);
+            let Some(Session {
+                scope: Some(set),
+                conn,
+                ..
+            }) = self.sessions.get_mut(&at)
+            else {
+                continue;
+            };
+            let objects = scene
+                .objects
+                .iter()
+                .enumerate()
+                .filter_map(|(i, o)| match o {
+                    Ghost::GameObject(g) => Some((i, g.transform.position, shown[i])),
+                    _ => None,
+                });
+            let plan = super::scope::plan(set, pos, objects, &opts, SCOPE_BUDGET);
+            let (added, removed) = (plan.add.len(), plan.remove.len());
+            for i in plan.remove {
+                conn.remove_ghost(i as Key + 1);
+                set.remove(&i);
+            }
+            for i in plan.add {
+                let key = i as Key + 1;
+                conn.set_ghost(key, scene.objects[i].clone());
+                if conn.ghost_index(key).is_some() {
+                    set.insert(i);
+                }
+            }
+            if added + removed > 0 && self.trace_file.is_some() {
+                let s = &self.sessions[&at];
+                let what = format!(
+                    "scope\t+{added} -{removed}\t{} in scope\t{} ghosts\t{:.0} {:.0} {:.0}",
+                    s.scope.as_ref().map_or(0, HashSet::len),
+                    s.conn.ghost_count(),
+                    pos[0],
+                    pos[1],
+                    pos[2]
+                );
+                let (account, protocol) = (s.account.clone(), s.conn.profile().protocol);
+                self.trace(&account, protocol, &what);
+            }
+        }
     }
 
     /// A large terrain: each client whose player crossed into another
@@ -2516,11 +2685,18 @@ impl Service {
             let Some(s) = self.sessions.get_mut(&at) else {
                 continue;
             };
+            // A scoped client gets a world object only while it is in its
+            // scope; the next scoping pass brings in one that came near.
             let put = |s: &mut Session, i: usize| {
-                if shown[i] {
+                let out_of_scope = matches!(scene.objects[i], Ghost::GameObject(_))
+                    && s.scope.as_ref().is_some_and(|set| !set.contains(&i));
+                if shown[i] && !out_of_scope {
                     s.conn.set_ghost(i as Key + 1, scene.objects[i].clone());
                 } else {
                     s.conn.remove_ghost(i as Key + 1);
+                    if let Some(set) = &mut s.scope {
+                        set.remove(&i);
+                    }
                 }
             };
             match change {
@@ -2529,6 +2705,13 @@ impl Service {
                     // Every later object moved down one key: each key is
                     // deleted and made again, so no client keeps an old
                     // shape under it.
+                    if let Some(set) = &mut s.scope {
+                        *set = set
+                            .iter()
+                            .filter(|k| **k != i)
+                            .map(|k| if *k > i { k - 1 } else { *k })
+                            .collect();
+                    }
                     for k in i..scene.objects.len() {
                         s.conn.remove_ghost(k as Key + 1);
                         put(s, k);
@@ -2561,10 +2744,15 @@ impl Service {
         else {
             return true;
         };
-        if shown {
+        // A scoped client gets it back once it is in scope.
+        let out_of_scope = s.scope.as_ref().is_some_and(|set| !set.contains(&i));
+        if shown && !out_of_scope {
             s.conn.set_ghost(i as Key + 1, scene.objects[i].clone());
         } else {
             s.conn.remove_ghost(i as Key + 1);
+            if let Some(set) = &mut s.scope {
+                set.remove(&i);
+            }
         }
         true
     }
@@ -3677,6 +3865,203 @@ spawn 0 0 1
         s.close(a, "test", false);
         assert!(s.edit_fails.is_empty() && s.edit_staff.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn scoped(mode: crate::graal3d::scope::Mode) -> Options {
+        Options {
+            scope: crate::graal3d::scope::Options {
+                mode,
+                radius: 100.0,
+                hysteresis: 20.0,
+            },
+            ..Options::default()
+        }
+    }
+
+    /// `n` world objects `o0` .. on the x axis, `step` apart from x = 0.
+    fn row_world(n: usize, step: f32) -> String {
+        let mut w = String::from(
+            "playershape labcube.3ds\nspawn 0 0 0\nsun 0 0 -1 1 1 1 1 0.2 0.2 0.2 1\n",
+        );
+        for i in 0..n {
+            w.push_str(&format!("object o{i} box.3ds {} 0 0\n", i as f32 * step));
+        }
+        w
+    }
+
+    fn has(s: &Service, at: &SocketAddr, name: &str) -> bool {
+        object_names(s, at).iter().any(|n| n == name)
+    }
+
+    #[test]
+    fn a_scoped_world_ghosts_only_what_is_near_the_player() {
+        use crate::graal3d::scope::Mode;
+        // o0 at 0, o1 at 50, o2 at 100, o3 at 150, ... o10 at 500.
+        let (s, hub, _) = service(&row_world(11, 50.0));
+        let mut s = s.with_options(scoped(Mode::On));
+        hub.tcp_joined(1, tcp("one"));
+        let a: SocketAddr = "127.0.0.1:40000".parse().unwrap();
+        handshake(&mut s, a, 24, b"one").unwrap();
+        let mut clients = [(a, FakeClient::new(&PROTOCOL_24))];
+        let now = run(&mut s, &mut clients, 0, 12);
+        for (name, there) in [
+            ("o0", true),
+            ("o1", true),
+            ("o2", true),
+            ("o3", false),
+            ("o10", false),
+        ] {
+            assert_eq!(
+                has(&s, &a, name),
+                there,
+                "{name}: {:?}",
+                object_names(&s, &a)
+            );
+        }
+        // The rest of the world is not scoped.
+        assert!(has(&s, &a, "G3DPlayer_one"));
+        assert!(s.connection(&a).unwrap().control_delivered());
+
+        // Moved to x = 110: o3 (40 away) and o4 (90) come in, o5 (140)
+        // does not; o0 (110 away) is in the band and stays.
+        assert!(s.move_avatar(1, "110 0 0"));
+        let now = run(&mut s, &mut clients, now, 12);
+        for (name, there) in [("o0", true), ("o3", true), ("o4", true), ("o5", false)] {
+            assert_eq!(
+                has(&s, &a, name),
+                there,
+                "{name}: {:?}",
+                object_names(&s, &a)
+            );
+        }
+        // At x = 121, o0 is past radius + hysteresis and goes.
+        assert!(s.move_avatar(1, "121 0 0"));
+        let now = run(&mut s, &mut clients, now, 12);
+        assert!(!has(&s, &a, "o0"), "{:?}", object_names(&s, &a));
+        assert!(has(&s, &a, "o1"));
+        // Far out at x = 500: only o8 .. o10 are left.
+        assert!(s.move_avatar(1, "500 0 0"));
+        run(&mut s, &mut clients, now, 12);
+        let mut names: Vec<String> = object_names(&s, &a)
+            .into_iter()
+            .filter(|n| n.starts_with('o'))
+            .collect();
+        names.sort();
+        assert_eq!(names, vec!["o10", "o8", "o9"]);
+    }
+
+    #[test]
+    fn auto_scoping_turns_on_only_for_a_big_world() {
+        use crate::graal3d::scope::Mode;
+        for (threshold, scoped_on) in [(11, false), (10, true)] {
+            let (s, hub, _) = service(&row_world(11, 50.0));
+            let mut s = s.with_options(scoped(Mode::Auto(threshold)));
+            hub.tcp_joined(1, tcp("one"));
+            let a: SocketAddr = "127.0.0.1:40000".parse().unwrap();
+            handshake(&mut s, a, 24, b"one").unwrap();
+            assert_eq!(has(&s, &a, "o10"), !scoped_on);
+            assert!(has(&s, &a, "o0"));
+        }
+        // Off (the default) ghosts everything, as before.
+        let (mut s, hub, _) = service(&row_world(11, 50.0));
+        hub.tcp_joined(1, tcp("one"));
+        let a: SocketAddr = "127.0.0.1:40000".parse().unwrap();
+        handshake(&mut s, a, 24, b"one").unwrap();
+        assert!(has(&s, &a, "o10"));
+    }
+
+    #[test]
+    fn the_own_object_camera_and_terrain_are_ghosted_before_a_full_table() {
+        // More world objects than the client's table: the TerrainBlock,
+        // the player's own object and its Camera still get entries, and the
+        // objects take what is left (lab, 2026-11-27: at 4094 objects the
+        // 5.12 view stayed black).
+        let mut w = row_world(4200, 0.5);
+        w.push_str("terrain t 8\n");
+        let (s, hub, _) = service(&w);
+        let mut s = s.with_options(Options {
+            terrain_all: true,
+            ..Options::default()
+        });
+        hub.tcp_joined(1, tcp("one"));
+        let a: SocketAddr = "127.0.0.1:40000".parse().unwrap();
+        handshake(&mut s, a, 24, b"one").unwrap();
+        let c = s.connection(&a).unwrap();
+        assert_eq!(c.ghost_index(TERRAIN), Some(0));
+        assert_eq!(c.ghost_index(avatar_key(1)), Some(1));
+        assert_eq!(c.ghost_index(camera_key(1)), Some(2));
+        // The Sun next, then objects up to the cap.
+        assert_eq!(c.ghost_index(1), Some(3));
+        assert_eq!(c.ghost_count(), MAX_GHOSTS as usize);
+        let mut clients = [(a, FakeClient::new(&PROTOCOL_24))];
+        run(&mut s, &mut clients, 0, 12);
+        let c = s.connection(&a).unwrap();
+        // They go first on the wire too.
+        assert!(c.ghost_delivered(camera_key(1)));
+        assert!(c.ghost_delivered(avatar_key(1)));
+        assert!(c.ghost_delivered(TERRAIN));
+    }
+
+    #[test]
+    fn a_scoped_client_keeps_table_room_in_a_dense_spot() {
+        use crate::graal3d::scope::Mode;
+        // 4200 objects within the radius: the nearest SCOPE_BUDGET go in,
+        // and the table keeps room for players and the rest.
+        let (s, hub, _) = service(&row_world(4200, 0.02));
+        let mut s = s.with_options(scoped(Mode::On));
+        hub.tcp_joined(1, tcp("one"));
+        hub.tcp_joined(2, tcp("two"));
+        let a: SocketAddr = "127.0.0.1:40000".parse().unwrap();
+        let b: SocketAddr = "127.0.0.1:40001".parse().unwrap();
+        handshake(&mut s, a, 24, b"one").unwrap();
+        assert_eq!(s.sessions[&a].scope.as_ref().unwrap().len(), SCOPE_BUDGET);
+        assert!(has(&s, &a, "o0"));
+        assert!(!has(&s, &a, "o4199"));
+        // A second player still gets onto the first one's screen.
+        handshake(&mut s, b, 24, b"two").unwrap();
+        assert!(has(&s, &a, "G3DPlayer_two"));
+        assert!(s
+            .connection(&b)
+            .unwrap()
+            .ghost_index(camera_key(2))
+            .is_some());
+    }
+
+    #[test]
+    fn hiding_and_edits_keep_to_the_scope() {
+        use crate::graal3d::scope::Mode;
+        let (s, hub, _) = service(&row_world(6, 50.0));
+        let mut s = s.with_options(scoped(Mode::On));
+        hub.tcp_joined(1, tcp("one"));
+        let a: SocketAddr = "127.0.0.1:40000".parse().unwrap();
+        handshake(&mut s, a, 24, b"one").unwrap();
+        let mut clients = [(a, FakeClient::new(&PROTOCOL_24))];
+        let now = run(&mut s, &mut clients, 0, 12);
+        // Out of scope (o5 at 250): showing it again does not ghost it.
+        assert!(s.hide_object(1, "o5", true));
+        assert!(s.hide_object(1, "o5", false));
+        let now = run(&mut s, &mut clients, now, 6);
+        assert!(!has(&s, &a, "o5"));
+        // In scope: hidden goes, shown comes back.
+        assert!(s.hide_object(1, "o1", true));
+        let now = run(&mut s, &mut clients, now, 6);
+        assert!(!has(&s, &a, "o1"));
+        assert!(s.hide_object(1, "o1", false));
+        let now = run(&mut s, &mut clients, now, 6);
+        assert!(has(&s, &a, "o1"));
+        // Removing o0 moves every later object down one key; the scope
+        // follows, so o5 (now key 5) is still not ghosted and o1 still is.
+        let scene = s.scene_of(1);
+        let (scene, change) =
+            edited_scene(&scene, &edit::parse(&["remove", "o0"]).unwrap()).unwrap();
+        let scene = Arc::new(scene);
+        s.scenes.insert(String::new(), scene.clone());
+        s.show_change("", &scene, change);
+        run(&mut s, &mut clients, now, 12);
+        assert!(has(&s, &a, "o1"));
+        assert!(has(&s, &a, "o2"));
+        assert!(!has(&s, &a, "o0"));
+        assert!(!has(&s, &a, "o5"), "{:?}", object_names(&s, &a));
     }
 
     #[test]

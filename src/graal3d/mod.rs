@@ -34,6 +34,7 @@ pub mod mutate;
 pub mod objects;
 pub mod raw;
 pub mod scene;
+pub mod scope;
 pub mod service;
 pub mod tge;
 
