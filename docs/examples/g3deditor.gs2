@@ -7,7 +7,13 @@
 // "Editing a world in game"). Needs graal3d_edit = staff and a STAFF
 // account; everyone else gets "error only staff accounts may edit".
 //
+// A 5.12 always logs in as a guest, so sign in first: press L, type the
+// staff account, Enter, the password (shown as stars), Enter. Letters,
+// digits, shift for capitals; Backspace and Escape work. The sign-in
+// lasts until this 3D connection ends.
+//
 // Keys:
+//   L              sign in with a staff account
 //   N / B          next / previous object
 //   arrows         move it east, west, north, south, 5 units a second
 //                  (shift: 1.25)
@@ -28,6 +34,9 @@ function onCreated() {
   this.held = "";
   this.answer = "";
   this.lastlist = "";
+  this.typing = 0;
+  this.account = "";
+  this.password = "";
   g3eList();
   setTimer(0.05);
 }
@@ -80,10 +89,51 @@ function onTimeout() {
   }
   if (clientr.g3dedit != this.answer) {
     this.answer = clientr.g3dedit;
+    if (this.answer.starts("ok login")) g3eList();
     g3eShow();
   }
-  if (this.n > 0) g3eKeys();
+  if (this.typing > 0) g3eType();
+  else {
+    if (g3ePressed(76)) {
+      this.typing = 1;
+      this.account = "";
+      this.password = "";
+      g3eShow();
+    } else if (this.n > 0) g3eKeys();
+  }
   setTimer(0.05);
+}
+
+// Sign-in typing: 1 the account, 2 the password.
+function g3eType() {
+  temp.add = "";
+  temp.upper = keydown2(16, false);
+  for (temp.k = 48; temp.k <= 57; temp.k++)
+    if (g3ePressed(temp.k)) temp.add = temp.add @ char(temp.k);
+  for (temp.k = 65; temp.k <= 90; temp.k++)
+    if (g3ePressed(temp.k)) {
+      if (temp.upper) temp.add = temp.add @ char(temp.k);
+      else temp.add = temp.add @ char(temp.k + 32);
+    }
+  if (this.typing == 1) this.account = this.account @ temp.add;
+  else this.password = this.password @ temp.add;
+  if (g3ePressed(8)) {
+    if (this.typing == 1) this.account = this.account.substring(0, this.account.length() - 1);
+    else this.password = this.password.substring(0, this.password.length() - 1);
+  }
+  if (g3ePressed(27)) {
+    this.typing = 0;
+    this.password = "";
+  }
+  if (g3ePressed(13)) {
+    if (this.typing == 1) this.typing = 2;
+    else {
+      triggerserver("gui", "G3DEditor", "g3dedit", "login", this.account, this.password);
+      this.typing = 0;
+      this.password = "";
+    }
+  }
+  g3eShow();
 }
 
 function g3eKeys() {
@@ -140,7 +190,17 @@ function g3eRemove() {
 }
 
 function g3eShow() {
-  if (this.n <= 0) return;
+  if (this.typing > 0) {
+    temp.stars = "";
+    for (temp.k = 0; temp.k < this.password.length(); temp.k++) temp.stars = temp.stars @ "*";
+    if (this.typing == 1) player.chat = "Staff account: " @ this.account @ "_";
+    else player.chat = "Password for " @ this.account @ ": " @ temp.stars @ "_";
+    return;
+  }
+  if (this.n <= 0) {
+    player.chat = "G3DEditor: press L to sign in  " @ this.answer;
+    return;
+  }
   temp.i = this.sel;
   player.chat = "Editing " @ this.names[temp.i] @ " (" @ (temp.i + 1) @ "/" @ this.n @ ") at " @ this.xs[temp.i] @ " " @ this.ys[temp.i] @ " " @ this.zs[temp.i] @ "  " @ this.answer;
   // Look at it from behind and above.
