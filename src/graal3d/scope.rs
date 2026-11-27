@@ -115,11 +115,28 @@ pub fn plan(
     opts: &Options,
     budget: usize,
 ) -> Plan {
+    plan_from(scoped, &[at], objects, opts, budget)
+}
+
+/// [`plan`] from several points: an object's distance is to the nearest of
+/// them. The player's position comes first; the far sides of the portals
+/// it stands at follow ([`super::scene::Portal::far_sides`]), so a room
+/// behind a door is in scope before the player walks through.
+pub fn plan_from(
+    scoped: &HashSet<usize>,
+    ats: &[[f32; 3]],
+    objects: impl IntoIterator<Item = (usize, [f32; 3], bool)>,
+    opts: &Options,
+    budget: usize,
+) -> Plan {
     let mut out = Plan::default();
     let mut near: Vec<(f32, usize)> = Vec::new();
     let mut kept = 0;
     for (i, p, shown) in objects {
-        let d = distance(at, p);
+        let d = ats
+            .iter()
+            .map(|a| distance(*a, p))
+            .fold(f32::INFINITY, f32::min);
         if scoped.contains(&i) {
             if !shown || d > opts.radius + opts.hysteresis {
                 out.remove.push(i);
@@ -265,6 +282,25 @@ mod tests {
         assert!(!o.applies(1_000_000));
         o.mode = Mode::On;
         assert!(o.applies(0));
+    }
+
+    #[test]
+    fn a_portal_brings_its_far_side_in_and_lets_it_go() {
+        let o = opts();
+        // The player at 0; a room at 1000, behind a portal at the player.
+        let objs = line(&[0.0, 1000.0]);
+        let p = plan_from(
+            &HashSet::new(),
+            &[[0.0; 3], [1000.0, 0.0, 0.0]],
+            objs.clone(),
+            &o,
+            10,
+        );
+        assert_eq!(p.add, vec![0, 1]);
+        // Walked away from the portal: only the player's point is left.
+        let scoped: HashSet<usize> = [0, 1].into();
+        let p = plan_from(&scoped, &[[0.0; 3]], objs, &o, 10);
+        assert_eq!((p.add, p.remove), (vec![], vec![1]));
     }
 
     #[test]

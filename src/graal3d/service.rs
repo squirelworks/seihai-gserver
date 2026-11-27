@@ -1359,8 +1359,9 @@ impl Service {
                     Ghost::GameObject(g) => Some((i, g.transform.position, shown[i])),
                     _ => None,
                 });
+            let from = super::scene::Portal::far_sides(&scene.portals, start);
             let plan =
-                super::scope::plan(&HashSet::new(), start, objects, &scope_opts, SCOPE_BUDGET);
+                super::scope::plan_from(&HashSet::new(), &from, objects, &scope_opts, SCOPE_BUDGET);
             let mut set = HashSet::new();
             for i in plan.add {
                 let key = i as Key + 1;
@@ -1504,7 +1505,8 @@ impl Service {
                     Ghost::GameObject(g) => Some((i, g.transform.position, shown[i])),
                     _ => None,
                 });
-            let plan = super::scope::plan(set, pos, objects, &opts, SCOPE_BUDGET);
+            let from = super::scene::Portal::far_sides(&scene.portals, pos);
+            let plan = super::scope::plan_from(set, &from, objects, &opts, SCOPE_BUDGET);
             let (added, removed) = (plan.add.len(), plan.remove.len());
             for i in plan.remove {
                 conn.remove_ghost(i as Key + 1);

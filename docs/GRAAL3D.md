@@ -355,6 +355,27 @@ graal3d_scopehysteresis = 200  # world units
   the radius and the 5.12's draw distance. Players that move much faster need
   a larger radius.
 
+### Doors into another part of the world (`portal`)
+
+A house or cave can sit in the same world as the land it is entered from,
+far enough away that it is never drawn from there (seihai-pw3d places each
+2D interior at least 1536 units from everything else). Walking through its
+door is then a move in one world: no `g3dworld` switch, no terrain resend,
+no second phase 2. With scoping on, the room would only come in on the next
+scope pass after the player arrives, and the land outside would only come
+back after the player leaves, so a world can name its doors:
+
+```text
+portal <x> <y> <z> <radius> <to x> <to y> <to z>
+```
+
+While a player is within `radius` of the portal's point, objects within the
+scope radius of the `to` point are in scope as well as those round the
+player. They are ghosted while the player stands at the door, more than
+1050 units from the camera, so a 5.12 does not draw them until the player is
+through. The rest of the world goes as usual once the player is past radius
+plus hysteresis. Without scoping, `portal` lines change nothing.
+
 `graal3d_sendms` is the least time between two data packets to one client
 (default 50 ms, each at most 400 bytes, so about 8 KB/s). The 5.12 says it
 takes 32 ms and 450 bytes. On loopback a real 5.12 took 10 ms with no loss:
