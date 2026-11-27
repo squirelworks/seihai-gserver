@@ -93,7 +93,8 @@ RC support and server-side NPC scripts are later stages.
 With `graal3d = true` in `config/server.txt` the server also opens the UDP
 link that 3.153, 4.x, 5.x and 6.x clients use for their 3D side (protocols 19,
 21 and 24), tied to the TCP login by account and address. The full guide is
-[docs/GRAAL3D.md](docs/GRAAL3D.md). In short:
+[docs/GRAAL3D.md](docs/GRAAL3D.md); to set one up step by step, see
+[docs/GRAAL3D-SETUP.md](docs/GRAAL3D-SETUP.md). In short:
 
 * worlds are text files in `config/graal3dworld.txt` and
   `config/graal3dworlds/<name>.txt`: shapes (`.3ds`, `.dts`, `.dif`), sky, sun,
