@@ -86,7 +86,11 @@ jobs:
           # Release notes are written by hand, reviewed in a PR, and kept here.
           NOTES="docs/releases/$TAG.md"
           [ -f "$NOTES" ] || { echo "::error::No release notes: write $NOTES in a PR first"; exit 1; }
+          # One SHA256SUMS beside the archives, uploaded with them.
+          rm -f dist/SHA256SUMS
+          (cd dist && sha256sum -- * > SHA256SUMS)
           ls -l dist
+          cat dist/SHA256SUMS
           if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             if [ "$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json isDraft -q .isDraft)" = true ]; then
               gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber dist/*
