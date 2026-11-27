@@ -2746,7 +2746,9 @@ impl WorldTask {
             return Some("(no NPC-server is connected to run it)".into());
         }
         let Some(w) = self.weapons.get(&name) else {
-            return Some(format!("(no weapon {name:?} on the server)"));
+            return Some(format!(
+                "(no server weapon {name:?}; a weapon3d script file runs on the client only)"
+            ));
         };
         if !crate::weapons::has_serverside(&w.source) {
             return Some(format!("(weapon {name:?} has no serverside script)"));
