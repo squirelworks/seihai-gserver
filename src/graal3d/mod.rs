@@ -33,6 +33,7 @@ pub mod link;
 pub mod mutate;
 pub mod objects;
 pub mod raw;
+pub mod regions;
 pub mod scene;
 pub mod scope;
 pub mod service;

@@ -277,6 +277,10 @@ fn load_3d_world(
     }
     refused.extend(checked.refused);
     scene.push_files = checked.terrain_files;
+    let budget = graal3d::conn::MAX_GHOSTS as usize - graal3d::scope::RESERVED;
+    for line in graal3d::regions::report(&scene, &server.cfg.graal3d_scope_options(), budget) {
+        eprintln!("Graal3D: {label} {line}");
+    }
     scene
 }
 

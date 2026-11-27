@@ -2720,9 +2720,40 @@ impl WorldTask {
             return;
         };
         let level = self.loaded.get(&key).map(|l| l.name.clone()).unwrap_or(key);
+        if action == b"serverside" {
+            if let Some(why) = self.serverside_trigger_lost(raw) {
+                eprintln!(
+                    "player {id}: WARNING serverside trigger {} {why}; dropped",
+                    String::from_utf8_lossy(raw.get(5..).unwrap_or_default())
+                );
+            }
+        }
         if let Some(hub) = &self.npc {
             hub.trigger_action(id, &level, x, y, &action);
         }
+    }
+
+    /// Why a `serverside,<weapon>,...` trigger reaches no script, if it
+    /// does not: no NPC-server, no such weapon, or a weapon whose script
+    /// has nothing before its `//#CLIENTSIDE` line. (A real 5.12 lab run,
+    /// 2026-11-26, lost such triggers without a word.)
+    fn serverside_trigger_lost(&self, raw: &[u8]) -> Option<String> {
+        let rest = raw.get(5..)?.strip_prefix(b"serverside,")?;
+        let name = String::from_utf8_lossy(rest.split(|b| *b == b',').next().unwrap_or_default())
+            .trim()
+            .to_string();
+        if !self.npc.as_ref().is_some_and(|h| h.connected()) {
+            return Some("(no NPC-server is connected to run it)".into());
+        }
+        let Some(w) = self.weapons.get(&name) else {
+            return Some(format!(
+                "(no server weapon {name:?}; a weapon3d script file runs on the client only)"
+            ));
+        };
+        if !crate::weapons::has_serverside(&w.source) {
+            return Some(format!("(weapon {name:?} has no serverside script)"));
+        }
+        None
     }
 
     /// A bomb, shot or blast, passed on to the others in the level whose
@@ -4363,6 +4394,26 @@ impl WorldTask {
 mod tests {
     use super::*;
     use seihai_core::protocol::SessionState;
+
+    #[test]
+    fn a_serverside_trigger_that_reaches_no_script_says_why() {
+        let task = World::new(5, blank()).task.lock().unwrap().take().unwrap();
+        let trigger = |w: &str| {
+            let mut raw = vec![0x20u8; 5];
+            raw.extend_from_slice(format!("serverside,{w},go").as_bytes());
+            raw
+        };
+        // No NPC-server: every serverside trigger is lost.
+        let why = task.serverside_trigger_lost(&trigger("Probe")).unwrap();
+        assert!(why.contains("NPC-server"), "{why}");
+        // Not a serverside trigger at all.
+        let mut plain = vec![0x20u8; 5];
+        plain.extend_from_slice(b"open,door");
+        assert_eq!(task.serverside_trigger_lost(&plain), None);
+        let w =
+            crate::weapons::Weapon::new("Probe", "", "//#CLIENTSIDE\nfunction onCreated() {}\n");
+        assert!(!crate::weapons::has_serverside(&w.source));
+    }
 
     #[test]
     fn nc_delete_retains_live_assets_after_file_error_and_retries_the_original_path() {
