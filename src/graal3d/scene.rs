@@ -48,6 +48,11 @@
 //!                           box the cover may grow in (default: anywhere);
 //!                           `scale=<n>` or `scale=<min>,<max>` anywhere after
 //!                           the class sizes the copies (default 1, grass 3)
+//! regions <folder> <cols>x<rows> [<chunks a region>] [<square size>]
+//!                           the world's terrain and objects from a grid of
+//!                           region folders, stitched into one large terrain
+//!                           (see [`super::regions`]); in place of a
+//!                           `terrain` line
 //! rawobject <class> <fields...>
 //!                           lab: a ghost of any class whose update is the
 //!                           fields (see [`super::raw`]), to every client
@@ -103,6 +108,13 @@ pub struct Scene {
     /// The files `graal3d_pushterrain` sends for this world's terrain
     /// ([`super::assets::Checked::terrain_files`]).
     pub push_files: Vec<String>,
+    /// The `regions` line ([`super::regions`]); its terrain is `terrain`.
+    pub regions: Option<super::regions::Regions>,
+    /// What [`Scene::load_terrain`] found in the regions.
+    pub regions_loaded: Option<super::regions::Loaded>,
+    /// The world objects that came from a region's `region.txt`, by name,
+    /// and the region (`<i>-<j>`).
+    pub region_of: std::collections::BTreeMap<Vec<u8>, String>,
     /// The file it was read from, which `g3dedit` saves to
     /// ([`super::edit`]); `None` for a world made in code.
     pub file: Option<PathBuf>,
@@ -355,6 +367,47 @@ impl Scene {
                     }
                     ok && safe
                 }
+                ("regions", 3..=5) => {
+                    let grid = w[2]
+                        .split_once(['x', 'X'])
+                        .and_then(|(a, b)| Some((a.parse::<u32>().ok()?, b.parse::<u32>().ok()?)));
+                    let chunks = w
+                        .get(3)
+                        .map_or(Some(super::regions::DEFAULT_REGION_CHUNKS), |v| {
+                            v.parse().ok()
+                        });
+                    let size = w.get(4).map_or(Some(8), |v| {
+                        v.parse::<u32>()
+                            .ok()
+                            .filter(|n| (1..=MAX_SQUARE_SIZE).contains(n))
+                    });
+                    let safe = std::path::Path::new(w[1])
+                        .components()
+                        .all(|c| matches!(c, std::path::Component::Normal(_)));
+                    match (grid, chunks, size) {
+                        (Some((cols, rows)), Some(chunks), Some(size)) if safe => {
+                            match super::regions::Regions::new(w[1], cols, rows, chunks, size) {
+                                Ok(r) => {
+                                    if s.terrain.is_some() {
+                                        errors.push(format!(
+                                            "line {}: the regions line replaces the terrain line (one TerrainBlock a world)",
+                                            n + 1
+                                        ));
+                                    }
+                                    let (tw, th) = r.terrain_chunks();
+                                    s.terrain = Some(Terrain::new_large(w[1], size, tw, th));
+                                    s.regions = Some(r);
+                                    true
+                                }
+                                Err(e) => {
+                                    errors.push(format!("line {}: {e}", n + 1));
+                                    continue;
+                                }
+                            }
+                        }
+                        _ => false,
+                    }
+                }
                 ("water", 7..=9) => {
                     let liquid = match w.get(8) {
                         Some(t) => t.parse::<u32>().ok(),
@@ -512,6 +565,11 @@ impl Scene {
     /// Reads the `terrain` line's chunks from under `world_dir`; one note
     /// per chunk left out.
     pub fn load_terrain(&mut self, world_dir: &std::path::Path) -> Vec<String> {
+        if self.regions.is_some() {
+            let (loaded, notes) = super::regions::load(self, world_dir);
+            self.regions_loaded = Some(loaded);
+            return notes;
+        }
         match &mut self.terrain {
             Some(t) => {
                 let dir = world_dir.join(&t.folder);

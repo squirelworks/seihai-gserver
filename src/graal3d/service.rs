@@ -540,6 +540,9 @@ struct Session {
     /// With distance scoping on for its world ([`super::scope`]): the
     /// world objects (indices into the scene's objects) it is ghosted.
     scope: Option<HashSet<usize>>,
+    /// A world of regions ([`super::regions`]): the region it was last
+    /// told it stands in (`clientr.g3dregion`).
+    region: Option<String>,
 }
 
 /// How often each client's terrain window is looked at, in milliseconds.
@@ -1054,6 +1057,7 @@ impl Service {
                 regrow: None,
                 window: None,
                 scope: None,
+                region: None,
             },
         );
         self.by_player.insert(id, from);
@@ -1202,6 +1206,7 @@ impl Service {
         // A new TerrainBlock: the client asks for its chunks again.
         s.window = None;
         s.scope = None;
+        s.region = None;
         if s.conn.profile().tge {
             // 3.153 and 4.04r2: a Sky (the world's, else a plain one: 4.04r2
             // reads the scene's Sky without a null check) and one Player, or
@@ -1552,9 +1557,20 @@ impl Service {
                 continue;
             };
             let scene = self.scene_of(player);
+            let region = scene.regions.as_ref().map(|r| {
+                r.at(pos[0], pos[1])
+                    .map_or_else(String::new, |(i, j)| super::regions::Regions::name(i, j))
+            });
             let Some(t) = &scene.terrain else { continue };
             let Some(large) = &t.large else { continue };
             let s = self.sessions.get_mut(&at).expect("listed");
+            if region.is_some() && region != s.region {
+                // The region it stands in, for its scripts ("" off the map).
+                let name = region.clone().unwrap_or_default();
+                let line = format!("s clientr.g3dregion={name}\n");
+                s.conn.send_text(b"", b"events", b"", line.as_bytes());
+                s.region = region;
+            }
             let Some(old) = &s.window else { continue };
             let window = large.window(pos, t.square_size);
             if window == *old {
@@ -2630,6 +2646,14 @@ impl Service {
             );
             return Ok(format!("ok list {n}"));
         }
+        if let Some(region) = edit.name().and_then(|n| scene.region_of.get(n.as_bytes())) {
+            // Its line is in the region's file, in the region's own
+            // coordinates; the world file does not have it.
+            return Err(format!(
+                "{} is in region {region}; edit that region's region.txt",
+                edit.name().unwrap_or_default()
+            ));
+        }
         let path = scene
             .file
             .clone()
@@ -3471,6 +3495,84 @@ spawn 0 0 1
                 .all(|(x, y)| (10..26).contains(x) && (9..25).contains(y)),
             "{w:?}"
         );
+    }
+
+    #[test]
+    fn a_world_of_regions_is_one_world_with_the_region_flag() {
+        use crate::graal3d::scope::Mode;
+        let dir = std::env::temp_dir().join(format!("g3d-svc-regions-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        for (r, text) in [
+            ("0-0", "object hut box.3ds 524 524 0\n"),
+            ("3-1", "object tower box.3ds 10 10 0\n"),
+        ] {
+            std::fs::create_dir_all(dir.join("land").join(r)).unwrap();
+            std::fs::write(dir.join("land").join(r).join("region.txt"), text).unwrap();
+        }
+        let hub = Arc::new(Graal3d::new());
+        // 4 x 2 regions of 1024 units: x from -2048, y from -1024.
+        let (mut scene, errors) =
+            Scene::parse("regions land 4x2\nplayershape labcube.3ds\nspawn -1500 -500 0\n");
+        assert!(errors.is_empty(), "{errors:?}");
+        scene.load_terrain(&dir);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(
+            scene.regions_loaded.as_ref().unwrap().objects,
+            vec![1, 0, 0, 0, 0, 0, 0, 1]
+        );
+        let mut s = Service::new(
+            hub.clone(),
+            scene,
+            PathBuf::from("."),
+            Box::new(Recorder::default()),
+        )
+        .with_options(Options {
+            terrain_all: true,
+            ..scoped(Mode::On)
+        });
+        hub.tcp_joined(1, tcp("one"));
+        let a: SocketAddr = "127.0.0.1:40000".parse().unwrap();
+        handshake(&mut s, a, 24, b"one").unwrap();
+        let mut clients = [(a, FakeClient::new(&PROTOCOL_24))];
+        let now = run(&mut s, &mut clients, 0, 4);
+        clients[0]
+            .1
+            .events
+            .send(crate::graal3d::events::Event::TerrainRequest(vec![0; 256]));
+        let now = run(&mut s, &mut clients, now, 20);
+        // The TCP side's position (0, 0) moved it from the spawn; go back.
+        assert!(s.move_avatar(1, "-1500 -500 0"));
+        let now = run(&mut s, &mut clients, now, 20);
+        let regions = |c: &FakeClient| -> Vec<String> {
+            c.got
+                .iter()
+                .filter_map(|e| match e {
+                    crate::graal3d::events::Event::BigDataChunk { bytes, .. } => {
+                        Some(String::from_utf8_lossy(bytes).into_owned())
+                    }
+                    _ => None,
+                })
+                .flat_map(|t| {
+                    t.lines()
+                        .filter_map(|l| l.strip_prefix("s clientr.g3dregion=").map(str::to_string))
+                        .collect::<Vec<_>>()
+                })
+                .collect()
+        };
+        assert_eq!(regions(&clients[0].1), ["2-1", "0-0"]);
+        assert!(has(&s, &a, "hut"), "{:?}", object_names(&s, &a));
+        assert!(!has(&s, &a, "tower"));
+        // Walking east into region 3-1: no switch, the other region's
+        // object comes in by distance and the flag follows.
+        assert!(s.move_avatar(1, "1030 5 0"));
+        let now = run(&mut s, &mut clients, now, 20);
+        assert_eq!(regions(&clients[0].1), ["2-1", "0-0", "3-1"]);
+        assert!(has(&s, &a, "tower"), "{:?}", object_names(&s, &a));
+        assert!(!has(&s, &a, "hut"));
+        // Staying in the region sends nothing more.
+        assert!(s.move_avatar(1, "1100 50 0"));
+        run(&mut s, &mut clients, now, 10);
+        assert_eq!(regions(&clients[0].1), ["2-1", "0-0", "3-1"]);
     }
 
     #[test]

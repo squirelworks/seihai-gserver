@@ -81,6 +81,7 @@ tgecontrol player|camera
 tgeplayershape <file.dts>
 weapon3d <name> <file>
 terrain <folder> [<square size>] [repeat]
+regions <folder> <cols>x<rows> [<chunks a region>] [<square size>]
 water <x> <y> <z> <sx> <sy> <sz> [<surface texture> [<liquid type>]]
 replicator <class> <x> <y> <z> <radius> <min> <max> <shapes> [<seed> [<x0> <y0> <x1> <y1>]]
 objectfor <accounts> <name> <shape> <x> <y> <z> [...as object]
@@ -361,6 +362,62 @@ takes 32 ms and 450 bytes. On loopback a real 5.12 took 10 ms with no loss:
 a cold 256-chunk terrain came in 2.1 s instead of 8.6 s, and 4000 objects in
 8.7 s instead of 31 s. It has not been tried over a real network, so the
 default stays 50.
+
+## A world built from regions
+
+A big overworld can be written as a grid of smaller **regions**, the way a
+2D playerworld is a gmap of levels, and served as one seamless world. In the
+world file, in place of a `terrain` line:
+
+```text
+regions world/enigma 8x8          # 8 x 8 regions of 8 chunks (1024 units)
+regions world/enigma 4x4 16       # 4 x 4 regions of 16 chunks (2048 units)
+regions world/enigma 16x16 8 8    # the last number is the square size (default 8)
+```
+
+The folder holds a subfolder a region, `<i>-<j>`: i from 0 going east, j from
+0 going north (the terrain's chunk order). A region is 2, 4, 8 (the default)
+or 16 terrain chunks a side, and the whole world must come to 16 to 256
+chunks a side. Each region folder may hold:
+
+- `heights<x>-<y>.dat` (x and y from 0 to its chunks less one): its piece of
+  the terrain, in the same form as any other terrain chunk.
+- `region.txt`: `object`, `objectfor`, `water` and `replicator` lines in the
+  region's own coordinates, from its south-west corner. Any other line is
+  named at start and left out (the Sun, Sky, spawn and so on belong to the
+  world file). A replicator without a box grows only inside its region.
+
+Put `heights.info` and the terrain textures in the regions folder itself. A
+missing region folder is flat and empty.
+
+The server stitches the regions into one large terrain (see "Large
+terrains") and one list of objects, moved to where each region lies; region
+(0, 0)'s corner is at minus half the world on each axis. So nothing switches
+or warps at a region's edge: the terrain slides round the player and, with
+`graal3d_scope` on or `auto`, objects are created as the player comes within
+the radius and deleted past it, from whichever region they are in. Each
+client is told the region it stands in as `clientr.g3dregion` (`<i>-<j>`,
+empty off the map), sent again whenever it changes, for scripts that want
+to know where the player is.
+
+At start the log says how many regions, chunks and objects were found, the
+fullest region, and the most objects within the scope radius plus hysteresis
+of any one spot, against the 3584 a client can hold:
+
+```text
+Graal3D: graal3dworld.txt regions world/enigma: 64 of 8x8 regions found (1024 units a side), 4096 terrain chunks of 64 x 64, 18230 region objects; the fullest region is 3-4 with 1950
+Graal3D: graal3dworld.txt regions world/enigma: at most about 2410 objects within 1300 units of one spot (near 412,-388 in region 4-3); a client holds 3584
+```
+
+A line starting `WARNING` means a player there would get only the nearest
+3584, or that scoping is off for a world with more objects than that. A town
+too dense for one spot is better as its own world behind a warp (see "More
+worlds and level warps"), like a house or a cave.
+
+Region objects are edited in their `region.txt`: `g3dedit` refuses to move or
+remove one, since the world file does not hold its line. Objects added in
+game go in the world file, in world coordinates. `seihai-servertools world3d
+split` cuts an existing big world into regions.
 
 ## More worlds and level warps
 
@@ -738,7 +795,7 @@ total when the link closes.
 layer (shared in spirit with Ato; moving it into `seihai-core` is a
 follow-up), `handshake` holds the protocol tables, `objects` and `tge` the
 ghost and datablock layouts, `ground` the terrain, water and ground cover,
-`assets` the start-up check, `caps` each build's row, `raw` the lab raw
+`assets` the start-up check, `regions` a world built from regions, `caps` each build's row, `raw` the lab raw
 fields, `mutate` the lab mutations, `conn` one client's link, `scene` the
 world file, and `service` the UDP socket and its tie to the TCP server. Most
 of the 3D side is ported from the 3D add-on the Seihai project wrote for
