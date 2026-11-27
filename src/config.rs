@@ -154,6 +154,20 @@ pub struct Config {
     /// add and remove world objects (`g3dedit` triggers), saved to the
     /// world files. `off` (the default) refuses every edit.
     pub graal3d_edit: bool,
+    /// `graal3d_scope = off | on | auto`: world objects are ghosted only
+    /// near the player (`graal3d::scope`, `docs/GRAAL3D.md`). Off by
+    /// default; `auto` scopes only a world with more than
+    /// `graal3d_scopeauto` objects. See [`Self::graal3d_scope_options`].
+    pub graal3d_scope: crate::graal3d::scope::Mode,
+    /// `graal3d_scoperadius` (default 1100) and `graal3d_scopehysteresis`
+    /// (default 200), in world units.
+    pub graal3d_scoperadius: f32,
+    pub graal3d_scopehysteresis: f32,
+    /// `graal3d_scopeauto` (default 2000).
+    pub graal3d_scopeauto: usize,
+    /// `graal3d_sendms`: the least time between two 3D data packets to one
+    /// client, in milliseconds (10 to 1000; default 50).
+    pub graal3d_sendms: u64,
     /// Which NewWorld beta a `G2N15041` login is served as: 1 (the
     /// default) or 2. The two betas send the same login line and the same
     /// props, and nothing they send on a plain level tells them apart (lab,
@@ -234,6 +248,11 @@ impl Config {
             graal3d_sharp3d: false,
             graal3d_mutate: None,
             graal3d_edit: false,
+            graal3d_scope: crate::graal3d::scope::Mode::Off,
+            graal3d_scoperadius: crate::graal3d::scope::DEFAULT_RADIUS,
+            graal3d_scopehysteresis: crate::graal3d::scope::DEFAULT_HYSTERESIS,
+            graal3d_scopeauto: crate::graal3d::scope::DEFAULT_AUTO,
+            graal3d_sendms: crate::graal3d::conn::SEND_INTERVAL_MS,
             anticheat: crate::anticheat::Policy::default(),
             gpaks: Vec::new(),
             rules: crate::rules::Rules::default(),
@@ -371,6 +390,31 @@ impl Config {
                     _ => return Err(format!("graal3d_edit: `{v}` is not staff or off")),
                 }
             }
+            "graal3d_scope" => {
+                self.graal3d_scope = crate::graal3d::scope::parse_mode(v)
+                    .ok_or_else(|| format!("graal3d_scope: `{v}` is not off, on or auto"))?
+            }
+            "graal3d_scoperadius" => {
+                self.graal3d_scoperadius = num::<f32>(v.trim())
+                    .ok()
+                    .filter(|r| r.is_finite() && *r > 0.0)
+                    .ok_or_else(|| format!("graal3d_scoperadius: `{v}` is not a positive number"))?
+            }
+            "graal3d_scopehysteresis" => {
+                self.graal3d_scopehysteresis = num::<f32>(v.trim())
+                    .ok()
+                    .filter(|h| h.is_finite() && *h >= 0.0)
+                    .ok_or_else(|| {
+                        format!("graal3d_scopehysteresis: `{v}` is not 0 or a positive number")
+                    })?
+            }
+            "graal3d_scopeauto" => self.graal3d_scopeauto = num(v.trim())?,
+            "graal3d_sendms" => {
+                self.graal3d_sendms = num::<u64>(v.trim())
+                    .ok()
+                    .filter(|ms| (10..=1000).contains(ms))
+                    .ok_or_else(|| format!("graal3d_sendms: `{v}` is not 10 to 1000"))?
+            }
             "graal3d_route" => {
                 self.graal3d_sharp3d = match v.trim() {
                     "mission" => false,
@@ -452,6 +496,19 @@ impl Config {
     pub fn allowed_versions_path(&self) -> PathBuf {
         self.world.join("config").join("allowedversions.txt")
     }
+
+    /// The 3D distance scoping, from the `graal3d_scope*` lines.
+    pub fn graal3d_scope_options(&self) -> crate::graal3d::scope::Options {
+        use crate::graal3d::scope::Mode;
+        crate::graal3d::scope::Options {
+            mode: match self.graal3d_scope {
+                Mode::Auto(_) => Mode::Auto(self.graal3d_scopeauto),
+                m => m,
+            },
+            radius: self.graal3d_scoperadius,
+            hysteresis: self.graal3d_scopehysteresis,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -506,5 +563,31 @@ mod tests {
         assert_eq!(c.npcserver_port, 14811);
         assert_eq!(c.npcserver_token, "abc");
         assert_eq!(w.len(), 1, "{w:?}");
+    }
+
+    #[test]
+    fn graal3d_scope_settings() {
+        use crate::graal3d::scope::Mode;
+        let c = Config::defaults(Path::new("w"));
+        let o = c.graal3d_scope_options();
+        assert_eq!(o.mode, Mode::Off);
+        assert_eq!((o.radius, o.hysteresis), (1100.0, 200.0));
+        assert_eq!(c.graal3d_sendms, 50);
+        let mut c = c;
+        let w = c.apply(
+            "graal3d_scopeauto = 3000\ngraal3d_scope = auto\ngraal3d_scoperadius = 1500\ngraal3d_scopehysteresis = 0\ngraal3d_sendms = 20\n",
+        );
+        assert!(w.is_empty(), "{w:?}");
+        let o = c.graal3d_scope_options();
+        assert_eq!(o.mode, Mode::Auto(3000));
+        assert_eq!((o.radius, o.hysteresis), (1500.0, 0.0));
+        assert_eq!(c.graal3d_sendms, 20);
+        let w = c.apply(
+            "graal3d_scope = maybe\ngraal3d_scoperadius = 0\ngraal3d_scopehysteresis = -1\ngraal3d_sendms = 5\ngraal3d_sendms = 5000\n",
+        );
+        assert_eq!(w.len(), 5, "{w:?}");
+        assert_eq!(c.graal3d_sendms, 20);
+        c.apply("graal3d_scope = on\n");
+        assert_eq!(c.graal3d_scope_options().mode, Mode::On);
     }
 }

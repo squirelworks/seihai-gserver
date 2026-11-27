@@ -184,6 +184,8 @@ pub async fn start_graal3d(
         sharp3d: server.cfg.graal3d_sharp3d,
         mutation: server.cfg.graal3d_mutate,
         edit: server.cfg.graal3d_edit,
+        scope: server.cfg.graal3d_scope_options(),
+        send_ms: server.cfg.graal3d_sendms,
     };
     if server.cfg.graal3d_edit {
         eprintln!("Graal3D: staff may edit the 3D worlds in game (graal3d_edit = staff); world files are saved with backups");
