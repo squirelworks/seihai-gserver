@@ -15,10 +15,13 @@ server stack [seihai-gserver](https://github.com/squirelworks/seihai-gserver),
 
 ## Status
 
-Stages 1 to 3 of the [plan](docs/PLAN.md) are built: clients log in, play one
-shared world of levels and gmaps, and see each other's NPCs, baddies, bombs and
-hits. What is still open in each stage (hits checked against real clients, RC
-support, server-side NPC scripts) is listed in the plan. Contributors should
+Stages 1 to 6 of the [plan](docs/PLAN.md) are built: clients log in, play one
+shared world of levels and gmaps, see each other's NPCs, baddies, bombs and
+hits, run weapons and files, and reach the 5.x/6.x lobby. The Torque 3D mode
+(`graal3d = true`, below) serves the 3D side of 3.153 to 6.x clients. What is
+still open in each stage is listed in the plan and in [docs/NEXT.md](docs/NEXT.md).
+Changes since the last release are in
+[docs/releases/unreleased.md](docs/releases/unreleased.md). Contributors should
 read [AGENTS.md](AGENTS.md) for the project rules.
 
 What works today:
@@ -84,6 +87,32 @@ What works today:
   one).
 
 RC support and server-side NPC scripts are later stages.
+
+### The Torque 3D mode
+
+With `graal3d = true` in `config/server.txt` the server also opens the UDP
+link that 3.153, 4.x, 5.x and 6.x clients use for their 3D side (protocols 19,
+21 and 24), tied to the TCP login by account and address. The full guide is
+[docs/GRAAL3D.md](docs/GRAAL3D.md). In short:
+
+* worlds are text files in `config/graal3dworld.txt` and
+  `config/graal3dworlds/<name>.txt`: shapes (`.3ds`, `.dts`, `.dif`), sky, sun,
+  streamed terrain, water, ground cover, per-player objects and portals;
+* big worlds: distance scoping (`graal3d_scope`), terrains larger than the
+  client's grid, and overworlds built from a grid of regions;
+* staff can edit a world in game (`graal3d_edit = staff`) and the server saves
+  it back to the world file;
+* a start-up check refuses shapes and textures known to crash a real client.
+
+seihai-servertools makes such worlds: `gen 3d --playerworld`, `seihai-pw3d`
+(a 2D playerworld as 3D worlds, interiors included), `regions` (split a big
+overworld) and `seihai-edit3d` (an offline 3D level editor).
+
+Known limits of the real 5.12 client are listed in
+[docs/GRAAL3D.md](docs/GRAAL3D.md) and in the release notes: about 4,096
+objects at most in view (scoping keeps a client under 3,584), no ground cover
+while standing in the world's origin cell, and a freeze on a world switch to a
+world with no terrain, water or Sun.
 
 ## Getting started
 
