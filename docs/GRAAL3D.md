@@ -157,13 +157,16 @@ are objects a cell (0 to 20), and the shapes are one comma-separated list
 with no spaces. `DynamicGrass` and `DynamicGrassReplicator` are different:
 they build their own flat ground pieces from a **texture** named in that list
 (`replicator DynamicGrass 0 0 0 8 20 40 blades.png`), draw nothing for a
-`.3ds` or `.dts`, and take up to 100 a cell. Grass lines go out with a
-radius of at least 8 cells, and the start-up check reports a smaller radius
-or a shape name. On a real 5.12, grass at radius 4 with 5 or 10 a cell drew
-nothing where the same line at 8 drew. A later run at radius 4 with 40 to
-60 a cell, otherwise the same fields, did draw (conformance C036, 2026-11-26).
-So radius alone is not the rule, and the exact cause is not narrowed yet. The
-floor is kept because a larger radius only widens the patch. A mostly transparent grass texture draws next to
+`.3ds` or `.dts`, and take up to 100 a cell. The radius goes out as written:
+a real 5.12 grows grass at every radius from 1 to 8 (radius 1 is about one
+clump, a larger radius only adds rows further out). What does stop all
+cover, shapes and grass alike, is a player standing in the world's origin
+cell (x and y both between -8 and 8): the client makes the ghost and grows
+nothing until the player walks out of it. Keep the spawn at least 8 units
+from 0 0 in x or y; the start-up check reports a world with ground cover
+whose spawn is in that cell (Graal_analysis `torque/replicators-512.md`,
+grass sweep 2026-11-27). The start-up check also reports a grass line that
+names a shape. A mostly transparent grass texture draws next to
 nothing. The optional box `x0 y0 x1 y1` is the world x/y region a
 cell's corner must lie in; without one, cover may grow anywhere. Cover is
 placed by casting rays, so it needs real ground (streamed terrain or solid
