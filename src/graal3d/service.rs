@@ -1492,6 +1492,7 @@ impl Service {
                     _ => None,
                 });
             let plan = super::scope::plan(set, pos, objects, &opts, SCOPE_BUDGET);
+            let (added, removed) = (plan.add.len(), plan.remove.len());
             for i in plan.remove {
                 conn.remove_ghost(i as Key + 1);
                 set.remove(&i);
@@ -1502,6 +1503,19 @@ impl Service {
                 if conn.ghost_index(key).is_some() {
                     set.insert(i);
                 }
+            }
+            if added + removed > 0 && self.trace_file.is_some() {
+                let s = &self.sessions[&at];
+                let what = format!(
+                    "scope\t+{added} -{removed}\t{} in scope\t{} ghosts\t{:.0} {:.0} {:.0}",
+                    s.scope.as_ref().map_or(0, HashSet::len),
+                    s.conn.ghost_count(),
+                    pos[0],
+                    pos[1],
+                    pos[2]
+                );
+                let (account, protocol) = (s.account.clone(), s.conn.profile().protocol);
+                self.trace(&account, protocol, &what);
             }
         }
     }

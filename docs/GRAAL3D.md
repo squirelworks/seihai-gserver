@@ -277,7 +277,7 @@ With `graal3d_scope` on, a world object is ghosted only while it is within
 `graal3d_scoperadius` of the player's own object (3D distance), and deleted
 once it is farther than the radius plus `graal3d_scopehysteresis`, so an
 object near the edge is not created and deleted on every step. Each client's
-scope is looked at 5 times a second. Only `object` and `objectfor` lines are
+scope is looked at 5 times a second; with `graal3d_trace` on, each look that changed something adds a `scope` line (objects added and deleted, the scope's size, the client's ghost count and the player's position). Only `object` and `objectfor` lines are
 scoped; the Sun, Skies, terrain, water, ground cover and players always go.
 
 ```text
