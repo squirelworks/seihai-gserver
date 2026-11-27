@@ -268,7 +268,9 @@ a first link; its own object and Camera stay and move to the new `spawn`
 (or the first free spot around it) and `camera`. Weapons of the new world's
 `weapon3d` lines are sent (those the old world had too are left running), and the terrain files are pushed again with
 `graal3d_pushterrain` (once per account and world). The client gets
-`clientr.g3dworld` (`default` or the name) and a new `clientr.g3dpos`. Each
+`clientr.g3dworld` (`default` or the name) and a new `clientr.g3dpos`, and,
+when the new world brings a terrain, water or Sun, a second
+`MissionStartPhase2` so that a 5.12 lights them (see the camera section). Each
 player sees only the players in its own world. Clients ask for
 `heights.info` by its bare name, so all worlds with a `terrain` line share
 one `heights.info`.
@@ -422,9 +424,14 @@ client has them and, with a terrain, every chunk it asked for (at most 15 s
 after phase 1's ack). A 5.12 lights the mission at phase 2: a TerrainBlock
 created after it drew without slope shading for the rest of the session,
 and chunks that came after it were lit from the old heights (lab, T3D-162
-and the #223 check). After a world switch
-the new terrain arrives once the start is over; whether a 5.12 lights it
-then is not checked yet.
+and the #223 check). After a world switch the new terrain arrives once the
+start is over, and a 5.12 never lights it on its own: the whole new terrain
+drew flat and unshaded, cold or warm (lab, world switch on #223). So after a
+switch that brings a new TerrainBlock, WaterBlock or Sun, `MissionStartPhase2`
+goes again, with the same wait: the new lighting ghosts created and the
+chunks the client asks for with the new TerrainBlock acked. A 5.12 takes a
+second phase 2. It relights, acks it and keeps the link, the 3D view and its
+running weapons. A switch that brings nothing new to light sends none.
 
 Rotations (objects and the camera) are an axis and an angle in radians, and
 the clients turn the opposite way from the right-hand rule: a positive angle

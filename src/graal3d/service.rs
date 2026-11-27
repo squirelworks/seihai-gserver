@@ -2194,6 +2194,11 @@ impl Service {
         };
         self.push_terrain(p, &account, caps.as_ref(), profile);
         self.ghost_world(at);
+        // A 5.12 lights only at phase 2: the new terrain, water and Sun
+        // need it again, or they draw unshaded.
+        if let Some(s) = self.sessions.get_mut(&at) {
+            s.conn.relight();
+        }
         self.broadcast_avatar(p, None);
         self.follow_on_tcp(p);
         self.send_weapons_but(at, &running);

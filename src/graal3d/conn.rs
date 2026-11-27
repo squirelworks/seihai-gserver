@@ -174,6 +174,14 @@ pub struct Connection {
     chunk_seqs: Vec<u32>,
     /// The service has answered the terrain request ([`Self::terrain_answered`]).
     chunks_answered: bool,
+    /// A world switch: phase 2 goes again ([`Self::relight`]) once the new
+    /// world's lighting ghosts are in, and its ack ends nothing more.
+    relighting: bool,
+    /// With `relighting`: the new world brings a TerrainBlock, whose
+    /// chunks phase 2 waits for.
+    relight_terrain: bool,
+    /// A switch came while the start's phase 2 was out: relight after its ack.
+    relight_after_ack: bool,
     last_move_ack: u32,
     moves_received: usize,
     control_moved: bool,
@@ -233,6 +241,9 @@ impl Connection {
             terrain_asked: false,
             chunk_seqs: Vec::new(),
             chunks_answered: false,
+            relighting: false,
+            relight_terrain: false,
+            relight_after_ack: false,
             last_move_ack: 0,
             moves_received: 0,
             control_moved: false,
@@ -715,7 +726,18 @@ impl Connection {
                     self.phase2_held = Some(0);
                 }
             }
-            (b"MissionStartPhase2Ack", Mission::Phase2Sent) => self.set_mission(Mission::Done),
+            (b"MissionStartPhase2Ack", Mission::Phase2Sent) if self.relighting => {
+                // The start is long over: the service hears nothing.
+                self.relighting = false;
+                self.mission = Mission::Done;
+                self.log("phase 2 acked again: the new world is lit");
+            }
+            (b"MissionStartPhase2Ack", Mission::Phase2Sent) => {
+                self.set_mission(Mission::Done);
+                if std::mem::take(&mut self.relight_after_ack) {
+                    self.start_relight(true);
+                }
+            }
             _ => self.log(format!(
                 "remote command ignored: {}",
                 String::from_utf8_lossy(command)
@@ -767,6 +789,85 @@ impl Connection {
         if self.terrain_asked {
             self.chunks_answered = true;
         }
+    }
+
+    /// A world switch has set the new world's ghosts: a 5.12 lights the
+    /// mission only at phase 2, so a TerrainBlock, WaterBlock or Sun it
+    /// gets after the start draws unshaded until something relights it
+    /// (lab, #223 world switch, real 5.12: flat grey, cold and warm). So
+    /// phase 2 goes again, once the new lighting ghosts are created and,
+    /// with a new TerrainBlock, the chunks the client then asks for are
+    /// in. A 5.12 takes a second phase 2: it relights, acks, and keeps
+    /// the link, the 3D view and its running weapons (same lab). Nothing
+    /// is done when no lighting ghost is new, before the start is over
+    /// (the start's own phase 2 still waits for them) or on protocol 19.
+    pub fn relight(&mut self) {
+        self.start_relight(false);
+    }
+
+    /// [`Self::relight`]; `force`: even with no lighting ghost still to
+    /// come (they came while the start's phase 2 was out, too late).
+    fn start_relight(&mut self, force: bool) {
+        if self.profile.tge || self.profile.ghost_always {
+            return;
+        }
+        // The object the client is still to be sent under a key.
+        fn incoming(s: &Slot) -> Option<&Ghost> {
+            if s.kill {
+                s.revive.as_ref()
+            } else if !s.created {
+                Some(&s.ghost)
+            } else {
+                None
+            }
+        }
+        let new_lights = self
+            .slots
+            .values()
+            .filter_map(incoming)
+            .filter(|g| Self::lights_the_mission(g))
+            .count();
+        if new_lights == 0 && !force {
+            return;
+        }
+        match self.mission {
+            Mission::Done => {}
+            // The start's phase 2 is out: once it is acked, again.
+            Mission::Phase2Sent if !self.relighting => {
+                self.relight_after_ack = true;
+                return;
+            }
+            // Still holding phase 2 (the start's, or one for an earlier
+            // switch): that wait now covers the newest world's ghosts.
+            _ => {
+                if self.relighting {
+                    self.relight_terrain = self
+                        .slots
+                        .values()
+                        .filter_map(incoming)
+                        .any(|g| matches!(g, Ghost::Terrain(_)));
+                }
+                return;
+            }
+        }
+        self.relighting = true;
+        self.relight_terrain = self
+            .slots
+            .values()
+            .filter_map(incoming)
+            .any(|g| matches!(g, Ghost::Terrain(_)));
+        self.terrain_asked = false;
+        self.chunks_answered = false;
+        self.chunk_seqs.clear();
+        self.phase2_held = Some(0);
+        self.log(format!(
+            "world switch: phase 2 again once {new_lights} lighting ghosts{} are in",
+            if self.relight_terrain {
+                " and the terrain chunks"
+            } else {
+                ""
+            }
+        ));
     }
 
     /// Lab: one guaranteed event of `class` whose payload is the raw
@@ -909,17 +1010,27 @@ impl Connection {
         } else {
             since
         };
+        // A ghost still to be created, or created once its key's old
+        // object is deleted (a world switch).
         let waiting = self
             .slots
             .values()
-            .filter(|s| !s.kill && !s.created && Self::lights_the_mission(&s.ghost))
+            .filter(|s| {
+                (!s.kill && !s.created && Self::lights_the_mission(&s.ghost))
+                    || s.revive.as_ref().is_some_and(Self::lights_the_mission)
+            })
             .count();
         // With a terrain, the client asks for its chunks once it has the
-        // TerrainBlock; those must be in too.
-        let terrain = self
-            .slots
-            .values()
-            .any(|s| !s.kill && matches!(s.ghost, Ghost::Terrain(_)));
+        // TerrainBlock; those must be in too. After a switch, only a new
+        // TerrainBlock is asked for again.
+        let terrain = if self.relighting {
+            self.relight_terrain
+        } else {
+            self.slots.values().any(|s| {
+                (!s.kill && matches!(s.ghost, Ghost::Terrain(_)))
+                    || matches!(s.revive, Some(Ghost::Terrain(_)))
+            })
+        };
         let chunks_left = if terrain && self.chunks_answered {
             self.chunk_seqs
                 .iter()
@@ -950,7 +1061,12 @@ impl Connection {
         }
         self.phase2_held = None;
         self.send_command(b"MissionStartPhase2", &[]);
-        self.set_mission(Mission::Phase2Sent);
+        if self.relighting {
+            self.mission = Mission::Phase2Sent;
+            self.log("phase 2 sent again: the new world is lit");
+        } else {
+            self.set_mission(Mission::Phase2Sent);
+        }
     }
 
     fn send_data(&mut self, now: u64) {
@@ -1811,6 +1927,10 @@ pub(crate) mod tests {
         pub fn answered(&mut self, name: &[u8]) -> bool {
             self.commands.iter().any(|c| c.name == name)
         }
+
+        pub fn count(&self, name: &[u8]) -> usize {
+            self.commands.iter().filter(|c| c.name == name).count()
+        }
     }
 
     fn sends(out: &[Out]) -> Vec<Vec<u8>> {
@@ -1854,7 +1974,8 @@ pub(crate) mod tests {
                 ),
                 (b"MissionStartPhase2", b"MissionStartPhase2Ack", b"sent2"),
             ] {
-                if client.answered(cmd) && !client.answered(mark) {
+                // Each time it is sent (phase 2 goes again on a switch).
+                while client.count(cmd) > client.count(mark) {
                     client.commands.push(Command {
                         name: mark.to_vec(),
                         args: vec![],
@@ -1995,6 +2116,102 @@ pub(crate) mod tests {
         }
         run_512(&mut c, &mut client, now, 20);
         assert_eq!(c.mission(), Mission::Done);
+    }
+
+    /// A world switch to another terrain: phase 2 goes again, once the
+    /// new TerrainBlock and Sun are created and the chunks the client then
+    /// asks for are in. Without it a 5.12 drew the new terrain unshaded
+    /// (lab, #223 world switch).
+    #[test]
+    fn a_world_switch_relights_once_the_new_terrain_is_in() {
+        use crate::graal3d::ground::{chunk_event, Chunk, Terrain};
+        use crate::graal3d::objects::Sun;
+        let mut c = Connection::new(&PROTOCOL_24, 0x400, 0);
+        c.set_ghost(
+            0x4_0000,
+            Ghost::Terrain(Box::new(Terrain::new("a", 8, false))),
+        );
+        c.set_ghost(7, Ghost::Sun(Sun::default()));
+        c.set_ghost(1000, Ghost::GameObject(lab_player()));
+        c.set_control_object(1000);
+        let mut client = FakeClient::new(&PROTOCOL_24);
+        let mut now = 0;
+        while c.mission() != Mission::Done || !c.control_delivered() {
+            assert!(now < 60 * 400, "no start");
+            if c.ghost_delivered(0x4_0000) && !c.terrain_asked {
+                c.terrain_asked = true;
+                c.terrain_answered();
+            }
+            now = run_512(&mut c, &mut client, now, 1);
+        }
+        assert_eq!(client.count(b"MissionStartPhase2"), 1);
+        // The switch: the old world goes, the new one comes under the
+        // same keys (the terrain is a different one, the Sun a new one).
+        c.remove_ghost(0x4_0000);
+        c.remove_ghost(7);
+        c.set_ghost(
+            0x4_0000,
+            Ghost::Terrain(Box::new(Terrain::new("b", 4, false))),
+        );
+        c.set_ghost(8, Ghost::Sun(Sun::default()));
+        c.relight();
+        assert!(c.relighting);
+        while !c.ghost_delivered(0x4_0000) || !c.ghost_delivered(8) {
+            assert!(now < 60 * 400, "no new terrain");
+            assert_eq!(
+                client.count(b"MissionStartPhase2"),
+                1,
+                "phase 2 before the new terrain"
+            );
+            now = run_512(&mut c, &mut client, now, 1);
+        }
+        // The new TerrainBlock is in; its chunks are not asked for yet.
+        now = run_512(&mut c, &mut client, now, 10);
+        assert_eq!(
+            client.count(b"MissionStartPhase2"),
+            1,
+            "phase 2 before the chunks"
+        );
+        c.terrain_asked = true;
+        let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        std::io::Write::write_all(&mut z, &[2u8; 600]).unwrap();
+        let chunk = Chunk::from_file(z.finish().unwrap()).unwrap();
+        for i in 0..9 {
+            assert!(c.send_event(chunk_event(7 + i % 3, 7 + i / 3, &chunk)));
+        }
+        c.terrain_answered();
+        let seqs = c.chunk_seqs.clone();
+        assert_eq!(seqs.len(), 9);
+        while client.count(b"MissionStartPhase2") < 2 {
+            assert!(now < 60 * 400, "no second phase 2");
+            now = run_512(&mut c, &mut client, now, 1);
+        }
+        assert!(seqs.iter().all(|q| c.events.delivered(*q)));
+        run_512(&mut c, &mut client, now, 20);
+        assert_eq!(c.mission(), Mission::Done);
+        assert!(!c.relighting);
+        assert_eq!(client.count(b"MissionStartPhase1"), 1, "no new start");
+    }
+
+    /// A switch to a world with nothing to light, or whose lighting ghosts
+    /// the client keeps, sends no phase 2.
+    #[test]
+    fn a_world_switch_with_nothing_new_to_light_sends_no_phase_2() {
+        use crate::graal3d::objects::Sun;
+        let mut c = Connection::new(&PROTOCOL_24, 0x400, 0);
+        c.set_ghost(7, Ghost::Sun(Sun::default()));
+        c.set_ghost(1000, Ghost::GameObject(lab_player()));
+        c.set_control_object(1000);
+        let mut client = FakeClient::new(&PROTOCOL_24);
+        let now = run_512(&mut c, &mut client, 0, 60);
+        assert_eq!(c.mission(), Mission::Done);
+        let mut o = lab_player();
+        o.name = b"cube".to_vec();
+        c.set_ghost(9, Ghost::GameObject(o));
+        c.relight();
+        assert!(!c.relighting);
+        run_512(&mut c, &mut client, now, 40);
+        assert_eq!(client.count(b"MissionStartPhase2"), 1);
     }
 
     /// A different object under a key being deleted (a world switch) is
