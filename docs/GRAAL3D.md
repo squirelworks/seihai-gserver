@@ -719,10 +719,12 @@ ones it can. Evidence is in Graal_analysis `torque/`.
 - **Lighting only at `MissionStartPhase2`.** The server holds phase 2 until
   the terrain is in and sends it again after a world switch or a terrain
   window move; a client that misses it draws the terrain unshaded.
-- **A gen-5 frame that does not inflate** drops the client ("corrupt deflate
-  stream"), seen in 3 of 18 lab runs right after the terrain push; the server
-  now retries the other cipher step rule and logs the frame, and the cause is
-  still being looked for.
+- **A frame flagged zlib that is not zlib.** A 5.12 now and then sends a
+  frame flagged zlib whose body is plain bytes (GS2 bytecode, cut short,
+  caught in a lab frame log on 2026-11-27); it used to drop the client
+  ("corrupt deflate stream") in about 1 of 5 fresh logins. The server now
+  skips such a frame and reads on, since the cipher stays in step; three in
+  a row still drop the client.
 
 ## Not done yet
 

@@ -881,7 +881,7 @@ impl Conn {
                     let mut reply: Vec<Vec<u8>> = Vec::new();
                     while let Some(frame) = inbuf.take_frame()? {
                         let switches = codec.step_rule_switches;
-                        let body = codec.decode(&frame)?;
+                        let body = self.decode(&mut codec, &frame)?;
                         if codec.step_rule_switches != switches {
                             self.server.log(
                                 &self.peer,
@@ -1226,7 +1226,7 @@ impl Conn {
                     last_heard = Instant::now();
                     let mut events = Vec::new();
                     while let Some(frame) = inbuf.take_frame()? {
-                        let body = codec.decode(&frame)?;
+                        let body = self.decode(&mut codec, &frame)?;
                         events.extend(rc.handle(&crate::rcfiles::split(&body)));
                     }
                     let mut sent = Ok(());
@@ -1361,7 +1361,7 @@ impl Conn {
                     }
                     last_heard = Instant::now();
                     while let Some(frame) = inbuf.take_frame()? {
-                        let body = codec.decode(&frame)?;
+                        let body = self.decode(&mut codec, &frame)?;
                         pending.extend(crate::rcfiles::split(&body));
                     }
                 }
@@ -1655,7 +1655,7 @@ impl Conn {
             }
             let mut reply: Vec<Vec<u8>> = Vec::new();
             while let Some(frame) = inbuf.take_frame()? {
-                let body = codec.decode(&frame)?;
+                let body = self.decode(codec, &frame)?;
                 for m in codec.messages(&body) {
                     let Some((&id, rest)) = m.split_first() else {
                         continue;
@@ -1738,6 +1738,18 @@ impl Conn {
             );
         }
         Ok(())
+    }
+
+    /// [`Codec::decode`], with a skipped frame logged.
+    fn decode(&self, codec: &mut Codec, frame: &[u8]) -> io::Result<Vec<u8>> {
+        let body = codec.decode(frame)?;
+        if let Some(what) = codec.take_skip_note() {
+            self.server.log(
+                &self.peer,
+                &format!("skipped a client frame that does not inflate ({what})"),
+            );
+        }
+        Ok(body)
     }
 
     /// Tell the client why and close.
