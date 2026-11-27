@@ -343,8 +343,10 @@ graal3d_scopehysteresis = 200  # world units
   changes nothing for players already in it.
 - At most 3584 world objects are in one client's scope (the table less 512
   entries for players and the rest of the world). In a denser spot the
-  nearest come in first, and objects already in scope stay until they are
-  out of range.
+  nearest come in first. When the scope is full, each pass trades up to 24
+  of the farthest objects in scope for waiting ones nearer by more than the
+  hysteresis, so a player who walks into a spot denser than that ends up
+  with the objects round it, not the ones it passed on the way in.
 - A `g3dhide`, `g3dshow` or in-game edit of an object out of a client's
   scope does not ghost it; it comes in when the player comes near.
 - The defaults come from the lab: with 20,164 objects on a 56-unit grid, a
@@ -408,6 +410,23 @@ of any one spot, against the 3584 a client can hold:
 Graal3D: graal3dworld.txt regions world/enigma: 64 of 8x8 regions found (1024 units a side), 4096 terrain chunks of 64 x 64, 18230 region objects; the fullest region is 3-4 with 1950
 Graal3D: graal3dworld.txt regions world/enigma: at most about 2410 objects within 1300 units of one spot (near 412,-388 in region 4-3); a client holds 3584
 ```
+
+A real 5.12 walked such a world (lab, 2026-11-27: Wine with software
+rendering on 2 vCPUs, one client, loopback; the `seihai-regions demo` world of
+8 x 8 regions, 18,055 objects, six towns of about 1440 houses):
+
+| | Result |
+|---|---|
+| Join next to a town (1952 objects in scope) | Phase 2 acked in 2.4 s at `graal3d_sendms = 10` (6.7 to 7.1 s at 50); all objects in by 5.5 s (20 s at 50); about 138 KB |
+| A region edge | an ordinary window slide: 16 chunks (31 at a corner), relit 0.1 to 0.3 s later; no seam, stall or pop-in; `clientr.g3dregion` changed at every edge |
+| Ghost table | peak 2075 of 4096 (about 2040 in a town, 750 in the open); a 3500-house stress town held at 3584 with no table full |
+| Walking | 10 to 23 creates a second, about 100 deletes a second leaving a town at 70 units/s; 1.2 to 2.5 KB/s |
+| Frame rate | 32 to 41 FPS in the open and at region corners, 18 to 20 in a 1440-house town, 11 to 12 in the 3500-house one; an edge costs one frame 20 to 40 ms longer |
+| Memory | committed at most 621 MB (681 MB in the stress town) of the 2 GB a 5.12 can address; resident at most 272 MB (331 MB) |
+
+So the limit is the client's frame rate in dense places, not memory or the
+ghost table. The same town as its own world behind a warp switched with no
+chunks resent and its houses in about 3 s, about as smooth as walking in.
 
 A line starting `WARNING` means a player there would get only the nearest
 3584, or that scoping is off for a world with more objects than that. A town
