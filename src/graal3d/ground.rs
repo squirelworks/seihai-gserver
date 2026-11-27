@@ -46,11 +46,6 @@ pub struct Terrain {
     /// Metres a square (1 to 64).
     pub square_size: u32,
     pub repeat: bool,
-    /// The two texture names of the block's update, empty by default: in
-    /// stock TGE 1.x's order the detail and the bump texture (lab knobs;
-    /// the static read had them read and dropped).
-    pub detail: String,
-    pub bump: String,
     /// Index y * 16 + x.
     pub chunks: Vec<Option<Chunk>>,
 }
@@ -61,8 +56,6 @@ impl Terrain {
             folder: folder.to_string(),
             square_size,
             repeat,
-            detail: String::new(),
-            bump: String::new(),
             chunks: vec![None; CHUNKS * CHUNKS],
         }
     }
@@ -102,9 +95,8 @@ impl Terrain {
         w.flag(true); // init
         w.pstring_alone(b"Terrain");
         w.u32(0); // reset to 1 by the client when the block is added
-                  // Stock TGE 1.x sends the detail and the bump texture here.
-        w.pstring_alone(self.detail.as_bytes());
-        w.pstring_alone(self.bump.as_bytes());
+        w.pstring_alone(b""); // read and dropped
+        w.pstring_alone(b"");
         w.f32(1.0); // three values read and dropped
         w.f32(0.01);
         w.u32(8);
