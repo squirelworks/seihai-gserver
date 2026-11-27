@@ -1606,6 +1606,8 @@ impl Service {
         for ev in events {
             s.conn.send_event(ev);
         }
+        // Phase 2 (the mission lighting) waits for these.
+        s.conn.terrain_answered();
     }
 
     /// Sets the player's TCP position from its 3D object, when that is on

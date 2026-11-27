@@ -357,7 +357,7 @@ pub fn check_scene_files(
             Ghost::Replicator(r) if r.grass() => {
                 if r.radius < super::ground::GRASS_MIN_RADIUS {
                     notes.push(format!(
-                        "replicator {}: radius {} goes out as {}; a 5.12 grows no grass below that",
+                        "replicator {}: radius {} goes out as {}; a 5.12 drew no grass at 4 with few blades a cell",
                         r.class,
                         r.radius,
                         r.sent_radius()

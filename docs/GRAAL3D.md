@@ -155,9 +155,13 @@ are objects a cell (0 to 20), and the shapes are one comma-separated list
 with no spaces. `DynamicGrass` and `DynamicGrassReplicator` are different:
 they build their own flat ground pieces from a **texture** named in that list
 (`replicator DynamicGrass 0 0 0 8 20 40 blades.png`), draw nothing for a
-`.3ds` or `.dts`, and take up to 100 a cell. A real 5.12 grows no grass at a radius under 8
-cells, so grass lines go out with at least 8. The start-up check reports a
-grass line with a smaller radius or one that names a shape. A mostly transparent grass texture draws next to
+`.3ds` or `.dts`, and take up to 100 a cell. Grass lines go out with a
+radius of at least 8 cells, and the start-up check reports a smaller radius
+or a shape name. On a real 5.12, grass at radius 4 with 5 or 10 a cell drew
+nothing where the same line at 8 drew. A later run at radius 4 with 40 to
+60 a cell, otherwise the same fields, did draw (conformance C036, 2026-11-26).
+So radius alone is not the rule, and the exact cause is not narrowed yet. The
+floor is kept because a larger radius only widens the patch. A mostly transparent grass texture draws next to
 nothing. The optional box `x0 y0 x1 y1` is the world x/y region a
 cell's corner must lie in; without one, cover may grow anywhere. Cover is
 placed by casting rays, so it needs real ground (streamed terrain or solid
@@ -392,6 +396,15 @@ a world switch puts the camera at the new world's spawn plus its offset.
 The Camera and the client's own object are created before the world's
 objects. A 5.12 gets about 140 creates a second, so on a big world the view
 comes up first and the objects fill in.
+
+The terrain, water and Sun come next. `MissionStartPhase2` waits until the
+client has them and, with a terrain, every chunk it asked for (at most 15 s
+after phase 1's ack). A 5.12 lights the mission at phase 2: a TerrainBlock
+created after it drew without slope shading for the rest of the session,
+and chunks that came after it were lit from the old heights (lab, T3D-162
+and the #223 check). After a world switch
+the new terrain arrives once the start is over; whether a 5.12 lights it
+then is not checked yet.
 
 Rotations (objects and the camera) are an axis and an angle in radians, and
 the clients turn the opposite way from the right-hand rule: a positive angle

@@ -10,8 +10,13 @@
 //! **GameObject era** (4.20r6, 4.20r8, 5.x; Graal_analysis
 //! `torque/udp-session.md` §6 to §8): `MissionStartPhase1` goes out with
 //! the first packet after the client's first; its ack gets
-//! `MissionStartPhase2`, whose ack ends the start. Ghosts go out from the
-//! beginning. The control object is named only once its create is acked
+//! `MissionStartPhase2`, whose ack ends the start. Ghosts go out after
+//! phase 1's ack, and phase 2 waits until the client has the ghosts the
+//! mission lighting needs (TerrainBlock, WaterBlock, Sun) and, with a
+//! TerrainBlock, every chunk it asked for, or [`PHASE2_HOLD_MS`]: a 5.12
+//! lights the mission at phase 2, and a terrain or chunks that arrived
+//! after it drew wrongly lit all session (lab T3D-162). The
+//! control object is named only once its create is acked
 //! and the start is over: a control object before that leaves a 5.12
 //! client stuck at login step 4. The client then reports its position
 //! and its own object's changes in every packet ([`Out::ClientState`]).
@@ -42,6 +47,9 @@ pub const TIMEOUT_MS: u64 = 30_000;
 pub const KEEP_ALIVE_MS: u64 = 1_000;
 /// At most one data packet this often while there is work.
 pub const SEND_INTERVAL_MS: u64 = 50;
+/// The longest `MissionStartPhase2` waits for the lighting ghosts and
+/// the terrain chunks (a whole 256-chunk terrain takes several seconds).
+pub const PHASE2_HOLD_MS: u64 = 15_000;
 /// The clients accept up to 450 bytes.
 pub const MAX_PACKET_BYTES: usize = 400;
 /// The client's ghost table.
@@ -157,6 +165,15 @@ pub struct Connection {
     datablocks_sent: bool,
     ghosting_allowed: bool,
     phase2_acked: bool,
+    /// GameObject era: phase 1 is acked and phase 2 waits for the
+    /// lighting ghosts, since this time (0 until the next update).
+    phase2_held: Option<u64>,
+    /// The client asked for terrain chunks: the chunk events sent since go
+    /// in `chunk_seqs`.
+    terrain_asked: bool,
+    chunk_seqs: Vec<u32>,
+    /// The service has answered the terrain request ([`Self::terrain_answered`]).
+    chunks_answered: bool,
     last_move_ack: u32,
     moves_received: usize,
     control_moved: bool,
@@ -212,6 +229,10 @@ impl Connection {
             datablocks_sent: false,
             ghosting_allowed: false,
             phase2_acked: false,
+            phase2_held: None,
+            terrain_asked: false,
+            chunk_seqs: Vec::new(),
+            chunks_answered: false,
             last_move_ack: 0,
             moves_received: 0,
             control_moved: false,
@@ -643,6 +664,7 @@ impl Connection {
             Event::TerrainRequest(stamps) => {
                 let held = stamps.iter().filter(|s| **s != 0).count();
                 self.log(format!("terrain request: holds {held} of 256 chunks"));
+                self.terrain_asked = true;
                 self.out.push(Out::TerrainRequest(stamps.clone()));
             }
             Event::SimDataBlock { .. } | Event::Raw { .. } | Event::Other { .. } => {
@@ -688,8 +710,10 @@ impl Connection {
                 // dropped ghosts it got before it, then stalled in phase 1 on
                 // "Received unknown camera object" (lab, 2026-11-25).
                 self.ghosting_allowed = true;
-                self.send_command(b"MissionStartPhase2", &[]);
-                self.set_mission(Mission::Phase2Sent);
+                // Phase 2 goes once the lighting ghosts are in (update).
+                if self.phase2_held.is_none() {
+                    self.phase2_held = Some(0);
+                }
             }
             (b"MissionStartPhase2Ack", Mission::Phase2Sent) => self.set_mission(Mission::Done),
             _ => self.log(format!(
@@ -727,8 +751,22 @@ impl Connection {
             ));
             return false;
         }
-        self.events.send(ev);
+        let chunk = self.terrain_asked
+            && !self.chunks_answered
+            && ev.class_name() == Some("TerrainChunkEvent");
+        let seq = self.events.send(ev);
+        if chunk {
+            self.chunk_seqs.push(seq);
+        }
         true
+    }
+
+    /// The service has sent every chunk event answering the client's
+    /// terrain request (none if it has them all). Phase 2 waits for them.
+    pub fn terrain_answered(&mut self) {
+        if self.terrain_asked {
+            self.chunks_answered = true;
+        }
     }
 
     /// Lab: one guaranteed event of `class` whose payload is the raw
@@ -826,6 +864,7 @@ impl Connection {
         if self.profile.tge && self.established {
             self.advance_tge();
         }
+        self.release_phase2(now);
         let since = now.saturating_sub(self.last_send);
         if self.mutation.is_some()
             && !self.mutation_done
@@ -851,6 +890,67 @@ impl Connection {
             self.last_send = now;
         }
         true
+    }
+
+    /// Whether `ghost` is one the 5.12 lights the mission with.
+    fn lights_the_mission(ghost: &Ghost) -> bool {
+        matches!(ghost, Ghost::Terrain(_) | Ghost::Water(_) | Ghost::Sun(_))
+    }
+
+    /// Sends `MissionStartPhase2` once every lighting ghost is created on
+    /// the client, or [`PHASE2_HOLD_MS`] after phase 1's ack.
+    fn release_phase2(&mut self, now: u64) {
+        let Some(since) = self.phase2_held else {
+            return;
+        };
+        let since = if since == 0 {
+            self.phase2_held = Some(now.max(1));
+            now
+        } else {
+            since
+        };
+        let waiting = self
+            .slots
+            .values()
+            .filter(|s| !s.kill && !s.created && Self::lights_the_mission(&s.ghost))
+            .count();
+        // With a terrain, the client asks for its chunks once it has the
+        // TerrainBlock; those must be in too.
+        let terrain = self
+            .slots
+            .values()
+            .any(|s| !s.kill && matches!(s.ghost, Ghost::Terrain(_)));
+        let chunks_left = if terrain && self.chunks_answered {
+            self.chunk_seqs
+                .iter()
+                .filter(|q| !self.events.delivered(**q))
+                .count()
+        } else {
+            0
+        };
+        let chunks_done = !terrain || (self.chunks_answered && chunks_left == 0);
+        let late = now.saturating_sub(since) >= PHASE2_HOLD_MS;
+        if (waiting > 0 || !chunks_done) && !late {
+            return;
+        }
+        if waiting > 0 {
+            self.log(format!(
+                "phase 2 sent with {waiting} lighting ghosts not yet created; the terrain may draw unshaded"
+            ));
+        }
+        if !chunks_done {
+            let what = if self.chunks_answered {
+                format!("{chunks_left} terrain chunks not yet acked")
+            } else {
+                "no terrain request answered yet".to_string()
+            };
+            self.log(format!(
+                "phase 2 sent with {what}; the terrain may draw wrongly lit"
+            ));
+        }
+        self.phase2_held = None;
+        self.send_command(b"MissionStartPhase2", &[]);
+        self.set_mission(Mission::Phase2Sent);
     }
 
     fn send_data(&mut self, now: u64) {
@@ -1393,8 +1493,17 @@ impl Connection {
         // first: a 5.12 draws nothing until it has its Camera, and a big
         // world takes seconds to create (about 140 creates a second, lab
         // T3D-147), so the view comes up at once and fills in.
-        let others_after = |k: &Key| self.camera_key != Some(*k) && self.control_key != Some(*k);
-        todo.sort_by_key(|(o, k)| (*o, others_after(k)));
+        // Then what the mission lighting needs, which phase 2 waits for.
+        let rank = |k: &Key| {
+            if self.camera_key == Some(*k) || self.control_key == Some(*k) {
+                0
+            } else if Self::lights_the_mission(&self.slots[k].ghost) {
+                1
+            } else {
+                2
+            }
+        };
+        todo.sort_by_key(|(o, k)| (*o, rank(k)));
         let mut id_bits = 1;
         while max_index >> id_bits != 0 {
             id_bits += 1;
@@ -1810,6 +1919,82 @@ pub(crate) mod tests {
         assert!(world < 20, "{world} world objects before the Camera");
         run_512(&mut c, &mut client, now, 60);
         assert!((1..=200).all(|k| c.ghost_delivered(k)));
+    }
+
+    /// `MissionStartPhase2` waits until the client has the TerrainBlock:
+    /// a 5.12 lights the mission at phase 2, and a terrain created after
+    /// it drew unshaded all session (lab T3D-162).
+    #[test]
+    fn phase_2_waits_for_the_terrain() {
+        let mut c = Connection::new(&PROTOCOL_24, 0x400, 0);
+        for k in 1..=60 {
+            let mut o = lab_player();
+            o.name = format!("cube{k}").into_bytes();
+            c.set_ghost(k, Ghost::GameObject(o));
+        }
+        let terrain = crate::graal3d::ground::Terrain::new("t", 8, false);
+        c.set_ghost(0x4_0000, Ghost::Terrain(Box::new(terrain)));
+        c.set_ghost(1000, Ghost::GameObject(lab_player()));
+        c.set_control_object(1000);
+        let mut client = FakeClient::new(&PROTOCOL_24);
+        let mut now = 0;
+        while !client.answered(b"MissionStartPhase2") {
+            assert!(now < 60 * 200, "no phase 2");
+            assert!(c.mission() != Mission::Phase2Sent || c.ghost_delivered(0x4_0000));
+            if c.ghost_delivered(0x4_0000) && !c.terrain_asked {
+                // A warm cache: the client asks, and needs no chunk.
+                c.terrain_asked = true;
+                c.terrain_answered();
+            }
+            now = run_512(&mut c, &mut client, now, 1);
+        }
+        assert!(c.ghost_delivered(0x4_0000));
+        run_512(&mut c, &mut client, now, 40);
+        assert_eq!(c.mission(), Mission::Done);
+        assert!(c.control_delivered());
+    }
+
+    /// With a terrain, phase 2 also waits for the chunks the client asked
+    /// for: chunks that came after the lighting drew lit from the old
+    /// heights (lab, #223 check, cold cache).
+    #[test]
+    fn phase_2_waits_for_the_asked_terrain_chunks() {
+        use crate::graal3d::ground::{chunk_event, Chunk, Terrain};
+        let mut c = Connection::new(&PROTOCOL_24, 0x400, 0);
+        c.set_ghost(
+            0x4_0000,
+            Ghost::Terrain(Box::new(Terrain::new("t", 8, false))),
+        );
+        c.set_ghost(1000, Ghost::GameObject(lab_player()));
+        c.set_control_object(1000);
+        let mut client = FakeClient::new(&PROTOCOL_24);
+        let mut now = 0;
+        while !c.ghost_delivered(0x4_0000) {
+            assert!(now < 60 * 100, "no terrain");
+            now = run_512(&mut c, &mut client, now, 1);
+        }
+        // The TerrainBlock is in, but the client's request is not answered.
+        now = run_512(&mut c, &mut client, now, 10);
+        assert!(!client.answered(b"MissionStartPhase2"));
+        c.terrain_asked = true;
+        let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        std::io::Write::write_all(&mut z, &[1u8; 600]).unwrap();
+        let chunk = Chunk::from_file(z.finish().unwrap()).unwrap();
+        for i in 0..20 {
+            assert!(c.send_event(chunk_event(i % 16, i / 16, &chunk)));
+        }
+        c.terrain_answered();
+        let seqs = c.chunk_seqs.clone();
+        assert_eq!(seqs.len(), 20);
+        while !client.answered(b"MissionStartPhase2") {
+            assert!(now < 60 * 400, "no phase 2");
+            if c.mission() == Mission::Phase2Sent {
+                assert!(seqs.iter().all(|q| c.events.delivered(*q)));
+            }
+            now = run_512(&mut c, &mut client, now, 1);
+        }
+        run_512(&mut c, &mut client, now, 20);
+        assert_eq!(c.mission(), Mission::Done);
     }
 
     /// A different object under a key being deleted (a world switch) is
