@@ -225,8 +225,12 @@ cell (x and y both between -8 and 8): the client makes the ghost and grows
 nothing until the player walks out of it. Keep the spawn at least 8 units
 from 0 0 in x or y; the start-up check reports a world with ground cover
 whose spawn is in that cell (Graal_analysis `torque/replicators-512.md`,
-grass sweep 2026-11-27). The start-up check also reports a grass line that
-names a shape. A mostly transparent grass texture draws next to
+grass sweep 2026-11-27). A 5.12 also fades grass out at about its reach
+(radius × 8 units) from the camera, so from a camera set far from the player
+a small radius shows nothing: from 40 units up, radius 4 to 6 drew no grass
+and radius 8 a faint patch, while at the default camera any radius draws. The
+start-up check reports a grass line whose radius × 8 is less than the `camera`
+offset's distance. It also reports a grass line that names a shape. A mostly transparent grass texture draws next to
 nothing. The optional box `x0 y0 x1 y1` is the world x/y region a
 cell's corner must lie in; without one, cover may grow anywhere. Cover is
 placed by casting rays, so it needs real ground (streamed terrain or solid
