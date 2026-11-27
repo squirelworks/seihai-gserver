@@ -427,7 +427,32 @@ pub trait WorldInput: Send {
     /// A 3D client linked (or went) for the player: a 2D player in its
     /// level leads the level instead.
     fn three_d(&self, _player: u16, _linked: bool) {}
+    /// A world-editing login (`g3dedit,login`): checks the account's
+    /// password and `STAFF`. `None`: no accounts to check (tests).
+    fn check_staff(
+        &self,
+        _account: &str,
+        _password: &[u8],
+    ) -> Option<oneshot::Receiver<StaffCheck>> {
+        None
+    }
 }
+
+/// What a world-editing login found ([`WorldInput::check_staff`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StaffCheck {
+    /// The password is right and the account is staff: its name.
+    Staff(String),
+    /// The password is right; the account is not staff.
+    NotStaff,
+    /// No such account, or the password is wrong.
+    Wrong,
+    /// The accounts could not be read, or the listserver did not answer.
+    Unreachable,
+}
+
+/// Wrong editing logins a 3D session may make before the rest are refused.
+const EDIT_LOGIN_TRIES: u32 = 3;
 
 /// The server's world task, for the running service.
 pub struct ServerWorld(pub Arc<crate::server::Server>);
@@ -464,6 +489,15 @@ impl WorldInput for ServerWorld {
     }
     fn three_d(&self, player: u16, linked: bool) {
         self.0.world.three_d(player, linked);
+    }
+    fn check_staff(&self, account: &str, password: &[u8]) -> Option<oneshot::Receiver<StaffCheck>> {
+        let (tx, rx) = oneshot::channel();
+        let server = self.0.clone();
+        let (account, password) = (account.to_string(), password.to_vec());
+        tokio::spawn(async move {
+            let _ = tx.send(server.check_staff(&account, &password).await);
+        });
+        Some(rx)
     }
 }
 
@@ -657,6 +691,13 @@ pub struct Service {
     pushed_to: HashSet<String>,
     roster: Option<oneshot::Receiver<crate::world::Roster>>,
     next_roster: u64,
+    /// Players signed in for world editing (`g3dedit,login`): the 3D
+    /// session they signed in on and the staff account.
+    edit_staff: HashMap<u16, (SocketAddr, String)>,
+    /// Editing logins being checked: player, session, account asked for.
+    edit_checks: Vec<(u16, SocketAddr, String, oneshot::Receiver<StaffCheck>)>,
+    /// Wrong editing logins by 3D session.
+    edit_fails: HashMap<SocketAddr, u32>,
 }
 
 impl Service {
@@ -693,6 +734,9 @@ impl Service {
             pushed_to: HashSet::new(),
             roster: None,
             next_roster: 0,
+            edit_staff: HashMap::new(),
+            edit_checks: Vec::new(),
+            edit_fails: HashMap::new(),
         }
     }
 
@@ -1303,6 +1347,7 @@ impl Service {
         }
         self.share_tge_moves();
         self.poll_roster(now);
+        self.poll_edit_logins();
         self.regrow(now);
     }
 
@@ -1851,6 +1896,9 @@ impl Service {
                                 fields[3]
                             ));
                         }
+                    } else if fields.len() >= 4 && fields[2] == "g3dedit" && fields[3] == "login" {
+                        // Never logged: the last fields are a password.
+                        self.edit_login(player, &fields[4..]);
                     } else if fields.len() >= 4 && fields[2] == "g3dedit" {
                         self.edit_world(player, &fields[3..]);
                     } else if fields.len() == 6 && fields[2] == "g3dpos" {
@@ -2192,18 +2240,140 @@ impl Service {
         self.flag_to_client(player, true, format!("clientr.g3dedit={reply}").as_bytes());
     }
 
+    /// `g3dedit,login,<account>,<password>`: a player whose TCP login is
+    /// not staff (a 5.12 always logs in as a guest) signs in with a staff
+    /// account for world editing, for this 3D session. The password is
+    /// checked off the 3D task; the answer comes as `clientr.g3dedit`.
+    fn edit_login(&mut self, player: u16, fields: &[&str]) {
+        let reply = self.try_edit_login(player, fields);
+        if let Err(e) = reply {
+            log(&format!("player {player}: g3dedit login refused: {e}"));
+            self.flag_to_client(
+                player,
+                true,
+                format!("clientr.g3dedit=error {e}").as_bytes(),
+            );
+        }
+    }
+
+    fn try_edit_login(&mut self, player: u16, fields: &[&str]) -> Result<(), String> {
+        if !self.opts.edit {
+            return Err("world editing is off (graal3d_edit)".into());
+        }
+        let at = self
+            .by_player
+            .get(&player)
+            .copied()
+            .ok_or("no 3D session")?;
+        if fields.len() < 2 || fields[0].is_empty() {
+            return Err("login needs an account and a password".into());
+        }
+        // A password may hold commas; the trigger split it there.
+        let (account, password) = (fields[0].to_string(), fields[1..].join(","));
+        if self.edit_fails.get(&at).copied().unwrap_or(0) >= EDIT_LOGIN_TRIES {
+            return Err("too many wrong logins; reconnect to try again".into());
+        }
+        if self.edit_checks.iter().any(|(p, ..)| *p == player) {
+            return Err("a login is already being checked".into());
+        }
+        let rx = self
+            .world
+            .check_staff(&account, password.as_bytes())
+            .ok_or("this server has no accounts to check")?;
+        log(&format!(
+            "player {player}: g3dedit login as {account} being checked"
+        ));
+        self.edit_checks.push((player, at, account, rx));
+        Ok(())
+    }
+
+    /// Answers the editing logins whose checks are done.
+    fn poll_edit_logins(&mut self) {
+        if self.edit_checks.is_empty() {
+            return;
+        }
+        let mut done = Vec::new();
+        self.edit_checks
+            .retain_mut(|(player, at, account, rx)| match rx.try_recv() {
+                Ok(v) => {
+                    done.push((*player, *at, account.clone(), v));
+                    false
+                }
+                Err(oneshot::error::TryRecvError::Empty) => true,
+                Err(oneshot::error::TryRecvError::Closed) => {
+                    done.push((*player, *at, account.clone(), StaffCheck::Unreachable));
+                    false
+                }
+            });
+        for (player, at, asked, verdict) in done {
+            // The session it was asked on has gone: the id may be another
+            // player's by now.
+            if self.by_player.get(&player) != Some(&at) {
+                continue;
+            }
+            let reply = match verdict {
+                StaffCheck::Staff(name) => {
+                    log(&format!(
+                        "player {player}: signed in as {name} for world editing"
+                    ));
+                    let reply = format!("ok login {name}");
+                    self.edit_staff.insert(player, (at, name));
+                    reply
+                }
+                StaffCheck::NotStaff => {
+                    log(&format!(
+                        "player {player}: g3dedit login refused: {asked} is not staff"
+                    ));
+                    "error only staff accounts may edit the world".to_string()
+                }
+                StaffCheck::Wrong => {
+                    let n = self.edit_fails.entry(at).or_insert(0);
+                    *n += 1;
+                    log(&format!(
+                        "player {player}: g3dedit login as {asked} refused: wrong account or password ({n} of {EDIT_LOGIN_TRIES})"
+                    ));
+                    "error account name or password is wrong".to_string()
+                }
+                StaffCheck::Unreachable => {
+                    log(&format!(
+                        "player {player}: g3dedit login as {asked}: accounts could not be checked"
+                    ));
+                    "error the accounts cannot be checked; try again later".to_string()
+                }
+            };
+            self.flag_to_client(player, true, format!("clientr.g3dedit={reply}").as_bytes());
+        }
+    }
+
+    /// Whether player `p` may edit: a staff TCP login, or a staff account
+    /// signed in on its current 3D session.
+    fn may_edit(&self, p: u16) -> bool {
+        let tcp = self
+            .hub
+            .lock()
+            .players
+            .get(&p)
+            .is_some_and(|p| p.staff && !p.guest);
+        tcp || self
+            .edit_staff
+            .get(&p)
+            .is_some_and(|(at, _)| self.by_player.get(&p) == Some(at))
+    }
+
     fn try_edit(&mut self, player: u16, fields: &[&str]) -> Result<String, String> {
         if !self.opts.edit {
             return Err("world editing is off (graal3d_edit)".into());
         }
-        let staff = self
-            .hub
-            .lock()
-            .players
-            .get(&player)
-            .is_some_and(|p| p.staff && !p.guest);
-        if !staff {
-            return Err("only staff accounts may edit the world".into());
+        if fields.first() == Some(&"logout") {
+            return Ok(match self.edit_staff.remove(&player) {
+                Some((_, name)) => format!("ok logout {name}"),
+                None => "ok logout".into(),
+            });
+        }
+        if !self.may_edit(player) {
+            return Err(
+                "only staff accounts may edit the world; sign in with g3dedit login".into(),
+            );
         }
         let edit = edit::parse(fields)?;
         let key = self
@@ -2348,6 +2518,7 @@ impl Service {
         let Some(s) = self.sessions.remove(&at) else {
             return;
         };
+        self.edit_fails.remove(&at);
         if tell {
             self.outbox
                 .push((at, s.conn.disconnect_packet(reason.as_bytes())));
@@ -2365,6 +2536,7 @@ impl Service {
             self.world_of.remove(&s.player);
             self.hidden.remove(&s.player);
             self.bad_report.remove(&s.player);
+            self.edit_staff.remove(&s.player);
             let mut deleted = 0;
             for other in self.sessions.values_mut() {
                 if other.conn.ghost_index(avatar_key(s.player)).is_some() {
@@ -2519,6 +2691,20 @@ mod tests {
                 half(raw[1]),
                 half(raw[3])
             ));
+        }
+        // Accounts: Boss (staff, password "pw,1"), plain (password "pw").
+        fn check_staff(
+            &self,
+            account: &str,
+            password: &[u8],
+        ) -> Option<oneshot::Receiver<StaffCheck>> {
+            let (tx, rx) = oneshot::channel();
+            let _ = tx.send(match (account, password) {
+                ("boss", b"pw,1") => StaffCheck::Staff("Boss".into()),
+                ("plain", b"pw") => StaffCheck::NotStaff,
+                _ => StaffCheck::Wrong,
+            });
+            Some(rx)
         }
     }
 
@@ -3250,6 +3436,63 @@ spawn 0 0 1
         );
         assert!(s.try_edit(1, &["remove", "door"]).is_err());
         assert_eq!(s.try_edit(1, &["list"]).unwrap(), "ok list 3");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_guest_signs_in_with_a_staff_account_to_edit() {
+        let dir = std::env::temp_dir().join(format!(
+            "seihai-gserver-g3dedit-login-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("graal3dworld.txt");
+        let text = "object house house.dif 1 2 3\nspawn 0 0 1\n";
+        std::fs::write(&file, text).unwrap();
+        let (mut s, hub, _) = service(text);
+        Arc::make_mut(s.scenes.get_mut("").unwrap()).file = Some(file.clone());
+        s.opts.edit = true;
+        // A 5.12 always logs in as a guest.
+        hub.tcp_joined(1, tcp("pc:1"));
+        let a: SocketAddr = "127.0.0.1:40000".parse().unwrap();
+        handshake(&mut s, a, 24, b"guest").unwrap();
+        let mut clients = [(a, FakeClient::new(&PROTOCOL_24))];
+        let now = run(&mut s, &mut clients, 0, 12);
+        let mv = ["move", "house", "5", "6", "7"];
+        assert!(s.try_edit(1, &mv).is_err(), "a guest may not edit");
+
+        // Not staff, then wrong passwords: refused, and counted.
+        s.edit_login(1, &["plain", "pw"]);
+        s.poll_edit_logins();
+        assert!(s.try_edit(1, &mv).is_err());
+        s.edit_login(1, &["boss", "nope"]);
+        s.poll_edit_logins();
+        assert_eq!(s.edit_fails.get(&a), Some(&1));
+        assert!(s.try_edit(1, &mv).is_err());
+
+        // The right password (with a comma): editing works on this session.
+        s.edit_login(1, &["boss", "pw", "1"]);
+        s.poll_edit_logins();
+        assert_eq!(s.try_edit(1, &mv).unwrap(), "ok move house");
+        run(&mut s, &mut clients, now, 4);
+        assert!(std::fs::read_to_string(&file)
+            .unwrap()
+            .contains("object house house.dif 5 6 7\n"));
+        assert_eq!(s.try_edit(1, &["logout"]).unwrap(), "ok logout Boss");
+        assert!(s.try_edit(1, &mv).is_err());
+
+        // Three wrong logins: the rest are refused unchecked.
+        s.edit_login(1, &["boss", "x"]);
+        s.poll_edit_logins();
+        s.edit_login(1, &["boss", "y"]);
+        s.poll_edit_logins();
+        assert_eq!(s.edit_fails.get(&a), Some(&3));
+        assert!(s.try_edit_login(1, &["boss", "pw", "1"]).is_err());
+
+        // A new 3D session starts again, signed out.
+        s.close(a, "test", false);
+        assert!(s.edit_fails.is_empty() && s.edit_staff.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
