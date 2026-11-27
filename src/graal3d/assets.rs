@@ -519,6 +519,26 @@ pub fn check_scene_files(
             ));
         }
     }
+    // A 5.12 fades grass out at about its reach (radius x 8 units) from
+    // the camera, so a camera set further from the player than that sees
+    // none: radius 4 from 40 units up draws nothing that radius 8 shows
+    // (Graal_analysis torque/grass-512-sweep-2026-11-27.md, Wine + Mesa).
+    if let Some(off) = scene.camera_offset {
+        let away = off.iter().map(|v| v * v).sum::<f32>().sqrt();
+        for o in &scene.objects {
+            if let Ghost::Replicator(r) = o {
+                let reach = f32::from(r.radius) * 8.0;
+                if r.grass() && away > reach {
+                    notes.push(format!(
+                        "replicator {}: the camera sits {away:.0} units from the player, past this grass's reach of {reach:.0} (radius {} x 8); a 5.12 fades grass out at about that distance from the camera, so give it a radius of at least {}",
+                        r.class,
+                        r.radius,
+                        (away / 8.0).ceil()
+                    ));
+                }
+            }
+        }
+    }
     for (name, n) in seen.into_iter().filter(|(_, n)| *n > 1) {
         notes.push(format!(
             "object {}: {n} objects have this name; they all draw, but a script finds only one by name",
@@ -719,6 +739,28 @@ mod tests {
         // No spawn line: the players start at 0 0, in the origin cell.
         assert!(notes[2].contains("origin cell"), "{notes:?}");
         assert_eq!(scene.objects.len(), 1);
+    }
+
+    #[test]
+    fn grass_past_the_camera_s_reach_is_noted() {
+        let none = |_: &str| -> Option<(String, Vec<u8>)> { None };
+        for (radius, camera, noted) in [
+            (4, "camera 0 -5 2", false),
+            (4, "camera 0 0 40", true),
+            (8, "camera 0 0 40", false),
+            (4, "", false),
+        ] {
+            let (mut scene, errors) = Scene::parse(&format!(
+                "replicator DynamicGrass 0 0 0 {radius} 10 10 blades.png\nspawn 20 20 1\n{camera}\n"
+            ));
+            assert!(errors.is_empty(), "{errors:?}");
+            let notes = check_scene(&mut scene, &none, None, ShapeCheck::Skip);
+            assert_eq!(
+                notes.iter().any(|n| n.contains("past this grass's reach")),
+                noted,
+                "{radius} {camera}: {notes:?}"
+            );
+        }
     }
 
     #[test]
