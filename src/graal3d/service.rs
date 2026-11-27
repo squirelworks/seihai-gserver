@@ -2343,6 +2343,16 @@ impl Service {
             ..GameObject::default()
         };
         s.conn.set_ghost(camera_key(player), Ghost::Camera(camera));
+        let (account, protocol) = (s.account.clone(), s.conn.profile().protocol);
+        let p = t.position;
+        self.trace(
+            &account,
+            protocol,
+            &format!(
+                "server move to {} {} {}; camera to {} {} {}",
+                to[0], to[1], to[2], p[0], p[1], p[2]
+            ),
+        );
     }
 
     /// Where a player arriving in its world stands: the spawn point, or

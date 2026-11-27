@@ -241,7 +241,7 @@ fn load_3d_world(
         let own = server.cfg.world.join(&t.folder).join("heights.info");
         if !own.is_file() && heights_info.is_some() {
             eprintln!(
-                "Graal3D: ERROR {label} terrain: the heights.info the clients get is not the one in {}",
+                "Graal3D: {label} terrain: {} has no heights.info; clients get the one the file folders find, which must name this terrain's textures too",
                 t.folder
             );
         }
