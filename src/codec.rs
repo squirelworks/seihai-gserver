@@ -111,6 +111,32 @@ pub struct Codec {
     /// Short compressed client frames that only inflated under the other
     /// gen-5 step rule (see [`Self::decode`]); the cipher follows the client.
     pub step_rule_switches: u32,
+    lab_id: u64,
+}
+
+// LAB ONLY (not for merge): SEIHAI_LAB_RAWLOG=<file> logs every gen-5 frame.
+fn lab_rawlog(c: &mut Codec, dir: &str, st: Option<(u32, bool)>, raw: &[u8], r: &io::Result<Vec<u8>>) {
+    use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    let Some(path) = std::env::var_os("SEIHAI_LAB_RAWLOG") else { return };
+    if c.lab_id == 0 {
+        c.lab_id = NEXT.fetch_add(1, Ordering::Relaxed);
+    }
+    let Some((it, down)) = st else { return };
+    let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+    let hex: String = raw.iter().map(|b| format!("{b:02x}")).collect();
+    let res = match r {
+        Ok(b) => {
+            let h: String = b.iter().take(64).map(|b| format!("{b:02x}")).collect();
+            format!("ok {} {h}", b.len())
+        }
+        Err(e) => format!("ERR {e}"),
+    };
+    let line = format!("{t}\tc{}\tkey {:02x}\t{dir}\t{it:08x}{}\t{}\t{hex}\t{res}\n", c.lab_id, c.key, if down { " rd" } else { "" }, raw.len());
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = f.write_all(line.as_bytes());
+    }
 }
 
 impl Codec {
@@ -153,6 +179,7 @@ impl Codec {
             raw_left: 0,
             key,
             step_rule_switches: 0,
+            lab_id: 0,
         }
     }
 
@@ -169,6 +196,15 @@ impl Codec {
 
     /// One whole frame to write for `body` (one or more messages).
     pub fn encode(&mut self, body: &[u8]) -> io::Result<Vec<u8>> {
+        let st = self.out5.as_ref().map(|g| (g.state(), g.is_round_down()));
+        let r = self.encode_inner(body);
+        if let Ok(f) = &r {
+            lab_rawlog(self, "out", st, f, &Ok(body.to_vec()));
+        }
+        r
+    }
+
+    fn encode_inner(&mut self, body: &[u8]) -> io::Result<Vec<u8>> {
         let scrubbed;
         let body = if self.nul_free {
             let (out, left) = scrub_nul(body, self.raw_left);
@@ -226,6 +262,13 @@ impl Codec {
 
     /// The body of one frame the client sent (the bytes after its length).
     pub fn decode(&mut self, raw: &[u8]) -> io::Result<Vec<u8>> {
+        let st = self.in5.as_ref().map(|g| (g.state(), g.is_round_down()));
+        let r = self.decode_inner(raw);
+        lab_rawlog(self, "in", st, raw, &r);
+        r
+    }
+
+    fn decode_inner(&mut self, raw: &[u8]) -> io::Result<Vec<u8>> {
         let key = self.key;
         match self.in5.as_mut() {
             Some(g) if self.gen4 => bz2_decompress(&g.decode(raw.to_vec(), Gen5Comp::Bz2)),
