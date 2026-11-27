@@ -195,6 +195,11 @@ pub struct Connection {
     mutation: Option<(Mutation, u32)>,
     mutation_at: u64,
     mutation_done: bool,
+    /// Terrain chunks sent mid-session ([`Self::send_chunks_and_relight`])
+    /// that must be acked before the mission is lit again, and whether a
+    /// relight is owed.
+    relight_seqs: Vec<u32>,
+    relight_owed: bool,
 }
 
 /// Bits that hold `index`, at least 1.
@@ -240,6 +245,8 @@ impl Connection {
             phase2_held: None,
             terrain_asked: false,
             chunk_seqs: Vec::new(),
+            relight_seqs: Vec::new(),
+            relight_owed: false,
             chunks_answered: false,
             relighting: false,
             relight_terrain: false,
@@ -738,6 +745,8 @@ impl Connection {
                     self.start_relight(true);
                 }
             }
+            // The answer to a relight of new terrain chunks (a sliding window).
+            (b"MissionStartPhase2Ack", Mission::Done) => {}
             _ => self.log(format!(
                 "remote command ignored: {}",
                 String::from_utf8_lossy(command)
@@ -781,6 +790,44 @@ impl Connection {
             self.chunk_seqs.push(seq);
         }
         true
+    }
+
+    /// Terrain chunks sent mid-session (a sliding terrain window): once the
+    /// client has acked them all, `MissionStartPhase2` goes again so it
+    /// lights them. A real 5.12 drew chunks that came after the mission
+    /// start flat-lit, and lit them, pixel for pixel as a static terrain, on
+    /// a second `MissionStartPhase2`: "Terrain lit" in 0.03 to 0.04 s, and
+    /// no phase 1, weapon or FPS change (lab, 2026-11-27). Returns the
+    /// number of chunks queued.
+    pub fn send_chunks_and_relight(&mut self, chunks: Vec<Event>) -> usize {
+        let mut n = 0;
+        for ev in chunks {
+            if ev.payload_bits() >= 1 << 14 {
+                continue;
+            }
+            let seq = self.events.send(ev);
+            self.relight_seqs.push(seq);
+            n += 1;
+        }
+        if n > 0 {
+            self.relight_owed = true;
+        }
+        n
+    }
+
+    /// Lights the mission again once the chunks it waits for are in.
+    fn relight_when_lit(&mut self) {
+        if !self.relight_owed || self.mission != Mission::Done {
+            return;
+        }
+        if self.relight_seqs.iter().any(|q| !self.events.delivered(*q)) {
+            return;
+        }
+        self.relight_seqs.clear();
+        self.relight_owed = false;
+        let seq = self.mission_seq.to_string();
+        self.send_command(b"MissionStartPhase2", &[seq.as_bytes(), b"Graal3D"]);
+        self.log("new terrain chunks are in: MissionStartPhase2 again, to light them");
     }
 
     /// The service has sent every chunk event answering the client's
@@ -851,6 +898,9 @@ impl Connection {
             }
         }
         self.relighting = true;
+        // Chunks of the old world's window need no relight of their own.
+        self.relight_owed = false;
+        self.relight_seqs.clear();
         self.relight_terrain = self
             .slots
             .values()
@@ -966,6 +1016,7 @@ impl Connection {
             self.advance_tge();
         }
         self.release_phase2(now);
+        self.relight_when_lit();
         let since = now.saturating_sub(self.last_send);
         if self.mutation.is_some()
             && !self.mutation_done
@@ -2212,6 +2263,60 @@ pub(crate) mod tests {
         assert!(!c.relighting);
         run_512(&mut c, &mut client, now, 40);
         assert_eq!(client.count(b"MissionStartPhase2"), 1);
+    }
+
+    /// Chunks sent after the mission start (a sliding terrain window) are
+    /// lit by a second `MissionStartPhase2`, once the client has acked
+    /// every one of them, and its ack changes nothing.
+    #[test]
+    fn mid_session_chunks_are_relit_once_acked() {
+        use crate::graal3d::ground::{chunk_event, Chunk};
+        let mut c = Connection::new(&PROTOCOL_24, 0x400, 0);
+        c.set_ghost(1000, Ghost::GameObject(lab_player()));
+        c.set_control_object(1000);
+        let mut client = FakeClient::new(&PROTOCOL_24);
+        let mut now = run_512(&mut c, &mut client, 0, 40);
+        assert_eq!(c.mission(), Mission::Done);
+        let phase2 = |client: &FakeClient| {
+            client
+                .commands
+                .iter()
+                .filter(|k| k.name == b"MissionStartPhase2")
+                .count()
+        };
+        assert_eq!(phase2(&client), 1);
+        let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        std::io::Write::write_all(&mut z, &[3u8; 900]).unwrap();
+        let chunk = Chunk::from_file(z.finish().unwrap()).unwrap();
+        let batch: Vec<Event> = (0..31)
+            .map(|i| chunk_event(i % 16, i / 16, &chunk))
+            .collect();
+        assert_eq!(c.send_chunks_and_relight(batch), 31);
+        let seqs = c.relight_seqs.clone();
+        let mut seen = false;
+        while phase2(&client) < 2 {
+            assert!(now < 60 * 400, "no relight");
+            // Not before every chunk is acked.
+            if c.relight_seqs.is_empty() && !seen {
+                seen = true;
+                assert!(seqs.iter().all(|q| c.events.delivered(*q)));
+            }
+            now = run_512(&mut c, &mut client, now, 1);
+        }
+        let relight = client
+            .commands
+            .iter()
+            .rfind(|k| k.name == b"MissionStartPhase2")
+            .unwrap();
+        assert_eq!(relight.args.len(), 2, "the mission sequence and Graal3D");
+        // The client acks it; the connection stays done and owes nothing.
+        run_512(&mut c, &mut client, now, 20);
+        assert_eq!(c.mission(), Mission::Done);
+        assert_eq!(phase2(&client), 2);
+        assert!(!c.relight_owed);
+        // An empty batch owes no relight.
+        assert_eq!(c.send_chunks_and_relight(Vec::new()), 0);
+        assert!(!c.relight_owed);
     }
 
     /// A different object under a key being deleted (a world switch) is

@@ -22,6 +22,7 @@ use super::events::Event;
 use super::objects::GameObject;
 use std::io::Read;
 use std::path::Path;
+use std::sync::Arc;
 
 /// Chunks a side.
 pub const CHUNKS: usize = 16;
@@ -29,6 +30,8 @@ pub const CHUNKS: usize = 16;
 pub const MAX_CHUNK_BYTES: usize = 1023;
 /// A huge square size killed a live 5.12 right after "Terrain lit".
 pub const MAX_SQUARE_SIZE: u32 = 64;
+/// The most chunks a side of a large terrain.
+pub const MAX_LARGE_CHUNKS: u32 = 256;
 
 /// One chunk as the server sends it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,6 +51,117 @@ pub struct Terrain {
     pub repeat: bool,
     /// Index y * 16 + x.
     pub chunks: Vec<Option<Chunk>>,
+    /// A terrain larger than the client's grid (`terrain ... repeat WxH`),
+    /// streamed as a sliding window ([`Large`]); `chunks` is then unused.
+    pub large: Option<Large>,
+}
+
+/// A terrain of `width` x `height` chunks, more than the 16 x 16 a client
+/// holds. The client's grid is a window onto it that follows the player.
+///
+/// World chunk (X, Y), X from 0 to `width` - 1 and Y from 0 to `height` -
+/// 1, covers x from (X - width / 2) * span to (X - width / 2 + 1) * span,
+/// and the same for y, where span is 16 squares: the terrain is centred on
+/// the origin, as the 16 x 16 one is. With `repeat` the client draws its
+/// grid tiled, slot (gx, gy) at every 16 chunks, so world chunk X lies in
+/// slot gx = (X - width / 2 + 8) mod 16 (X mod 16 when width / 2 - 8 is a
+/// multiple of 16, as for 48). Each slot holds the world chunk of the 16
+/// around the player's chunk (8 behind, 7 ahead) that falls in it. When the
+/// player crosses into another chunk, the slots that changed are sent
+/// again: 16 for a straight crossing, 31 for a diagonal one. A slot whose
+/// chunk would be past the terrain's edge holds the nearest chunk of the
+/// terrain that falls in it, so the edge repeats.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Large {
+    pub width: u32,
+    pub height: u32,
+    /// Index y * width + x; shared, since every TerrainBlock ghost holds a
+    /// copy of the terrain.
+    pub chunks: Arc<Vec<Option<Chunk>>>,
+}
+
+/// Each slot's world chunk, index gy * 16 + gx.
+pub type Window = Vec<(u32, u32)>;
+
+/// The client slot of world chunk `c` along an axis of `n` chunks.
+pub fn slot_of(c: i64, n: u32) -> usize {
+    (c - i64::from(n / 2) + 8).rem_euclid(CHUNKS as i64) as usize
+}
+
+/// The world chunk along an axis of `n` chunks that slot `slot` holds when
+/// the player is in world chunk `at` (which may be off the terrain).
+pub fn chunk_for_slot(slot: usize, at: i64, n: u32) -> u32 {
+    let first = at - 8;
+    let k = CHUNKS as i64;
+    let mut c = first + (slot as i64 - slot_of(first, n) as i64).rem_euclid(k);
+    let n = i64::from(n);
+    if c < 0 {
+        c += k * ((-c + k - 1) / k);
+    }
+    if c >= n {
+        c -= k * ((c - n + k) / k);
+    }
+    c as u32
+}
+
+/// The world chunk a coordinate is in, along an axis of `n` chunks of
+/// `span` units (it may be off the terrain).
+pub fn chunk_at(v: f32, span: f32, n: u32) -> i64 {
+    if !v.is_finite() {
+        return i64::from(n / 2);
+    }
+    (v / span).floor() as i64 + i64::from(n / 2)
+}
+
+impl Large {
+    pub fn chunk(&self, x: u32, y: u32) -> Option<&Chunk> {
+        if x >= self.width || y >= self.height {
+            return None;
+        }
+        self.chunks
+            .get((y * self.width + x) as usize)
+            .and_then(Option::as_ref)
+    }
+
+    /// The window for a player at `position`.
+    pub fn window(&self, position: [f32; 3], square_size: u32) -> Window {
+        let span = (CHUNKS as u32 * square_size) as f32;
+        let ax = chunk_at(position[0], span, self.width);
+        let ay = chunk_at(position[1], span, self.height);
+        (0..CHUNKS * CHUNKS)
+            .map(|i| {
+                (
+                    chunk_for_slot(i % CHUNKS, ax, self.width),
+                    chunk_for_slot(i / CHUNKS, ay, self.height),
+                )
+            })
+            .collect()
+    }
+
+    /// Chunk events for the slots of `window` that are not `old` (all of
+    /// them with no `old`) and whose chunk is not `stamps`' (none: every
+    /// one). Slots whose world chunk has no file are left as they are.
+    pub fn events(
+        &self,
+        window: &Window,
+        old: Option<&Window>,
+        stamps: Option<&[u32]>,
+    ) -> Vec<Event> {
+        let mut out = Vec::new();
+        for (i, (x, y)) in window.iter().enumerate() {
+            if old.is_some_and(|o| o.get(i) == Some(&(*x, *y))) {
+                continue;
+            }
+            let Some(c) = self.chunk(*x, *y) else {
+                continue;
+            };
+            if stamps.is_some_and(|s| s.get(i) == Some(&c.stamp)) {
+                continue;
+            }
+            out.push(chunk_event((i % CHUNKS) as u32, (i / CHUNKS) as u32, c));
+        }
+        out
+    }
 }
 
 impl Terrain {
@@ -57,7 +171,19 @@ impl Terrain {
             square_size,
             repeat,
             chunks: vec![None; CHUNKS * CHUNKS],
+            large: None,
         }
+    }
+
+    /// A terrain of `width` x `height` chunks ([`Large`]).
+    pub fn new_large(folder: &str, square_size: u32, width: u32, height: u32) -> Terrain {
+        let mut t = Terrain::new(folder, square_size, true);
+        t.large = Some(Large {
+            width,
+            height,
+            chunks: Arc::new(vec![None; (width * height) as usize]),
+        });
+        t
     }
 
     /// Reads `heights<x>-<y>.dat` from `dir`. Returns one note per file that
@@ -66,19 +192,37 @@ impl Terrain {
     pub fn load(&mut self, dir: &Path) -> Vec<String> {
         let mut notes = Vec::new();
         let mut found = 0;
-        for y in 0..CHUNKS {
-            for x in 0..CHUNKS {
+        let (w, h) = self
+            .large
+            .as_ref()
+            .map_or((CHUNKS, CHUNKS), |l| (l.width as usize, l.height as usize));
+        let mut large = vec![None; if self.large.is_some() { w * h } else { 0 }];
+        for y in 0..h {
+            for x in 0..w {
                 let name = format!("heights{x}-{y}.dat");
                 let Ok(data) = std::fs::read(dir.join(&name)) else {
                     continue;
                 };
                 match Chunk::from_file(data) {
                     Ok(c) => {
-                        self.chunks[y * CHUNKS + x] = Some(c);
+                        if self.large.is_some() {
+                            large[y * w + x] = Some(c);
+                        } else {
+                            self.chunks[y * CHUNKS + x] = Some(c);
+                        }
                         found += 1;
                     }
                     Err(e) => notes.push(format!("{}/{name}: {e}; left out", self.folder)),
                 }
+            }
+        }
+        if let Some(l) = &mut self.large {
+            l.chunks = Arc::new(large);
+            if found > 0 && found < w * h {
+                notes.push(format!(
+                    "{}: {found} of the large terrain's {w} x {h} chunks found; the rest are left as the client has them",
+                    self.folder
+                ));
             }
         }
         if found == 0 {
@@ -102,6 +246,18 @@ impl Terrain {
         w.u32(8);
         w.u32(self.square_size);
         w.u8(u8::from(self.repeat));
+    }
+
+    /// The answer to a terrain request from a player at `position`, and for
+    /// a large terrain the window it fills.
+    pub fn answer_at(&self, stamps: &[u32], position: [f32; 3]) -> (Vec<Event>, Option<Window>) {
+        match &self.large {
+            Some(l) => {
+                let w = l.window(position, self.square_size);
+                (l.events(&w, None, Some(stamps)), Some(w))
+            }
+            None => (self.answer(stamps), None),
+        }
     }
 
     /// Chunk events for every chunk whose stamp differs from the client's
@@ -358,6 +514,145 @@ mod tests {
         let mut e = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
         e.write_all(data).unwrap();
         e.finish().unwrap()
+    }
+
+    /// A large terrain whose chunk (x, y) inflates to [x, y] as two
+    /// little-endian u16s.
+    fn large(w: u32, h: u32) -> Large {
+        let mut chunks = Vec::new();
+        for y in 0..h {
+            for x in 0..w {
+                let raw = [x as u8, (x >> 8) as u8, y as u8, (y >> 8) as u8];
+                chunks.push(Some(Chunk::from_file(zlib(&raw)).unwrap()));
+            }
+        }
+        Large {
+            width: w,
+            height: h,
+            chunks: Arc::new(chunks),
+        }
+    }
+
+    #[test]
+    fn world_chunks_map_to_slots_mod_16() {
+        // 48 chunks a side: slot = X mod 16.
+        for x in [0i64, 7, 15, 16, 31, 47] {
+            assert_eq!(slot_of(x, 48), (x % 16) as usize);
+        }
+        // 16 a side is the plain grid: slot = X.
+        for x in 0..16 {
+            assert_eq!(slot_of(x, 16), x as usize);
+        }
+        // 32 a side: centred, so chunk 16 (the origin) is slot 8.
+        assert_eq!(slot_of(16, 32), 8);
+        assert_eq!(slot_of(0, 32), 8);
+        assert_eq!(slot_of(8, 32), 0);
+    }
+
+    #[test]
+    fn the_window_is_the_16_chunks_around_the_player() {
+        let l = large(48, 48);
+        // At the origin (world chunk 24, 24) the window runs 16 to 31.
+        let w = l.window([0.0, 0.0, 0.0], 8);
+        let xs: std::collections::BTreeSet<u32> = w.iter().map(|c| c.0).collect();
+        assert_eq!(xs, (16..32).collect());
+        for (i, (x, y)) in w.iter().enumerate() {
+            assert_eq!(slot_of(i64::from(*x), 48), i % 16);
+            assert_eq!(slot_of(i64::from(*y), 48), i / 16);
+        }
+        // A 16 x 16 large terrain is the plain grid wherever the player is.
+        let l16 = large(16, 16);
+        let plain: Window = (0..256).map(|i| (i % 16, i / 16)).collect();
+        assert_eq!(l16.window([0.0; 3], 8), plain);
+        assert_eq!(l16.window([900.0, -900.0, 0.0], 8), plain);
+    }
+
+    #[test]
+    fn a_chunk_crossing_sends_16_straight_or_31_diagonal() {
+        let l = large(48, 48);
+        let span = 128.0; // 16 squares of 8
+        let w0 = l.window([10.0, 10.0, 0.0], 8);
+        // East one chunk: one column changes, to world chunk 32.
+        let w1 = l.window([10.0 + span, 10.0, 0.0], 8);
+        let ev = l.events(&w1, Some(&w0), None);
+        assert_eq!(ev.len(), 16);
+        let changed: Vec<usize> = (0..256).filter(|i| w0[*i] != w1[*i]).collect();
+        assert!(changed.iter().all(|i| i % 16 == 0), "{changed:?}");
+        assert!(changed.iter().all(|i| w1[*i].0 == 32));
+        // Diagonal: a column and a row, 31 slots.
+        let w2 = l.window([10.0 + span, 10.0 + span, 0.0], 8);
+        assert_eq!(l.events(&w2, Some(&w0), None).len(), 31);
+        // Moving within a chunk changes nothing.
+        let w3 = l.window([100.0, 100.0, 0.0], 8);
+        assert!(l.events(&w3, Some(&w0), None).is_empty());
+        // The event names the slot and carries the world chunk.
+        let e = &ev[0];
+        let crate::graal3d::events::Event::Raw { payload, .. } = e else {
+            panic!()
+        };
+        let bytes = payload.clone().into_bytes();
+        let mut r = BitReader::new(&bytes);
+        assert_eq!((r.int(4).unwrap(), r.int(4).unwrap()), (0, 0));
+        assert_eq!(r.u32().unwrap(), l.chunk(32, w1[0].1).unwrap().stamp);
+    }
+
+    #[test]
+    fn past_the_edge_a_slot_keeps_the_nearest_chunk_in_it() {
+        let l = large(48, 48);
+        // Far east of the terrain: every chunk is still on it.
+        for p in [
+            [1.0e4, 0.0, 0.0],
+            [-1.0e4, -1.0e4, 0.0],
+            [f32::NAN, 0.0, 0.0],
+        ] {
+            let w = l.window(p, 8);
+            assert!(w.iter().all(|(x, y)| *x < 48 && *y < 48), "{p:?}");
+            for (i, (x, y)) in w.iter().enumerate() {
+                assert_eq!(slot_of(i64::from(*x), 48), i % 16);
+                assert_eq!(slot_of(i64::from(*y), 48), i / 16);
+            }
+        }
+        assert_eq!(chunk_for_slot(0, 100, 48), 32);
+        assert_eq!(chunk_for_slot(15, -50, 48), 15);
+    }
+
+    #[test]
+    fn a_large_answer_fills_the_window_and_honours_stamps() {
+        let mut t = Terrain::new_large("t", 8, 48, 48);
+        t.large = Some(large(48, 48));
+        let (ev, w) = t.answer_at(&[0; 256], [0.0; 3]);
+        assert_eq!(ev.len(), 256);
+        let w = w.unwrap();
+        // A client holding slot 0's chunk gets the other 255.
+        let mut stamps = vec![0; 256];
+        let l = t.large.as_ref().unwrap();
+        stamps[0] = l.chunk(w[0].0, w[0].1).unwrap().stamp;
+        assert_eq!(t.answer_at(&stamps, [0.0; 3]).0.len(), 255);
+        // Returning far east: the window there, not the centre's.
+        let (_, far) = t.answer_at(&[0; 256], [2000.0, 0.0, 0.0]);
+        assert_ne!(far.unwrap(), w);
+    }
+
+    #[test]
+    fn a_large_terrain_loads_every_chunk_file() {
+        let dir = std::env::temp_dir().join(format!("g3d-large-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (x, y) in [(0, 0), (31, 0), (31, 17)] {
+            std::fs::write(
+                dir.join(format!("heights{x}-{y}.dat")),
+                zlib(&[x as u8, y as u8]),
+            )
+            .unwrap();
+        }
+        let mut t = Terrain::new_large("t", 8, 32, 18);
+        let notes = t.load(&dir);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        let l = t.large.as_ref().unwrap();
+        assert!(l.chunk(31, 17).is_some());
+        assert!(l.chunk(1, 1).is_none());
+        assert!(l.chunk(32, 0).is_none());
+        assert!(t.chunks.iter().all(Option::is_none));
     }
 
     #[test]

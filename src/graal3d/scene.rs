@@ -58,7 +58,10 @@
 //!                           ghosted, or with `late` after the mission start
 //! ```
 
-use super::ground::{Replicator, Terrain, Water, ANYWHERE, MAX_SQUARE_SIZE, REPLICATOR_CLASSES};
+use super::ground::{
+    Replicator, Terrain, Water, ANYWHERE, CHUNKS, MAX_LARGE_CHUNKS, MAX_SQUARE_SIZE,
+    REPLICATOR_CLASSES,
+};
 use super::objects::{GameObject, Ghost, Sky, Sun, Transform};
 use std::path::PathBuf;
 
@@ -292,19 +295,44 @@ impl Scene {
                     s.tge_player_shape = w[1].as_bytes().to_vec();
                     true
                 }
-                ("terrain", 2..=4) => {
+                ("terrain", 2..=5) => {
                     let mut size = 8;
                     let mut repeat = false;
+                    let mut large = None;
                     let mut ok = true;
                     for word in &w[2..] {
                         if *word == "repeat" {
                             repeat = true;
+                        } else if let Some((a, b)) = word.split_once(['x', 'X']) {
+                            // A large terrain: width x height chunks.
+                            let side = |v: &str| {
+                                v.parse::<u32>().ok().filter(|n| {
+                                    (CHUNKS as u32..=MAX_LARGE_CHUNKS).contains(n) && n % 2 == 0
+                                })
+                            };
+                            match (side(a), side(b)) {
+                                (Some(a), Some(b)) => large = Some((a, b)),
+                                _ => {
+                                    errors.push(format!(
+                                        "line {}: a large terrain is <width>x<height> chunks, each even and {} to {MAX_LARGE_CHUNKS}",
+                                        n + 1,
+                                        CHUNKS
+                                    ));
+                                    ok = false;
+                                }
+                            }
                         } else {
                             match word.parse::<u32>() {
                                 Ok(n) if (1..=MAX_SQUARE_SIZE).contains(&n) => size = n,
                                 _ => ok = false,
                             }
                         }
+                    }
+                    if large.is_some() && !repeat {
+                        // Without repeat the client draws only its own
+                        // 16 x 16 grid round the origin.
+                        errors.push(format!("line {}: a large terrain needs repeat", n + 1));
+                        ok = false;
                     }
                     let safe = std::path::Path::new(w[1])
                         .components()
@@ -318,7 +346,12 @@ impl Scene {
                                 n + 1
                             ));
                         }
-                        s.terrain = Some(Terrain::new(w[1], size, repeat));
+                        s.terrain = Some(match large {
+                            Some((a, b)) if (a, b) != (CHUNKS as u32, CHUNKS as u32) => {
+                                Terrain::new_large(w[1], size, a, b)
+                            }
+                            _ => Terrain::new(w[1], size, repeat),
+                        });
                     }
                     ok && safe
                 }
@@ -492,6 +525,41 @@ impl Scene {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_large_terrain_line_reads() {
+        let (s, e) = Scene::parse("terrain big 8 repeat 48x48\n");
+        assert!(e.is_empty(), "{e:?}");
+        let t = s.terrain.unwrap();
+        let l = t.large.unwrap();
+        assert_eq!(
+            (l.width, l.height, t.square_size, t.repeat),
+            (48, 48, 8, true)
+        );
+        assert_eq!(l.chunks.len(), 48 * 48);
+        // Any order of the words.
+        let (s, e) = Scene::parse("terrain big 64X32 repeat 4\n");
+        assert!(e.is_empty(), "{e:?}");
+        let t = s.terrain.unwrap();
+        assert_eq!((t.large.as_ref().unwrap().width, t.square_size), (64, 4));
+        // 16x16 is the plain grid.
+        let (s, _) = Scene::parse("terrain t 8 repeat 16x16\n");
+        assert!(s.terrain.unwrap().large.is_none());
+        // A plain line has none.
+        let (s, _) = Scene::parse("terrain t 8 repeat\n");
+        assert!(s.terrain.unwrap().large.is_none());
+        for bad in [
+            "terrain big 8 48x48",        // no repeat
+            "terrain big 8 repeat 47x48", // odd
+            "terrain big 8 repeat 8x48",  // under 16
+            "terrain big 8 repeat 512x16",
+            "terrain big 8 repeat 48xq",
+        ] {
+            let (s, e) = Scene::parse(bad);
+            assert!(!e.is_empty(), "{bad}");
+            assert!(s.terrain.is_none(), "{bad}");
+        }
+    }
 
     #[test]
     fn a_replicator_takes_a_scale() {

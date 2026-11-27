@@ -134,6 +134,53 @@ stamps its own re-encoding of each chunk, so write chunks in its form
 (`seihai-servertools gen terrain DIR --stream` does), or every chunk goes out
 again on every visit.
 
+**Large terrains (a sliding window).** A client holds a grid of 16 x 16
+chunks and nothing more. A terrain larger than that is declared with its size
+in chunks after `repeat`:
+
+```text
+terrain world/continent 8 repeat 48x48
+```
+
+- `<width>x<height>`: each even, 16 to 256 chunks. `repeat` is required,
+  since without it the client draws only its own grid round the origin.
+  `16x16` is the plain terrain.
+- The folder holds `heights<X>-<Y>.dat` for X from 0 to width - 1 and Y from
+  0 to height - 1, in the same form as the plain chunks. A missing file
+  leaves that piece as the client last had it, and the start-up log says how
+  many were found.
+- The terrain is centred on the origin, as the plain one is. World chunk
+  (X, Y) covers x from (X - width / 2) x span to (X - width / 2 + 1) x span,
+  and the same for y. The span is 16 squares (128 units at size 8).
+- The client draws its grid tiled, so world chunk X sits in grid slot
+  (X - width / 2 + 8) mod 16. For a width of 48 (or 80, 112, ...) that is
+  simply X mod 16, and the same goes for Y.
+- Each slot holds the world chunk that falls in it among the 16 round the
+  player's own chunk, 8 behind and 7 ahead.
+  - At join, the terrain request is answered for the window where the player
+    is now.
+  - When the player crosses into another chunk, the chunks that came into
+    the window are sent mid-session as `TerrainChunkEvent`s: 16 for a
+    straight crossing, 31 for a diagonal one. Windows are checked 5 times a
+    second.
+  - Once the client has acked all of them, `MissionStartPhase2` goes again.
+    A real 5.12 lights the terrain only on that command, so mid-session
+    chunks stayed flat-lit until it came. Then "Terrain lit" took 0.03 to
+    0.04 s and the view matched a static terrain pixel for pixel (lab,
+    2026-11-27).
+  - The client's ack of the repeated `MissionStartPhase2` is taken quietly.
+- Past the terrain's edge, each slot keeps the nearest world chunk that falls
+  in it, so the edge region repeats. Put a border of sea or flat chunks
+  round the terrain.
+- In the lab, a 48 x 48 terrain at size 8 cost about 3.8 KB a diagonal
+  crossing (845 B/s walking at about 34 units/s), with no stall or FPS dip.
+  - At size 8 the window is 2048 units across: about 900 units of fresh
+  terrain ahead, roughly the 5.12's draw distance.
+  - At size 4 only about 450 units are fresh ahead, and FPS halved. Use 8.
+- The client caches chunks by slot, under the server's name. A player who
+  returns far from the spawn holds the chunks of where it left, and is sent
+  what differs in the window where it now stands.
+
 Put `heights.info` (one texture name a line, in material order) and its
 textures in the file folders. Name the textures with their extension
 (`g3d_grass.png`): the Linux 4.20 client given bare names saved them without
@@ -468,6 +515,9 @@ a value a 3D script must read as `serverr.x=…` in `config/serverflags.txt`.
 
 ## Not done yet
 
+- A large terrain (sliding window) has been run on one real 5.12 on
+  loopback; a 4.20r6, 4.20r8 or 4.20 Linux client has not been tried with
+  one.
 - World switches and per-player objects have loopback tests only.
 - In-game editing (`g3dedit`) and the example editor weapon have loopback
   tests only; whether a 5.12 redraws a moved world object from its
