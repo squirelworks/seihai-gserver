@@ -534,10 +534,16 @@ struct Session {
     ///
     /// [`update`]: Service::update
     regrow: Option<(Option<u64>, usize)>,
+    /// A large terrain ([`super::ground::Large`]): the world chunk each of
+    /// the client's slots holds, once its terrain request is answered.
+    window: Option<super::ground::Window>,
     /// With distance scoping on for its world ([`super::scope`]): the
     /// world objects (indices into the scene's objects) it is ghosted.
     scope: Option<HashSet<usize>>,
 }
+
+/// How often each client's terrain window is looked at, in milliseconds.
+const SLIDE_MS: u64 = 200;
 
 /// The most world objects a scoped client is ghosted at once.
 const SCOPE_BUDGET: usize = MAX_GHOSTS as usize - super::scope::RESERVED;
@@ -721,6 +727,8 @@ pub struct Service {
     edit_checks: Vec<(u16, SocketAddr, String, oneshot::Receiver<StaffCheck>)>,
     /// Wrong editing logins by 3D session.
     edit_fails: HashMap<SocketAddr, u32>,
+    /// When the next terrain window pass is due ([`SLIDE_MS`]).
+    next_slide: u64,
     /// When the next scoping pass is due ([`super::scope::PASS_MS`]).
     next_scope: u64,
 }
@@ -759,6 +767,7 @@ impl Service {
             pushed_to: HashSet::new(),
             roster: None,
             next_roster: 0,
+            next_slide: 0,
             next_scope: 0,
             edit_staff: HashMap::new(),
             edit_checks: Vec::new(),
@@ -1043,6 +1052,7 @@ impl Service {
                 var_cache: loader_folds_var_cache(&player.label),
                 shown_2d: BTreeMap::new(),
                 regrow: None,
+                window: None,
                 scope: None,
             },
         );
@@ -1189,6 +1199,8 @@ impl Service {
             .collect();
         let s = self.sessions.get_mut(&at).expect("just added");
         let id = s.player;
+        // A new TerrainBlock: the client asks for its chunks again.
+        s.window = None;
         s.scope = None;
         if s.conn.profile().tge {
             // 3.153 and 4.04r2: a Sky (the world's, else a plain one: 4.04r2
@@ -1451,6 +1463,7 @@ impl Service {
         self.poll_edit_logins();
         self.regrow(now);
         self.scope_pass(now);
+        self.slide_terrain(now);
     }
 
     /// Distance scoping ([`super::scope`]): each scoped client is ghosted
@@ -1516,6 +1529,45 @@ impl Service {
                 );
                 let (account, protocol) = (s.account.clone(), s.conn.profile().protocol);
                 self.trace(&account, protocol, &what);
+            }
+        }
+    }
+
+    /// A large terrain: each client whose player crossed into another
+    /// chunk gets the chunks that came into its window, then a relight.
+    fn slide_terrain(&mut self, now: u64) {
+        if now < self.next_slide {
+            return;
+        }
+        self.next_slide = now + SLIDE_MS;
+        let addrs: Vec<SocketAddr> = self
+            .sessions
+            .iter()
+            .filter(|(_, s)| s.window.is_some() && s.conn.mission() == Mission::Done)
+            .map(|(a, _)| *a)
+            .collect();
+        for at in addrs {
+            let player = self.sessions[&at].player;
+            let Some(pos) = self.avatars.get(&player).map(|a| a.transform.position) else {
+                continue;
+            };
+            let scene = self.scene_of(player);
+            let Some(t) = &scene.terrain else { continue };
+            let Some(large) = &t.large else { continue };
+            let s = self.sessions.get_mut(&at).expect("listed");
+            let Some(old) = &s.window else { continue };
+            let window = large.window(pos, t.square_size);
+            if window == *old {
+                continue;
+            }
+            let events = large.events(&window, Some(old), None);
+            s.window = Some(window);
+            let n = s.conn.send_chunks_and_relight(events);
+            if n > 0 {
+                log(&format!(
+                    "{}: terrain window moved (at {:.0},{:.0}): {n} chunks",
+                    s.account, pos[0], pos[1]
+                ));
             }
         }
     }
@@ -1808,10 +1860,19 @@ impl Service {
         let Some(t) = &scene.terrain else {
             return;
         };
-        let events = t.answer(stamps);
+        // A large terrain answers with the window round where the player
+        // is now, so a returning player far from the spawn gets only what
+        // it lacks there.
+        let position = self
+            .sessions
+            .get(&at)
+            .and_then(|s| self.avatars.get(&s.player))
+            .map_or(scene.spawn.position, |a| a.transform.position);
+        let (events, window) = t.answer_at(stamps, position);
         let Some(s) = self.sessions.get_mut(&at) else {
             return;
         };
+        s.window = window;
         log(&format!(
             "{}: sending {} terrain chunks",
             s.account,
@@ -3325,6 +3386,128 @@ spawn 0 0 1
             .filter(|e| e.class_name() == Some("TerrainChunkEvent"))
             .count();
         assert_eq!(chunks, 2);
+    }
+
+    #[test]
+    fn a_large_terrain_slides_its_window_and_relights() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("g3d-svc-large-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("big")).unwrap();
+        for y in 0..32u8 {
+            for x in 0..32u8 {
+                let mut e =
+                    flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+                e.write_all(&[x, y, 7]).unwrap();
+                std::fs::write(
+                    dir.join("big").join(format!("heights{x}-{y}.dat")),
+                    e.finish().unwrap(),
+                )
+                .unwrap();
+            }
+        }
+        let hub = Arc::new(Graal3d::new());
+        let (mut scene, errors) = Scene::parse("terrain big 8 repeat 32x32\nspawn 10 10 1\n");
+        assert!(errors.is_empty(), "{errors:?}");
+        assert!(scene.load_terrain(&dir).is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
+        let mut s = Service::new(
+            hub.clone(),
+            scene,
+            PathBuf::from("."),
+            Box::new(Recorder::default()),
+        )
+        .with_options(Options {
+            terrain_all: true,
+            ..Options::default()
+        });
+        hub.tcp_joined(1, tcp("one"));
+        let a: SocketAddr = "127.0.0.1:40000".parse().unwrap();
+        handshake(&mut s, a, 24, b"one").unwrap();
+        let mut clients = [(a, FakeClient::new(&PROTOCOL_24))];
+        let chunks = |c: &FakeClient| {
+            c.got
+                .iter()
+                .filter(|e| e.class_name() == Some("TerrainChunkEvent"))
+                .count()
+        };
+        let phase2 = |c: &FakeClient| {
+            c.commands
+                .iter()
+                .filter(|k| k.name == b"MissionStartPhase2")
+                .count()
+        };
+        let now = run(&mut s, &mut clients, 0, 4);
+        clients[0]
+            .1
+            .events
+            .send(crate::graal3d::events::Event::TerrainRequest(vec![0; 256]));
+        let mut now = run(&mut s, &mut clients, now, 40);
+        assert_eq!(chunks(&clients[0].1), 256);
+        assert_eq!(s.connection(&a).unwrap().mission(), Mission::Done);
+        assert_eq!(phase2(&clients[0].1), 1);
+        let w0 = s.sessions[&a].window.clone().unwrap();
+        // The window round the spawn: world chunks 8 to 23 on each axis.
+        assert!(w0
+            .iter()
+            .all(|(x, y)| (8..24).contains(x) && (8..24).contains(y)));
+
+        // Walking within the chunk sends nothing.
+        assert!(s.move_avatar(1, "100 100 1"));
+        now = run(&mut s, &mut clients, now, 10);
+        assert_eq!(chunks(&clients[0].1), 256);
+        // One chunk east (span 128): one column, then a relight.
+        assert!(s.move_avatar(1, "140 100 1"));
+        now = run(&mut s, &mut clients, now, 30);
+        assert_eq!(chunks(&clients[0].1), 256 + 16);
+        assert_eq!(phase2(&clients[0].1), 2);
+        // One more chunk diagonally: a column and a row.
+        assert!(s.move_avatar(1, "300 200 1"));
+        run(&mut s, &mut clients, now, 30);
+        assert_eq!(chunks(&clients[0].1), 256 + 16 + 31);
+        assert_eq!(phase2(&clients[0].1), 3);
+        let w = s.sessions[&a].window.clone().unwrap();
+        assert!(
+            w.iter()
+                .all(|(x, y)| (10..26).contains(x) && (9..25).contains(y)),
+            "{w:?}"
+        );
+    }
+
+    #[test]
+    fn a_plain_terrain_never_slides() {
+        let hub = Arc::new(Graal3d::new());
+        let (scene, _) = Scene::parse("terrain t 8 repeat\nspawn 0 0 1\n");
+        let mut s = Service::new(
+            hub.clone(),
+            scene,
+            PathBuf::from("."),
+            Box::new(Recorder::default()),
+        )
+        .with_options(Options {
+            terrain_all: true,
+            ..Options::default()
+        });
+        hub.tcp_joined(1, tcp("one"));
+        let a: SocketAddr = "127.0.0.1:40000".parse().unwrap();
+        handshake(&mut s, a, 24, b"one").unwrap();
+        let mut clients = [(a, FakeClient::new(&PROTOCOL_24))];
+        let now = run(&mut s, &mut clients, 0, 4);
+        clients[0]
+            .1
+            .events
+            .send(crate::graal3d::events::Event::TerrainRequest(vec![0; 256]));
+        let now = run(&mut s, &mut clients, now, 40);
+        assert!(s.sessions[&a].window.is_none());
+        assert!(s.move_avatar(1, "3000 3000 1"));
+        run(&mut s, &mut clients, now, 30);
+        let c = &clients[0].1;
+        assert_eq!(
+            c.commands
+                .iter()
+                .filter(|k| k.name == b"MissionStartPhase2")
+                .count(),
+            1
+        );
     }
 
     #[test]
